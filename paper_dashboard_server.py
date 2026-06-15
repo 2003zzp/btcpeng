@@ -588,11 +588,12 @@ class PaperBot:
                 with self.lock:
                     self.state["market_source"] = "binance_public"
             except Exception as exc:
-                tickers = self.demo_tickers()
                 with self.lock:
-                    self.state["market_source"] = "demo_fallback"
+                    self.state["market_source"] = "binance_public_error"
                     self.state["last_error"] = str(exc)
-                    self.event("warn", f"公开行情读取失败，已切换演示行情：{exc}")
+                    self.event("error", f"Binance 真实合约公开行情读取失败，本轮停止扫描且不会开仓：{exc}")
+                    self.persist()
+                return
 
             price_map = {item["symbol"]: fnum(item.get("lastPrice")) for item in tickers}
             try:
