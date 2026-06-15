@@ -943,7 +943,7 @@ select:focus {
 
 table {
   width: 100%;
-  min-width: 1560px;
+  min-width: 1780px;
   border-collapse: collapse;
   table-layout: auto;
 }
@@ -1045,6 +1045,17 @@ td:first-child {
   justify-content: center;
   font-size: 12px;
   font-weight: 900;
+}
+
+.decision-chain {
+  max-width: 260px;
+  display: inline-block;
+  overflow: hidden;
+  color: #dfeeff;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+  cursor: help;
 }
 
 .risk-ok {

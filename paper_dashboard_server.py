@@ -34,6 +34,8 @@ ROOT = Path(__file__).resolve().parent
 WEB_ROOT = ROOT / "web"
 CONFIG_PATH = ROOT / "paper_dashboard_config.json"
 STATE_PATH = ROOT / "data" / "paper_dashboard_state.json"
+SIGNAL_REVIEW_PATH = ROOT / "data" / "signal_review.jsonl"
+SIGNAL_REVIEW_STATE_PATH = ROOT / "data" / "signal_review_state.json"
 FAST_CONFIRM_PATH = ROOT / "fast_signal_confirmer.py"
 FAST_CONFIRM_MODULE: Any | None = None
 FAST_CONFIRM_SOURCE = "fast_signal_confirmer_v2"
@@ -114,6 +116,8 @@ class Signal:
     analyzer_reason: str
     trigger_reason: str
     reject_reason: str
+    decision_summary: str
+    decision_steps: list[str]
     priority: str
 
 
@@ -202,6 +206,12 @@ def save_json(path: Path, payload: Any) -> None:
     with tmp_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
     tmp_path.replace(path)
+
+
+def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def deep_update(target: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
@@ -406,6 +416,142 @@ class PaperBot:
     def event(self, level: str, message: str) -> None:
         self.state.setdefault("events", []).insert(0, {"time": iso_now(), "level": level, "message": message})
         self.state["events"] = self.state["events"][:80]
+
+    def load_signal_review_state(self) -> dict[str, Any]:
+        return load_json(SIGNAL_REVIEW_STATE_PATH, {"signals": {}, "open_orders": {}})
+
+    def save_signal_review_state(self, review_state: dict[str, Any]) -> None:
+        signals = dict(review_state.get("signals", {}))
+        if len(signals) > 2000:
+            trimmed = sorted(signals.items(), key=lambda item: str(item[1].get("scan_time", "")), reverse=True)[:2000]
+            review_state["signals"] = dict(trimmed)
+        open_orders = dict(review_state.get("open_orders", {}))
+        if len(open_orders) > 1000:
+            review_state["open_orders"] = dict(list(open_orders.items())[-1000:])
+        save_json(SIGNAL_REVIEW_STATE_PATH, review_state)
+
+    def signal_review_id(self, scan_id: int, symbol: str) -> str:
+        return f"scan-{scan_id}-{symbol}"
+
+    def signal_review_payload(self, signal: Signal, scan_id: int, scan_time: str) -> dict[str, Any]:
+        return {
+            "id": self.signal_review_id(scan_id, signal.symbol),
+            "scan_id": scan_id,
+            "scan_time": scan_time,
+            "symbol": signal.symbol,
+            "side": signal.side,
+            "score": signal.score,
+            "price": signal.price,
+            "quote_volume": signal.quote_volume,
+            "change_24h_pct": signal.change_24h_pct,
+            "change_4h_pct": signal.change_4h_pct,
+            "change_1h_pct": signal.change_1h_pct,
+            "volume_ratio": signal.volume_ratio,
+            "open_interest_24h_pct": signal.open_interest_24h_pct,
+            "funding_rate_pct": signal.funding_rate_pct,
+            "long_short_ratio": signal.long_short_ratio,
+            "taker_long_short_ratio": signal.taker_long_short_ratio,
+            "risk_level": signal.risk_level,
+            "analyzer_direction": signal.analyzer_direction,
+            "analyzer_confidence_pct": signal.analyzer_confidence_pct,
+            "analyzer_reason": signal.analyzer_reason,
+            "trigger_reason": signal.trigger_reason,
+            "reject_reason": signal.reject_reason,
+            "decision_summary": signal.decision_summary,
+            "decision_steps": list(signal.decision_steps),
+            "opened": False,
+            "open_order_id": "",
+            "opened_at": "",
+            "entry_price": 0.0,
+            "closed": False,
+            "closed_at": "",
+            "close_reason": "",
+            "pnl_usdt": 0.0,
+            "roi_pct": 0.0,
+            "future_return_15m_pct": None,
+            "future_return_60m_pct": None,
+            "future_return_240m_pct": None,
+        }
+
+    def record_signal_review_scan(self, signals: list[Signal]) -> None:
+        scan_id = int(self.state.get("scan_count", 0))
+        scan_time = str(self.state.get("last_scan_at") or iso_now())
+        review_state = self.load_signal_review_state()
+        signals_state = review_state.setdefault("signals", {})
+        for signal in signals:
+            payload = self.signal_review_payload(signal, scan_id, scan_time)
+            signals_state[payload["id"]] = payload
+            append_jsonl(SIGNAL_REVIEW_PATH, {"type": "signal_scan", **payload})
+        self.save_signal_review_state(review_state)
+
+    def mark_signal_review_opened(self, signal: Signal, record: dict[str, Any]) -> None:
+        review_id = self.signal_review_id(int(self.state.get("scan_count", 0)), signal.symbol)
+        review_state = self.load_signal_review_state()
+        item = review_state.setdefault("signals", {}).get(review_id)
+        if not item:
+            item = self.signal_review_payload(signal, int(self.state.get("scan_count", 0)), str(self.state.get("last_scan_at") or iso_now()))
+            review_state["signals"][review_id] = item
+        item.update(
+            {
+                "opened": True,
+                "open_order_id": str(record.get("entry_order_id") or ""),
+                "opened_at": record.get("time") or iso_now(),
+                "entry_price": fnum(record.get("entry_price"), signal.price),
+                "decision_summary": signal.decision_summary,
+                "decision_steps": list(signal.decision_steps),
+            }
+        )
+        review_state.setdefault("open_orders", {})[str(record.get("entry_order_id") or review_id)] = review_id
+        append_jsonl(SIGNAL_REVIEW_PATH, {"type": "signal_opened", **item})
+        self.save_signal_review_state(review_state)
+
+    def mark_signal_review_closed(self, open_record: dict[str, Any], trade_row: dict[str, Any]) -> None:
+        review_id = str(open_record.get("signal_review_id") or "")
+        entry_order_id = str(open_record.get("entry_order_id") or "")
+        review_state = self.load_signal_review_state()
+        if not review_id and entry_order_id:
+            review_id = str(review_state.get("open_orders", {}).get(entry_order_id, ""))
+        if not review_id:
+            return
+        item = review_state.setdefault("signals", {}).get(review_id)
+        if not item:
+            return
+        item.update(
+            {
+                "closed": True,
+                "closed_at": trade_row.get("closed_at") or iso_now(),
+                "close_reason": trade_row.get("close_reason", ""),
+                "pnl_usdt": fnum(trade_row.get("pnl_usdt")),
+                "roi_pct": fnum(trade_row.get("roi_pct")),
+            }
+        )
+        append_jsonl(SIGNAL_REVIEW_PATH, {"type": "signal_closed", **item})
+        self.save_signal_review_state(review_state)
+
+    def update_signal_future_returns(self, price_map: dict[str, float]) -> None:
+        review_state = self.load_signal_review_state()
+        signals_state = review_state.setdefault("signals", {})
+        now_ms = int(time.time() * 1000)
+        changed = False
+        horizons = [(15, "future_return_15m_pct"), (60, "future_return_60m_pct"), (240, "future_return_240m_pct")]
+        for item in signals_state.values():
+            symbol = str(item.get("symbol", ""))
+            entry_price = fnum(item.get("price"))
+            scan_ms = parse_time_ms(item.get("scan_time"))
+            current_price = price_map.get(symbol)
+            if not symbol or entry_price <= 0 or not current_price or scan_ms <= 0:
+                continue
+            for minutes, field in horizons:
+                if item.get(field) is not None:
+                    continue
+                if now_ms - scan_ms < minutes * 60 * 1000:
+                    continue
+                value = pct(current_price, entry_price)
+                item[field] = round(value, 4)
+                append_jsonl(SIGNAL_REVIEW_PATH, {"type": "future_return", "id": item.get("id"), "symbol": symbol, "field": field, "value": item[field]})
+                changed = True
+        if changed:
+            self.save_signal_review_state(review_state)
 
     def send_telegram_message(self, text: str) -> None:
         if not self.config.get("telegram_enabled", True):
@@ -629,6 +775,7 @@ class PaperBot:
                 return
 
             price_map = {item["symbol"]: fnum(item.get("lastPrice")) for item in tickers}
+            self.update_signal_future_returns(price_map)
             try:
                 self.sync_exchange_state()
             except Exception as exc:
@@ -647,6 +794,7 @@ class PaperBot:
             with self.lock:
                 self.state["candidates"] = [signal.__dict__ for signal in signals]
                 opened = self.open_from_signals(signals)
+                self.record_signal_review_scan(signals)
                 if opened:
                     self.event("trade", f"本轮 Binance Testnet 开仓 {opened} 笔")
             if opened:
@@ -735,6 +883,8 @@ class PaperBot:
 
     def sync_exchange_state(self) -> None:
         payload = self.signed_exchange_request("GET", "/fapi/v2/positionRisk")
+        with self.lock:
+            open_history = list(self.state.get("open_order_history", []))
         positions = []
         for item in payload:
             amount = fnum(item.get("positionAmt"))
@@ -745,6 +895,7 @@ class PaperBot:
             unrealized = fnum(item.get("unRealizedProfit"))
             margin = abs(fnum(item.get("isolatedMargin"))) or max(0.01, abs(entry * amount) / max(1.0, float(self.config.get("leverage", 3))))
             side = "LONG" if amount > 0 else "SHORT"
+            open_record = self.find_open_record_for_position(str(item.get("symbol", "")), side, open_history)
             positions.append(
                 {
                     "id": f"binance-{item.get('symbol')}",
@@ -761,10 +912,15 @@ class PaperBot:
                     "unrealized_pnl_usdt": unrealized,
                     "roi_pct": unrealized / max(0.01, margin) * 100.0,
                     "liquidation_price": fnum(item.get("liquidationPrice")),
+                    "entry_order_id": open_record.get("entry_order_id", ""),
+                    "signal_review_id": open_record.get("signal_review_id", ""),
+                    "score": fnum(open_record.get("score")),
+                    "analyzer_direction": open_record.get("analyzer_direction", ""),
+                    "analyzer_confidence_pct": fnum(open_record.get("analyzer_confidence_pct")),
+                    "decision_summary": open_record.get("decision_summary", ""),
+                    "decision_steps": open_record.get("decision_steps", []),
                 }
             )
-        with self.lock:
-            open_history = list(self.state.get("open_order_history", []))
         realized_history = self.fetch_realized_pnl_history(open_history)
         available_balance = self.get_available_balance()
         with self.lock:
@@ -803,6 +959,16 @@ class PaperBot:
             return {}
         return max(candidates, key=lambda record: parse_time_ms(record.get("time")))
 
+    def find_open_record_for_position(self, symbol: str, side: str, open_history: list[dict[str, Any]]) -> dict[str, Any]:
+        candidates = [
+            record
+            for record in open_history
+            if str(record.get("symbol", "")) == symbol and str(record.get("side", "")) == side
+        ]
+        if not candidates:
+            return {}
+        return max(candidates, key=lambda record: parse_time_ms(record.get("time")))
+
     def fetch_realized_pnl_history(self, open_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
         start_ms = parse_time_ms(self.state.get("test_started_at"))
         if not start_ms:
@@ -824,25 +990,32 @@ class PaperBot:
             seen.add(row_id)
             open_record = self.find_open_record_for_income(item, open_history)
             reason = "Binance Testnet 止盈平仓" if pnl > 0 else "Binance Testnet 止损平仓"
-            rows.append(
-                {
-                    "id": f"income-{row_id}",
-                    "symbol": symbol,
-                    "side": open_record.get("side", ""),
-                    "entry_price": fnum(open_record.get("entry_price")),
-                    "exit_price": 0.0,
-                    "quantity": fnum(open_record.get("quantity")),
-                    "margin_usdt": fnum(open_record.get("margin_usdt")),
-                    "pnl_usdt": pnl,
-                    "roi_pct": pnl / max(0.01, fnum(open_record.get("margin_usdt"))) * 100.0 if open_record else 0.0,
-                    "opened_at": open_record.get("time") or "",
-                    "closed_at": datetime.fromtimestamp(income_time / 1000, tz=timezone.utc).isoformat(timespec="seconds")
-                    if income_time > 0
-                    else iso_now(),
-                    "close_reason": reason,
-                    "trigger_reason": open_record.get("trigger_reason", "Binance Testnet 资金流水"),
-                }
-            )
+            row = {
+                "id": f"income-{row_id}",
+                "symbol": symbol,
+                "side": open_record.get("side", ""),
+                "entry_price": fnum(open_record.get("entry_price")),
+                "exit_price": 0.0,
+                "quantity": fnum(open_record.get("quantity")),
+                "margin_usdt": fnum(open_record.get("margin_usdt")),
+                "pnl_usdt": pnl,
+                "roi_pct": pnl / max(0.01, fnum(open_record.get("margin_usdt"))) * 100.0 if open_record else 0.0,
+                "opened_at": open_record.get("time") or "",
+                "closed_at": datetime.fromtimestamp(income_time / 1000, tz=timezone.utc).isoformat(timespec="seconds")
+                if income_time > 0
+                else iso_now(),
+                "close_reason": reason,
+                "trigger_reason": open_record.get("trigger_reason", "Binance Testnet 资金流水"),
+                "entry_order_id": open_record.get("entry_order_id", ""),
+                "signal_review_id": open_record.get("signal_review_id", ""),
+                "strategy_score": fnum(open_record.get("score")),
+                "analyzer_direction": open_record.get("analyzer_direction", ""),
+                "analyzer_confidence_pct": fnum(open_record.get("analyzer_confidence_pct")),
+                "decision_summary": open_record.get("decision_summary", ""),
+                "decision_steps": open_record.get("decision_steps", []),
+            }
+            self.mark_signal_review_closed(open_record, row)
+            rows.append(row)
         rows.sort(key=lambda row: str(row.get("closed_at", "")), reverse=True)
         return rows
 
@@ -915,24 +1088,30 @@ class PaperBot:
         self.state["realized_pnl_usdt"] = fnum(self.state.get("realized_pnl_usdt")) + pnl
         closed_at_ms = fnum(summary.get("time_ms"))
         closed_at = datetime.fromtimestamp(closed_at_ms / 1000, tz=timezone.utc).isoformat(timespec="seconds") if closed_at_ms > 0 else iso_now()
-        self.state.setdefault("trade_history", []).insert(
-            0,
-            {
-                "id": close_id,
-                "symbol": pos.get("symbol"),
-                "side": pos.get("side"),
-                "entry_price": fnum(pos.get("entry_price")),
-                "exit_price": exit_price,
-                "quantity": fnum(pos.get("quantity")),
-                "margin_usdt": margin,
-                "pnl_usdt": pnl,
-                "roi_pct": roi,
-                "opened_at": pos.get("opened_at"),
-                "closed_at": closed_at,
-                "close_reason": f"Binance Testnet {reason}",
-                "trigger_reason": pos.get("trigger_reason", "Binance Testnet 持仓同步"),
-            },
-        )
+        row = {
+            "id": close_id,
+            "symbol": pos.get("symbol"),
+            "side": pos.get("side"),
+            "entry_price": fnum(pos.get("entry_price")),
+            "exit_price": exit_price,
+            "quantity": fnum(pos.get("quantity")),
+            "margin_usdt": margin,
+            "pnl_usdt": pnl,
+            "roi_pct": roi,
+            "opened_at": pos.get("opened_at"),
+            "closed_at": closed_at,
+            "close_reason": f"Binance Testnet {reason}",
+            "trigger_reason": pos.get("trigger_reason", "Binance Testnet 持仓同步"),
+            "entry_order_id": pos.get("entry_order_id", ""),
+            "signal_review_id": pos.get("signal_review_id", ""),
+            "strategy_score": fnum(pos.get("score")),
+            "analyzer_direction": pos.get("analyzer_direction", ""),
+            "analyzer_confidence_pct": fnum(pos.get("analyzer_confidence_pct")),
+            "decision_summary": pos.get("decision_summary", ""),
+            "decision_steps": pos.get("decision_steps", []),
+        }
+        self.state.setdefault("trade_history", []).insert(0, row)
+        self.mark_signal_review_closed(pos, row)
         self.state["trade_history"] = self.state["trade_history"][:200]
         reconciled = list(dict.fromkeys([close_id, *[str(item) for item in self.state.get("reconciled_close_ids", [])]]))
         self.state["reconciled_close_ids"] = reconciled[:500]
@@ -1095,6 +1274,13 @@ class PaperBot:
             "take_profit": self.round_price(symbol_info, take_profit),
             "trigger_reason": signal.trigger_reason,
             "score": signal.score,
+            "entry_price": signal.price,
+            "analyzer_direction": signal.analyzer_direction,
+            "analyzer_confidence_pct": signal.analyzer_confidence_pct,
+            "analyzer_reason": signal.analyzer_reason,
+            "decision_summary": signal.decision_summary,
+            "decision_steps": list(signal.decision_steps),
+            "signal_review_id": self.signal_review_id(int(self.state.get("scan_count", 0)), signal.symbol),
         }
         self.state.setdefault("open_order_history", []).insert(0, {**record, "close_reason": "Binance Testnet 开仓记录"})
         self.state["open_order_history"] = self.state["open_order_history"][:500]
@@ -1459,6 +1645,19 @@ class PaperBot:
                 market_stats["open_interest_24h_pct"],
                 volume_ratio,
             )
+            decision_steps = self.base_decision_steps(
+                symbol,
+                side,
+                score,
+                reason,
+                trend,
+                change,
+                volume,
+                reject,
+                analyzer_direction,
+                analyzer_confidence,
+                analyzer_reason,
+            )
             signals.append(
                 Signal(
                     symbol=symbol,
@@ -1486,6 +1685,8 @@ class PaperBot:
                     analyzer_reason=analyzer_reason,
                     trigger_reason=reason,
                     reject_reason=reject,
+                    decision_summary=self.decision_summary(reject),
+                    decision_steps=decision_steps,
                     priority=priority,
                 )
             )
@@ -1534,6 +1735,51 @@ class PaperBot:
         if symbol in blocked:
             return "币种在禁止开仓名单中"
         return ""
+
+    def update_signal_decision(self, signal: Signal, summary: str, step: str | None = None) -> None:
+        signal.reject_reason = summary
+        signal.decision_summary = self.decision_summary(summary)
+        if step:
+            signal.decision_steps.append(step)
+        if not signal.decision_steps or not signal.decision_steps[-1].startswith("最终结论："):
+            signal.decision_steps.append(f"最终结论：{signal.decision_summary}")
+        else:
+            signal.decision_steps[-1] = f"最终结论：{signal.decision_summary}"
+
+    def decision_summary(self, reject: str) -> str:
+        return reject or "通过候选筛选，等待开仓前实时确认"
+
+    def base_decision_steps(
+        self,
+        symbol: str,
+        side: str,
+        score: float,
+        reason: str,
+        trend: str,
+        change: float,
+        volume: float,
+        reject: str,
+        analyzer_direction: str,
+        analyzer_confidence: float,
+        analyzer_reason: str,
+    ) -> list[str]:
+        steps = [
+            f"候选来源：24h涨跌 {change:+.2f}%，成交额 {volume:.0f} U",
+            f"系统方向：{self.side_cn(side)}，系统分 {score:.2f}，依据：{reason}",
+            f"短线趋势：{trend}",
+        ]
+        blocked_reason = self.blocked_symbol_reject_reason(symbol)
+        if blocked_reason:
+            steps.append(f"禁开名单：{blocked_reason}")
+        mode_reason = self.direction_mode_reject_reason(side)
+        if mode_reason:
+            steps.append(f"方向模式：{mode_reason}")
+        if analyzer_direction and analyzer_direction != "未分析":
+            steps.append(f"分析器：{analyzer_direction} {analyzer_confidence:.1f}%，{analyzer_reason or '-'}")
+        else:
+            steps.append("分析器：未进入或等待二次确认")
+        steps.append(f"最终结论：{self.decision_summary(reject)}")
+        return steps
 
     def refresh_positions(self, price_map: dict[str, float]) -> None:
         positions = []
@@ -1636,18 +1882,22 @@ class PaperBot:
                 continue
             blocked_reason = self.blocked_symbol_reject_reason(signal.symbol)
             if blocked_reason:
+                self.update_signal_decision(signal, blocked_reason, f"开仓前复核：{blocked_reason}")
                 self.event("risk", f"{signal.symbol} {blocked_reason}，跳过开仓")
                 continue
             mode_reject = self.direction_mode_reject_reason(signal.side)
             if mode_reject:
+                self.update_signal_decision(signal, mode_reject, f"开仓前复核：{mode_reject}")
                 self.event("risk", f"{signal.symbol} {mode_reject}")
                 continue
             cooldown_reason = self.stop_loss_cooldown_reason(signal.symbol)
             if cooldown_reason:
+                self.update_signal_decision(signal, cooldown_reason, f"开仓前复核：{cooldown_reason}")
                 self.event("risk", f"{signal.symbol} {cooldown_reason}，跳过开仓")
                 continue
             symbol_info = exchange_symbols.get(signal.symbol)
             if not symbol_info:
+                self.update_signal_decision(signal, "Testnet 无此交易对", "开仓前复核：不在 Binance Futures Testnet 交易对中")
                 self.event("warn", f"{signal.symbol} 不在 Binance Futures Testnet 交易对中，跳过")
                 continue
             if self.config.get("analyzer_confirmation_enabled", True) and self.config.get("analyzer_realtime_before_open", True):
@@ -1657,20 +1907,32 @@ class PaperBot:
                         self.save_analyzer_result(signal.symbol, realtime_result)
                     reject = self.analyzer_reject_reason(signal.side, realtime_result)
                     if reject:
+                        self.update_signal_decision(signal, reject, f"开仓前实时确认：{reject}")
                         self.event("risk", f"{signal.symbol} 开仓前实时确认未通过：{reject}")
                         continue
                     signal.analyzer_direction = str(realtime_result.get("direction", signal.analyzer_direction))
                     signal.analyzer_confidence_pct = round(fnum(realtime_result.get("confidence")), 1)
                     signal.analyzer_reason = str(realtime_result.get("reason", signal.analyzer_reason))
+                    signal.decision_steps.append(
+                        f"开仓前实时确认：{signal.analyzer_direction} {signal.analyzer_confidence_pct:.1f}%，通过"
+                    )
                 except Exception as exc:
+                    self.update_signal_decision(signal, f"开仓前实时确认失败：{exc}", f"开仓前实时确认失败：{exc}")
                     self.event("error", f"{signal.symbol} 开仓前实时确认失败：{exc}")
                     continue
             try:
                 record = self.exchange_open_position(signal, symbol_info)
             except Exception as exc:
+                self.update_signal_decision(signal, f"Binance Testnet 开仓失败：{exc}", f"下单结果：失败，{exc}")
                 self.event("error", f"{signal.symbol} Binance Testnet 开仓失败：{exc}")
                 continue
             if record:
+                signal.reject_reason = ""
+                signal.decision_summary = "已提交 Binance Testnet 开仓"
+                signal.decision_steps.append(f"下单结果：已开仓，订单 {record.get('entry_order_id') or '-'}")
+                record["decision_summary"] = signal.decision_summary
+                record["decision_steps"] = list(signal.decision_steps)
+                self.mark_signal_review_opened(signal, record)
                 self.event(
                     "trade",
                     f"Binance Testnet 开仓 {signal.symbol} {self.side_cn(signal.side)}，保证金 {record['margin_usdt']:.2f} U",

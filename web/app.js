@@ -118,6 +118,10 @@ function priceOrDash(value) {
   return n > 0 ? `${price(n)} U` : "-";
 }
 
+function titleText(value) {
+  return escapeHtml(value || "-").replace(/\n/g, "&#10;");
+}
+
 function sidePill(side) {
   const label = side === "LONG" ? "多" : "空";
   const cls = side === "LONG" ? "long" : "short";
@@ -561,12 +565,15 @@ function renderCharts(rows) {
 function renderCandidates(rows) {
   if (!els.candidateRows) return;
   if (!rows.length) {
-    els.candidateRows.innerHTML = `<tr><td colspan="21" class="empty">候选表空</td></tr>`;
+    els.candidateRows.innerHTML = `<tr><td colspan="22" class="empty">候选表空</td></tr>`;
     return;
   }
   els.candidateRows.innerHTML = rows
     .map((row) => {
       const reject = row.reject_reason || "待开仓";
+      const decisionSteps = Array.isArray(row.decision_steps) ? row.decision_steps : [];
+      const decisionTitle = decisionSteps.length ? decisionSteps.join("\n") : row.decision_summary || reject;
+      const decisionText = row.decision_summary || reject;
       const riskCls = row.risk_level === "危险" ? "risk-high" : row.risk_level === "注意" ? "risk-watch" : "risk-ok";
       return `
         <tr>
@@ -576,6 +583,7 @@ function renderCandidates(rows) {
           <td>${row.analyzer_direction || "-"}</td>
           <td class="${Number(row.analyzer_confidence_pct || 0) > 90 ? "positive" : "danger"}">${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%</td>
           <td>${reject}</td>
+          <td><span class="decision-chain" title="${titleText(decisionTitle)}">${escapeHtml(decisionText)}</span></td>
           <td>${price(row.price)} U</td>
           <td class="${signedClass(row.change_24h_pct)}">${signedPct(row.change_24h_pct)}</td>
           <td class="${signedClass(row.change_4h_pct)}">${signedPct(row.change_4h_pct)}</td>
@@ -600,12 +608,18 @@ function renderCandidates(rows) {
 function renderHistory(rows) {
   if (!els.historyRows) return;
   if (!rows.length) {
-    els.historyRows.innerHTML = `<tr><td colspan="9" class="empty">暂无历史</td></tr>`;
+    els.historyRows.innerHTML = `<tr><td colspan="10" class="empty">暂无历史</td></tr>`;
     return;
   }
   els.historyRows.innerHTML = rows
     .slice(0, 60)
     .map((row) => {
+      const strategyParts = [];
+      if (Number(row.strategy_score || 0) > 0) strategyParts.push(`分 ${Number(row.strategy_score || 0).toFixed(1)}`);
+      if (row.analyzer_direction) strategyParts.push(`${row.analyzer_direction} ${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%`);
+      if (row.decision_summary) strategyParts.push(row.decision_summary);
+      const strategyText = strategyParts.join(" / ") || row.trigger_reason || "-";
+      const strategyTitle = Array.isArray(row.decision_steps) && row.decision_steps.length ? row.decision_steps.join("\n") : strategyText;
       return `
         <tr>
           <td>${row.symbol}</td>
@@ -615,6 +629,7 @@ function renderHistory(rows) {
           <td>${priceOrDash(row.entry_price)}</td>
           <td>${priceOrDash(row.exit_price)}</td>
           <td>${row.close_reason}</td>
+          <td><span class="decision-chain" title="${titleText(strategyTitle)}">${escapeHtml(strategyText)}</span></td>
           <td class="${signedClass(row.pnl_usdt)}">${money(row.pnl_usdt)}</td>
           <td class="${signedClass(row.roi_pct)}">${pct(row.roi_pct)}</td>
         </tr>
