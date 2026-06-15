@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#061020" />
+    <link rel="icon" href="data:," />
+    <title>妖币模拟仓自动交易系统</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">⌁</span>
+        <div class="brand-copy">
+          <h1>妖币模拟仓自动交易系统</h1>
+          <span class="version-pill">V1.5</span>
+        </div>
+        <span id="exchangeBadge" class="version">TESTNET</span>
+      </div>
+      <div class="actions">
+        <button id="startBtn" class="button button-start" type="button"><span class="button-icon">▶</span>启动机器人</button>
+        <button id="stopBtn" class="button button-stop" type="button"><span class="button-icon">■</span>停止机器人</button>
+        <button id="syncBtn" class="button button-sync" type="button"><span class="button-icon">↻</span>同步模拟仓</button>
+        <button id="closeAllBtn" class="button button-risk" type="button"><span class="button-icon">!</span>全部平仓</button>
+        <button id="resetBtn" class="button button-reset" type="button"><span class="button-icon">⟲</span>重置测试</button>
+        <button id="scanBtn" class="button button-muted" type="button"><span class="button-icon">⟳</span>刷新</button>
+      </div>
+    </header>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="chartTooltip" class="chart-tooltip" aria-hidden="true"></div>
+
+    <main>
+      <section class="hero-grid" aria-label="账户概览">
+        <article class="robot-card" aria-hidden="true">
+          <div class="robot-scene">
+            <div class="bot">
+              <div class="bot-head">
+                <span></span>
+                <span></span>
+              </div>
+              <div class="bot-body">
+                <i></i>
+              </div>
+              <div class="bot-arm"></div>
+            </div>
+            <div class="bot-coin coin-a">₿</div>
+            <div class="bot-coin coin-b">₿</div>
+          </div>
+          <div class="holo-screen">
+            <div class="screen-top"></div>
+            <div class="screen-row"></div>
+            <div class="screen-row short"></div>
+            <div class="screen-chart">
+              <i></i>
+              <b></b>
+              <span></span>
+            </div>
+          </div>
+        </article>
+
+        <section class="metrics-grid">
+          <article class="metric">
+            <span class="status-dot"></span>
+            <span class="metric-icon icon-chip">▣</span>
+            <div class="metric-copy">
+              <span class="label">机器人状态</span>
+              <strong id="runningText">未启动</strong>
+              <small>系统稳定运行</small>
+            </div>
+            <div class="sparkline sparkline-blue"></div>
+          </article>
+          <article class="metric">
+            <span class="metric-icon icon-radar">◔</span>
+            <div class="metric-copy">
+              <span class="label">扫描器动态</span>
+              <strong id="scanText">等待启动</strong>
+              <small id="sourceText">行情源：-</small>
+            </div>
+            <div class="sparkline sparkline-blue tiny"></div>
+          </article>
+          <article class="metric">
+            <span class="metric-icon icon-stack">◎</span>
+            <div class="metric-copy">
+              <span class="label">合约总资产</span>
+              <strong id="equityText">0.00 U</strong>
+            </div>
+            <div class="sparkline sparkline-green"></div>
+          </article>
+          <article class="metric">
+            <span class="metric-icon icon-hand">▰</span>
+            <div class="metric-copy">
+              <span class="label">可用保证金</span>
+              <strong id="availableText" class="danger">0.00 U</strong>
+            </div>
+            <div class="sparkline sparkline-red"></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="summary-strip primary-summary" aria-label="交易统计">
+        <article>
+          <span class="summary-icon up">↑</span>
+          <div>
+            <span>止盈平仓</span>
+            <strong id="tpCount">0 次</strong>
+          </div>
+          <div class="sparkline sparkline-green"></div>
+        </article>
+        <article>
+          <span class="summary-icon down">↓</span>
+          <div>
+            <span>止损平仓</span>
+            <strong id="slCount" class="danger">0 次</strong>
+          </div>
+          <div class="sparkline sparkline-red"></div>
+        </article>
+        <article>
+          <span class="summary-icon pnl">⌁</span>
+          <div>
+            <span>总盈亏</span>
+            <strong id="pnlText">0.00 U</strong>
+          </div>
+          <div class="sparkline sparkline-green"></div>
+        </article>
+      </section>
+
+      <section class="summary-strip compact-strip" aria-label="策略质量">
+        <article class="meter-card">
+          <span>仓位敞口</span>
+          <strong id="exposureText">0.00 %</strong>
+          <div class="meter"><i id="exposureMeter"></i></div>
+        </article>
+        <article class="meter-card">
+          <span>最大回撤</span>
+          <strong id="drawdownText" class="danger">0.00 %</strong>
+          <div class="meter danger-meter"><i id="drawdownMeter"></i></div>
+        </article>
+        <article>
+          <span>胜率</span>
+          <strong id="winRateText">0.00 %</strong>
+        </article>
+        <article>
+          <span>盈亏因子</span>
+          <strong id="profitFactorText">0.00</strong>
+        </article>
+        <article>
+          <span>今日已实现</span>
+          <strong id="dailyPnlText">0.00 U</strong>
+        </article>
+        <article>
+          <span>扫描耗时</span>
+          <strong id="scanDurationText">0.00 s</strong>
+        </article>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="section-title">
+          <span>☷</span>
+          <h2>参数实时调节面板</h2>
+        </div>
+        <form id="settingsForm" class="settings-grid">
+          <label>
+            开仓保证金 (U)
+            <input name="margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
+          </label>
+          <label>
+            杠杆倍数 (1-20X)
+            <input name="leverage" type="number" min="1" max="20" step="1" />
+          </label>
+          <label>
+            止盈 ROI (%)
+            <input name="take_profit_roi_pct" type="number" min="1" step="1" />
+          </label>
+          <label>
+            止损 ROI (%)
+            <input name="stop_loss_roi_pct" type="number" min="1" step="1" />
+          </label>
+          <label>
+            扫描间隔 (秒)
+            <input name="scan_interval_sec" type="number" min="2" step="1" />
+          </label>
+          <button class="button button-primary" type="submit">保存参数</button>
+        </form>
+      </section>
+
+      <section class="charts-grid" aria-label="市场图谱">
+        <article class="chart-card chart-wide">
+          <div class="chart-head">
+            <h2>候选动量 / OI 联动</h2>
+            <span>候选表前 8 · 柱=24h涨跌 · 线=OI 24h</span>
+          </div>
+          <canvas id="momentumChart" height="240"></canvas>
+        </article>
+        <article class="chart-card">
+          <div class="chart-head">
+            <h2>资金面监控</h2>
+            <span>候选表前 6 · 柱=资金费率 · 点=多空比</span>
+          </div>
+          <canvas id="fundingChart" height="240"></canvas>
+        </article>
+        <article class="chart-card">
+          <div class="chart-head">
+            <h2>风险分布</h2>
+            <span>来自候选表风险等级</span>
+          </div>
+          <canvas id="riskChart" height="240"></canvas>
+        </article>
+      </section>
+
+      <section class="table-section">
+        <div class="section-title">
+          <span>◈</span>
+          <h2>排序候选表</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>币种</th>
+                <th>总分</th>
+                <th>方向</th>
+                <th>分析器</th>
+                <th>置信度</th>
+                <th>未开仓原因</th>
+                <th>实时市价</th>
+                <th>24h</th>
+                <th>4h</th>
+                <th>1h</th>
+                <th>OI</th>
+                <th>OI 24h</th>
+                <th>OI 4h</th>
+                <th>OI 1h</th>
+                <th>量 4h</th>
+                <th>FR 8h</th>
+                <th>多/空</th>
+                <th>Tk</th>
+                <th>OI/量</th>
+                <th>风险</th>
+                <th>优先级</th>
+              </tr>
+            </thead>
+            <tbody id="candidateRows">
+              <tr><td colspan="21" class="empty">候选表空</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="table-section">
+        <div class="section-title">
+          <span>◇</span>
+          <h2>模拟仓交易记录</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>币种</th>
+                <th>方向</th>
+                <th>开仓时间</th>
+                <th>平仓时间</th>
+                <th>开仓价</th>
+                <th>平仓价</th>
+                <th>平仓原因</th>
+                <th>盈亏</th>
+                <th>ROI</th>
+              </tr>
+            </thead>
+            <tbody id="historyRows">
+              <tr><td colspan="9" class="empty">暂无历史</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="table-section">
+        <div class="section-title">
+          <span>◆</span>
+          <h2>当前活跃持仓列表</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>币种</th>
+                <th>触发原因</th>
+                <th>方向</th>
+                <th>开仓时间</th>
+                <th>实时市价</th>
+                <th>持仓数量</th>
+                <th>持仓保证金</th>
+                <th>未实现盈亏</th>
+                <th>实时盈亏比</th>
+              </tr>
+            </thead>
+            <tbody id="positionRows">
+              <tr><td colspan="9" class="empty">暂无持仓</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="log-section">
+        <div class="section-title">
+          <span>☰</span>
+          <h2>运行日志</h2>
+        </div>
+        <div id="eventLog" class="event-log"></div>
+      </section>
+    </main>
+
+    <footer>
+      <span>统一风控：仅 Binance Futures Testnet 模拟仓，禁止实盘密钥</span>
+      <span id="footerText">数据每 2 秒自动刷新</span>
+    </footer>
+  </body>
+</html>

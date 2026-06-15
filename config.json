@@ -1,0 +1,84 @@
+{
+  "market_base_url": "https://fapi.binance.com",
+  "request_timeout_sec": 15,
+  "telegram_timeout_sec": 6,
+  "quote_assets": [
+    "USDT"
+  ],
+  "scan_interval_sec": 60,
+  "verbose_console": true,
+  "execution_mode": "binance_futures_testnet",
+  "kline_interval": "1m",
+  "kline_limit": 80,
+  "trend_fast_interval": "5m",
+  "trend_slow_interval": "15m",
+  "trend_kline_limit": 80,
+  "require_trend_confirmation": true,
+  "short_term_lookback_candles": 15,
+  "recent_volume_candles": 5,
+  "baseline_volume_candles": 30,
+  "new_symbol_hours": 72,
+  "manual_watchlist": [],
+  "exclude_symbols": [
+    "USDCUSDT",
+    "FDUSDUSDT",
+    "TUSDUSDT",
+    "USDPUSDT",
+    "EURUSDT"
+  ],
+  "min_quote_volume_usdt": 20000000,
+  "long_24h_change_pct": 8.0,
+  "short_24h_change_pct": -8.0,
+  "short_term_move_pct": 2.0,
+  "volume_spike_ratio": 1.8,
+  "min_signal_score": 4.0,
+  "max_candidates_per_scan": 30,
+  "decision_log_top_n": 10,
+  "futures_testnet": {
+    "base_url": "https://testnet.binancefuture.com",
+    "leverage": 3,
+    "margin_type": "ISOLATED",
+    "margin_per_trade_pct": 5.0,
+    "max_position_usdt": 0.0,
+    "max_open_positions": 10,
+    "stop_loss_pct": 2.5,
+    "take_profit_pct": 6.0,
+    "recv_window": 5000,
+    "working_type": "MARK_PRICE",
+    "quantity_safety_factor": 0.98
+  },
+  "onchain": {
+    "enabled": true,
+    "auto_discover": true,
+    "provider": "geckoterminal",
+    "base_url": "https://api.geckoterminal.com/api/v2",
+    "reject_on_missing_mapping": false,
+    "min_liquidity_usd": 100000.0,
+    "min_volume_24h_usd": 100000.0,
+    "long_min_buy_sell_ratio_1h": 1.15,
+    "short_max_buy_sell_ratio_1h": 0.85,
+    "default_networks": {
+      "BEAT": "bsc",
+      "LAB": "bsc"
+    },
+    "symbols": {
+      "BEAT": {
+        "network": "bsc",
+        "token_address": "0xcf3232b85b43bca90e51d38cc06cc8bb8c8a3e36"
+      },
+      "BEATUSDT": {
+        "network": "bsc",
+        "token_address": "0xcf3232b85b43bca90e51d38cc06cc8bb8c8a3e36"
+      },
+      "LAB": {
+        "network": "bsc",
+        "token_address": "0x7ec43cf65f1663f820427c62a5780b8f2e25593a"
+      },
+      "LABUSDT": {
+        "network": "bsc",
+        "token_address": "0x7ec43cf65f1663f820427c62a5780b8f2e25593a"
+      }
+    }
+  },
+  "data_dir": "data"
+}
