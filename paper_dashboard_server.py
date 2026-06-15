@@ -52,6 +52,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "short_24h_change_pct": -7.0,
     "short_term_move_pct": 1.2,
     "volume_spike_ratio": 1.5,
+    "trade_direction_mode": "both",
     "signal_score_threshold": 4.0,
     "analyzer_confirmation_enabled": True,
     "analyzer_min_confidence_pct": 90.0,
@@ -74,6 +75,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "stop_loss_roi_pct": 86.0,
     "telegram_enabled": True,
     "exclude_symbols": ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "USDPUSDT", "EURUSDT"],
+    "blocked_symbols": [],
     "manual_watchlist": [],
     "futures_testnet": {
         "base_url": "https://testnet.binancefuture.com",
@@ -153,6 +155,29 @@ def first_present(item: dict[str, Any], keys: list[str], default: Any = None) ->
         if key in item and item.get(key) not in {None, ""}:
             return item.get(key)
     return default
+
+
+def normalize_symbol_list(value: Any, quote_asset: str = "USDT") -> list[str]:
+    if isinstance(value, str):
+        raw_items = value.replace("，", ",").replace("\n", ",").replace(" ", ",").split(",")
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+    symbols = []
+    seen = set()
+    quote = quote_asset.upper()
+    for item in raw_items:
+        symbol = str(item).strip().upper().replace("/", "").replace("-", "")
+        if not symbol:
+            continue
+        if not symbol.endswith(quote):
+            symbol = f"{symbol}{quote}"
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
 
 
 def price_text(value: Any) -> str:
@@ -534,12 +559,20 @@ class PaperBot:
             "signal_score_threshold": float,
             "analyzer_min_confidence_pct": float,
             "max_new_positions_per_scan": int,
+            "trade_direction_mode": str,
+            "blocked_symbols": str,
         }
         with self.lock:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
                 value = caster(patch[key])
+                if key == "trade_direction_mode":
+                    value = str(value)
+                    if value not in {"both", "long_only", "short_only"}:
+                        value = "both"
+                if key == "blocked_symbols":
+                    value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
                 if key in {"leverage", "scan_interval_sec", "max_open_positions", "max_new_positions_per_scan"}:
                     value = max(1, int(value))
                 if key in {
@@ -1374,12 +1407,16 @@ class PaperBot:
             reject = ""
             if symbol in open_symbols:
                 reject = "已有持仓"
+            elif self.blocked_symbol_reject_reason(symbol):
+                reject = self.blocked_symbol_reject_reason(symbol)
             elif score < float(self.config.get("signal_score_threshold", 4.0)):
                 reject = f"分数 {score:.1f} 低于阈值"
             elif side == "LONG" and trend == "down":
                 reject = "短线趋势反向"
             elif side == "SHORT" and trend == "up":
                 reject = "短线趋势反向"
+            else:
+                reject = self.direction_mode_reject_reason(side)
 
             priority = "高" if score >= 6 else "中" if score >= 4.5 else "低"
             analyzer_direction = "未分析"
@@ -1484,6 +1521,20 @@ class PaperBot:
             reasons.append("波动不足")
         return score, " / ".join(reasons)
 
+    def direction_mode_reject_reason(self, side: str) -> str:
+        mode = str(self.config.get("trade_direction_mode", "both"))
+        if mode == "long_only" and side == "SHORT":
+            return "方向模式为只做多，跳过空单"
+        if mode == "short_only" and side == "LONG":
+            return "方向模式为只做空，跳过多单"
+        return ""
+
+    def blocked_symbol_reject_reason(self, symbol: str) -> str:
+        blocked = set(normalize_symbol_list(self.config.get("blocked_symbols", []), str(self.config.get("quote_asset", "USDT"))))
+        if symbol in blocked:
+            return "币种在禁止开仓名单中"
+        return ""
+
     def refresh_positions(self, price_map: dict[str, float]) -> None:
         positions = []
         for pos in self.state.get("positions", []):
@@ -1582,6 +1633,14 @@ class PaperBot:
             if opened >= min(capacity, int(self.config.get("max_new_positions_per_scan", 2))):
                 break
             if signal.reject_reason or signal.price <= 0:
+                continue
+            blocked_reason = self.blocked_symbol_reject_reason(signal.symbol)
+            if blocked_reason:
+                self.event("risk", f"{signal.symbol} {blocked_reason}，跳过开仓")
+                continue
+            mode_reject = self.direction_mode_reject_reason(signal.side)
+            if mode_reject:
+                self.event("risk", f"{signal.symbol} {mode_reject}")
                 continue
             cooldown_reason = self.stop_loss_cooldown_reason(signal.symbol)
             if cooldown_reason:

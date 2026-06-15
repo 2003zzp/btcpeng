@@ -199,7 +199,7 @@ function render(payload) {
 
   for (const [key, value] of Object.entries(config)) {
     const input = els.form.elements[key];
-    if (input && document.activeElement !== input) input.value = value;
+    if (input && document.activeElement !== input) input.value = Array.isArray(value) ? value.join(", ") : value;
   }
 
   renderCandidates(state.candidates || []);

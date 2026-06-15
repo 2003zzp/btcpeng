@@ -181,6 +181,18 @@
             扫描间隔 (秒)
             <input name="scan_interval_sec" type="number" min="2" step="1" />
           </label>
+          <label>
+            交易方向
+            <select name="trade_direction_mode">
+              <option value="both">多空都可以</option>
+              <option value="long_only">只做多</option>
+              <option value="short_only">只做空</option>
+            </select>
+          </label>
+          <label class="settings-wide">
+            禁止开仓币种
+            <input name="blocked_symbols" type="text" placeholder="BTCUSDT, ETHUSDT" />
+          </label>
           <button class="button button-primary" type="submit">保存参数</button>
         </form>
       </section>

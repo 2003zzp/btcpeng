@@ -5,6 +5,7 @@
   "analyzer_min_confidence_pct": 90.0,
   "analyzer_realtime_before_open": true,
   "analyzer_timeout_sec": 12.0,
+  "blocked_symbols": [],
   "exclude_symbols": [
     "USDCUSDT",
     "FDUSDUSDT",
@@ -46,5 +47,6 @@
   "stop_loss_roi_pct": 95.0,
   "take_profit_roi_pct": 100.0,
   "telegram_enabled": true,
+  "trade_direction_mode": "both",
   "volume_spike_ratio": 1.5
 }
