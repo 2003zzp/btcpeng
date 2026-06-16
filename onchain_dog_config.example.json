@@ -1,0 +1,86 @@
+{
+  "request_timeout_sec": 10,
+  "scan_interval_sec": 20,
+  "data_dir": "data",
+  "verbose_console": true,
+  "networks": [
+    "bsc",
+    "base",
+    "solana"
+  ],
+  "geckoterminal": {
+    "base_url": "https://api.geckoterminal.com/api/v2",
+    "new_pools_per_network": 20,
+    "include_tokens": true
+  },
+  "execution": {
+    "mode": "paper",
+    "fixed_trade_usd": 25.0,
+    "max_slippage_pct": 8.0,
+    "webhook_url_env": "ONCHAIN_TRADE_WEBHOOK_URL",
+    "webhook_secret_env": "ONCHAIN_TRADE_WEBHOOK_SECRET",
+    "require_safety_webhook_for_live": true
+  },
+  "paper": {
+    "starting_balance_usd": 500.0
+  },
+  "filters": {
+    "min_pool_age_sec": 120,
+    "max_pool_age_sec": 7200,
+    "min_liquidity_usd": 20000.0,
+    "min_volume_h1_usd": 8000.0,
+    "min_volume_h24_usd": 20000.0,
+    "min_txns_m5": 12,
+    "min_buy_sell_ratio_m5": 1.15,
+    "max_buy_sell_ratio_m5": 6.0,
+    "max_price_change_m5_pct": 250.0,
+    "max_fdv_liquidity_ratio": 80.0,
+    "allowed_quote_symbols": [
+      "WBNB",
+      "BNB",
+      "WETH",
+      "ETH",
+      "USDT",
+      "USDC",
+      "SOL",
+      "WSOL"
+    ],
+    "blocked_tokens": [],
+    "blocked_pools": []
+  },
+  "scoring": {
+    "min_score_to_buy": 75.0,
+    "max_new_trades_per_scan": 1
+  },
+  "risk": {
+    "max_open_positions": 4,
+    "max_trades_per_day": 12,
+    "max_daily_loss_usd": 50.0,
+    "max_daily_loss_pct": 10.0,
+    "max_consecutive_losses": 3,
+    "cooldown_after_loss_sec": 600,
+    "stop_loss_pct": 25.0,
+    "take_profit_steps": [
+      {
+        "gain_pct": 80.0,
+        "sell_pct": 40.0
+      },
+      {
+        "gain_pct": 150.0,
+        "sell_pct": 30.0
+      },
+      {
+        "gain_pct": 300.0,
+        "sell_pct": 20.0
+      }
+    ],
+    "trailing_start_gain_pct": 120.0,
+    "trailing_drawdown_pct": 35.0,
+    "max_hold_minutes": 60,
+    "no_new_high_exit_minutes": 20,
+    "liquidity_exit_ratio": 0.45
+  },
+  "notifications": {
+    "telegram_enabled": true
+  }
+}
