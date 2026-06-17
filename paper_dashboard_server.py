@@ -24,7 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -41,6 +41,8 @@ FAST_CONFIRM_PATH = ROOT / "fast_signal_confirmer.py"
 FAST_CONFIRM_MODULE: Any | None = None
 FAST_CONFIRM_SOURCE = "fast_signal_confirmer_v2"
 SQUARE_POST_SKILL_DIR = Path(os.environ.get("BINANCE_SQUARE_SKILL_DIR", r"C:\Users\Administrator\.codex\skills\square-post"))
+REPORTS_DIR = ROOT / "reports"
+DAILY_PNL_REPORT_PATH = REPORTS_DIR / "daily_realized_pnl.xlsx"
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -89,7 +91,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "telegram_enabled": True,
     "square_publish_enabled": True,
     "square_publish_on_open": True,
-    "square_publish_disclaimer": "仅为 Binance Futures Testnet 模拟盘记录，不构成投资建议。",
+    "square_publish_disclaimer": "本人观点仅供参考，不构成投资建议。",
+    "daily_excel_report_enabled": True,
+    "daily_excel_report_path": str(DAILY_PNL_REPORT_PATH),
     "exclude_symbols": ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "USDPUSDT", "EURUSDT"],
     "blocked_symbols": [],
     "manual_watchlist": [],
@@ -166,6 +170,13 @@ def parse_time_ms(value: Any) -> int:
         except ValueError:
             return 0
     return 0
+
+
+def local_datetime(value: Any) -> datetime | None:
+    millis = parse_time_ms(value)
+    if millis <= 0:
+        return None
+    return datetime.fromtimestamp(millis / 1000).astimezone()
 
 
 def fnum(value: Any, default: float = 0.0) -> float:
@@ -378,6 +389,8 @@ class PaperBot:
         self.analyzer_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, int(self.config.get("analyzer_max_workers", 2)))
         )
+        self.daily_report_thread = threading.Thread(target=self.daily_excel_report_loop, name="daily-excel-report", daemon=True)
+        self.daily_report_thread.start()
 
     def load_config(self) -> dict[str, Any]:
         config = json.loads(json.dumps(DEFAULT_CONFIG))
@@ -689,24 +702,184 @@ class PaperBot:
         if added:
             self.state["telegram_close_notified_ids"] = list(dict.fromkeys([*added, *notified]))[:1000]
 
+    def trades_for_local_date(self, report_date: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for trade in self.state.get("trade_history", []):
+            closed_dt = local_datetime(trade.get("closed_at"))
+            if not closed_dt or closed_dt.date().isoformat() != report_date:
+                continue
+            rows.append(trade)
+        rows.sort(key=lambda item: str(item.get("closed_at", "")))
+        return rows
+
+    def export_daily_realized_pnl_excel(self, report_date: str | None = None) -> Path:
+        from openpyxl import Workbook, load_workbook
+        from openpyxl.styles import Font, PatternFill
+        from openpyxl.utils import get_column_letter
+
+        if report_date is None:
+            report_date = (datetime.now().astimezone().date() - timedelta(days=1)).isoformat()
+        report_path = Path(str(self.config.get("daily_excel_report_path") or DAILY_PNL_REPORT_PATH))
+        if not report_path.is_absolute():
+            report_path = ROOT / report_path
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock:
+            trades = json.loads(json.dumps(self.trades_for_local_date(report_date), ensure_ascii=False))
+        total_pnl = sum(fnum(item.get("pnl_usdt")) for item in trades)
+        wins = [item for item in trades if fnum(item.get("pnl_usdt")) > 0]
+        losses = [item for item in trades if fnum(item.get("pnl_usdt")) < 0]
+        win_rate = len(wins) / len(trades) * 100.0 if trades else 0.0
+        take_profit_count = sum(1 for item in trades if fnum(item.get("pnl_usdt")) > 0 or "止盈" in str(item.get("close_reason", "")))
+        stop_loss_count = sum(1 for item in trades if fnum(item.get("pnl_usdt")) < 0 or "止损" in str(item.get("close_reason", "")))
+
+        if report_path.exists():
+            wb = load_workbook(report_path)
+        else:
+            wb = Workbook()
+            wb.active.title = "每日汇总"
+            wb.create_sheet("交易明细")
+        for sheet_name in ["每日汇总", "交易明细"]:
+            if sheet_name not in wb.sheetnames:
+                wb.create_sheet(sheet_name)
+        summary = wb["每日汇总"]
+        detail = wb["交易明细"]
+        summary_headers = ["日期", "平仓笔数", "止盈次数", "止损次数", "胜率%", "已实现盈亏USDT", "盈利合计USDT", "亏损合计USDT", "生成时间"]
+        detail_headers = ["日期", "平仓时间", "币种", "方向", "开仓价", "平仓价", "数量", "已实现盈亏USDT", "平仓原因", "订单/记录ID"]
+        if summary.max_row == 1 and not summary.cell(1, 1).value:
+            for index, header in enumerate(summary_headers, 1):
+                summary.cell(1, index, header)
+        if detail.max_row == 1 and not detail.cell(1, 1).value:
+            for index, header in enumerate(detail_headers, 1):
+                detail.cell(1, index, header)
+        for row in range(summary.max_row, 1, -1):
+            if str(summary.cell(row, 1).value) == report_date:
+                summary.delete_rows(row, 1)
+        for row in range(detail.max_row, 1, -1):
+            if str(detail.cell(row, 1).value) == report_date:
+                detail.delete_rows(row, 1)
+        summary.append([
+            report_date,
+            len(trades),
+            take_profit_count,
+            stop_loss_count,
+            round(win_rate, 2),
+            round(total_pnl, 6),
+            round(sum(fnum(item.get("pnl_usdt")) for item in wins), 6),
+            round(sum(fnum(item.get("pnl_usdt")) for item in losses), 6),
+            datetime.now().astimezone().isoformat(timespec="seconds"),
+        ])
+        for item in trades:
+            closed_dt = local_datetime(item.get("closed_at"))
+            detail.append([
+                report_date,
+                closed_dt.isoformat(timespec="seconds") if closed_dt else str(item.get("closed_at", "")),
+                item.get("symbol", ""),
+                item.get("side", ""),
+                fnum(item.get("entry_price")),
+                fnum(item.get("exit_price"), fnum(item.get("last_price"))),
+                fnum(item.get("quantity")),
+                round(fnum(item.get("pnl_usdt")), 6),
+                item.get("close_reason", ""),
+                item.get("id") or item.get("entry_order_id") or "",
+            ])
+        for ws in [summary, detail]:
+            for cell in ws[1]:
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill("solid", fgColor="1F4E78")
+            ws.freeze_panes = "A2"
+            for col in range(1, ws.max_column + 1):
+                max_len = max(len(str(ws.cell(row, col).value or "")) for row in range(1, ws.max_row + 1))
+                ws.column_dimensions[get_column_letter(col)].width = min(max(max_len + 2, 10), 36)
+        wb.save(report_path)
+        with self.lock:
+            self.state["last_daily_excel_report_date"] = report_date
+            self.state["last_daily_excel_report_path"] = str(report_path)
+            self.persist()
+        self.event("info", f"每日已实现盈亏 Excel 已生成：{report_path}")
+        return report_path
+
+    def daily_excel_report_loop(self) -> None:
+        while True:
+            try:
+                now = datetime.now().astimezone()
+                next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
+                time.sleep(max(1.0, (next_midnight - now).total_seconds()))
+                if not self.config.get("daily_excel_report_enabled", True):
+                    continue
+                report_date = (datetime.now().astimezone().date() - timedelta(days=1)).isoformat()
+                try:
+                    self.sync_exchange_state()
+                except Exception as exc:
+                    self.event("warn", f"生成日报前同步交易记录失败：{exc}")
+                self.export_daily_realized_pnl_excel(report_date)
+            except Exception as exc:
+                self.event("error", f"每日 Excel 报表生成失败：{exc}")
+                time.sleep(60)
+
     def build_square_open_post(self, signal: Signal, record: dict[str, Any]) -> str:
         side = self.side_cn(signal.side)
+        side_view = "\u770b\u591a" if signal.side == "LONG" else "\u770b\u7a7a"
         analyzer_text = "-"
         if signal.analyzer_direction:
             analyzer_text = f"{signal.analyzer_direction} {signal.analyzer_confidence_pct:.1f}%"
-        lines = [
-            f"模拟盘开仓记录：${signal.symbol} {side}",
-            f"开仓价：{price_text(signal.price)}",
-            f"保证金：{fnum(record.get('margin_usdt')):.2f} USDT，杠杆：{int(fnum(record.get('leverage'), float(self.config.get('leverage', 3))))}x",
-            f"名义价值：{fnum(record.get('notional_usdt')):.2f} USDT",
-            f"止盈触发价：{record.get('take_profit', '-')}",
-            f"止损触发价：{record.get('stop_price', '-')}",
-            f"系统分：{signal.score:.2f}，二次确认：{analyzer_text}",
-            f"触发理由：{signal.trigger_reason}",
-        ]
-        if signal.analyzer_reason:
-            lines.append(f"确认理由：{signal.analyzer_reason}")
+        quality_text = "-"
+        if signal.entry_quality_label:
+            quality_text = f"{signal.entry_quality_label} {signal.entry_quality_score:.1f}"
+        tier_label = {
+            "excellent": "\u9ad8\u8d28\u91cf\u4fe1\u53f7\uff0c\u6309\u5f3a\u5316\u4ed3\u5904\u7406",
+            "strong": "\u5f3a\u4fe1\u53f7\uff0c\u7565\u5fae\u52a0\u4ed3\u5904\u7406",
+            "standard": "\u8d28\u91cf\u8fbe\u6807\uff0c\u6309\u6807\u51c6\u4ed3\u5904\u7406",
+            "low": "\u8fb9\u7f18\u4fe1\u53f7\uff0c\u8f7b\u4ed3\u8bd5\u63a2",
+            "fixed": "\u56fa\u5b9a\u4ed3\u4f4d\u6267\u884c",
+        }.get(str(record.get("sizing_tier") or ""), "")
+        entry = price_text(signal.price)
+        take_profit = str(record.get("take_profit", "-"))
+        stop_price = str(record.get("stop_price", "-"))
+        reason = str(signal.trigger_reason or "-").strip()
+        confirm = str(signal.analyzer_reason or "").strip()
         disclaimer = str(self.config.get("square_publish_disclaimer", "")).strip()
+        square_symbol = signal.symbol
+        quote_asset = str(self.config.get("quote_asset", "USDT")).upper()
+        if square_symbol.upper().endswith(quote_asset):
+            square_symbol = square_symbol[: -len(quote_asset)]
+        seed = f"{record.get('entry_order_id') or ''}-{signal.symbol}-{record.get('time') or iso_now()}"
+        template_index = int(hashlib.sha256(seed.encode("utf-8")).hexdigest(), 16) % 5
+        templates = [
+            [
+                f"${square_symbol} \u8fd9\u6ce2\u6211\u504f{side_view}\uff0c\u5148\u8bb0\u5f55\u4e00\u7b14{side}\u5355\u3002",
+                f"\u5165\u573a\uff1a{entry}\uff5c\u6b62\u76c8\uff1a{take_profit}\uff5c\u6b62\u635f\uff1a{stop_price}",
+                f"\u4fe1\u53f7\uff1a\u7cfb\u7edf\u5206 {signal.score:.2f}\uff5c\u5165\u573a\u8d28\u91cf {quality_text}\uff5c\u4e8c\u6b21\u786e\u8ba4 {analyzer_text}",
+                f"\u7406\u7531\uff1a{reason}",
+            ],
+            [
+                f"${square_symbol} \u8fd9\u91cc\u5f00\u59cb\u6709\u70b9\u610f\u601d\u4e86\uff0c\u6211\u73b0\u5728\u504f{side_view}\u3002",
+                f"\u8fd9\u5355\u770b\u7684\u662f\u77ed\u7ebf\u5ef6\u7eed\uff0c\u5165\u573a {entry}\uff0c\u9632\u5b88 {stop_price}\uff0c\u76ee\u6807\u5148\u770b {take_profit}\u3002",
+                f"\u7cfb\u7edf\u5206 {signal.score:.2f}\uff0c\u5165\u573a\u8d28\u91cf {quality_text}\uff0c\u4e8c\u6b21\u786e\u8ba4 {analyzer_text}\u3002",
+                f"\u89e6\u53d1\u70b9\uff1a{reason}",
+            ],
+            [
+                f"${square_symbol} \u5f53\u524d{side_view}\u7ed3\u6784\u6bd4\u8f83\u987a\uff0c\u8bb0\u5f55\u4e00\u7b14{side}\u5355\u3002",
+                f"\u5165\u573a\u8d28\u91cf\uff1a{quality_text}\uff5c\u7cfb\u7edf\u5206\uff1a{signal.score:.2f}\uff5c\u4e8c\u6b21\u786e\u8ba4\uff1a{analyzer_text}",
+                f"\u70b9\u4f4d\uff1a\u5165\u573a {entry}\uff0c\u6b62\u76c8 {take_profit}\uff0c\u6b62\u635f {stop_price}",
+                f"\u4e3b\u8981\u903b\u8f91\uff1a{reason}",
+            ],
+            [
+                f"${square_symbol} \u6ce2\u52a8\u8d77\u6765\u4e86\uff0c\u8fd9\u79cd\u7968\u6211\u53ea\u770b\u8282\u594f\uff0c\u4e0d\u604b\u6218\u3002",
+                f"\u65b9\u5411\uff1a{side_view}\uff5c\u5165\u573a\uff1a{entry}\uff5c\u6b62\u76c8\uff1a{take_profit}\uff5c\u6b62\u635f\uff1a{stop_price}",
+                f"\u4fe1\u53f7\u5171\u632f\uff1a\u7cfb\u7edf\u5206 {signal.score:.2f}\uff0c\u8d28\u91cf {quality_text}\uff0c\u786e\u8ba4 {analyzer_text}",
+                f"\u5982\u679c\u653e\u91cf\u4e0d\u80fd\u5ef6\u7eed\uff0c\u5c31\u6309\u6b62\u635f\u7eaa\u5f8b\u5904\u7406\u3002",
+            ],
+            [
+                f"${square_symbol} \u7ed9\u5230\u4e00\u7b14{side}\u673a\u4f1a\uff0c\u6211\u5148\u8ddf\u968f\u4fe1\u53f7\u8bb0\u5f55\u3002",
+                f"\u5165\u573a {entry}\uff0c\u6b62\u76c8 {take_profit}\uff0c\u6b62\u635f {stop_price}\u3002",
+                f"\u4f9d\u636e\uff1a{reason}\uff1b\u4e8c\u6b21\u786e\u8ba4 {analyzer_text}\u3002",
+            ],
+        ]
+        lines = templates[template_index]
+        if tier_label:
+            lines.append(f"\u4ed3\u4f4d\u8ba1\u5212\uff1a{tier_label}")
+        if confirm:
+            lines.append(f"\u786e\u8ba4\uff1a{confirm}")
         if disclaimer:
             lines.append(disclaimer)
         return "\n".join(lines)
@@ -717,31 +890,36 @@ class PaperBot:
         api_key = os.environ.get("BINANCE_SQUARE_OPENAPI_KEY", "").strip()
         if not api_key:
             raise RuntimeError("未配置 BINANCE_SQUARE_OPENAPI_KEY")
-        script = SQUARE_POST_SKILL_DIR / "scripts" / "post-text.mjs"
-        if not script.exists():
-            raise RuntimeError(f"未找到 Binance Square 发文脚本：{script}")
-        env = os.environ.copy()
-        env["BINANCE_SQUARE_OPENAPI_KEY"] = api_key
-        completed = subprocess.run(
-            ["node", str(script), "--text", text],
-            cwd=str(SQUARE_POST_SKILL_DIR),
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=25,
-            check=False,
+        payload = {"contentType": 1, "bodyTextOnly": text}
+        raw_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add",
+            data=raw_body,
+            method="POST",
+            headers={
+                "X-Square-OpenAPI-Key": api_key,
+                "Content-Type": "application/json",
+                "clienttype": "binanceSkill",
+            },
         )
-        output = "\n".join(part.strip() for part in [completed.stdout, completed.stderr] if part.strip())
-        if completed.returncode != 0:
-            raise RuntimeError(output or f"Binance Square 发文脚本退出码 {completed.returncode}")
-        post_id = ""
-        link = ""
-        for line in completed.stdout.splitlines():
-            if line.startswith("ID:"):
-                post_id = line.split(":", 1)[1].strip()
-            elif line.startswith("Link:"):
-                link = line.split(":", 1)[1].strip()
-        return {"ok": True, "id": post_id, "link": link, "output": output}
+        try:
+            with urllib.request.urlopen(request, timeout=25) as response:
+                response_text = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            response_text = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 504:
+                return {"ok": True, "id": "unavailable", "link": "unavailable", "output": "Square returned 504 after submission"}
+            raise RuntimeError(f"Binance Square HTTP {exc.code}: {response_text}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"Binance Square 请求失败：{exc}") from exc
+        try:
+            data = json.loads(response_text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Binance Square 返回非 JSON：{response_text[:300]}") from exc
+        if data.get("code") != "000000":
+            raise RuntimeError(f"Binance Square API error [{data.get('code')}]: {data.get('message')}")
+        result = data.get("data") or {}
+        return {"ok": True, "id": result.get("id") or "", "link": result.get("shareLink") or "", "output": response_text}
 
     def record_square_publish_result(self, entry_order_id: Any, payload: dict[str, Any]) -> None:
         entry_id = str(entry_order_id or "")
