@@ -203,7 +203,13 @@ function render(payload) {
 
   for (const [key, value] of Object.entries(config)) {
     const input = els.form.elements[key];
-    if (input && document.activeElement !== input) input.value = Array.isArray(value) ? value.join(", ") : value;
+    if (input && document.activeElement !== input) {
+      if (input.type === "checkbox") {
+        input.checked = Boolean(value);
+      } else {
+        input.value = Array.isArray(value) ? value.join(", ") : value;
+      }
+    }
   }
 
   renderCandidates(state.candidates || []);
@@ -735,6 +741,9 @@ els.form.addEventListener("submit", async (event) => {
   event.preventDefault();
   await runAction(els.form.querySelector("button[type='submit']"), "正在保存参数...", "参数已保存", async () => {
     const data = Object.fromEntries(new FormData(els.form).entries());
+    for (const input of els.form.querySelectorAll("input[type='checkbox']")) {
+      data[input.name] = input.checked ? "true" : "false";
+    }
     currentState = await api("/api/settings", {
       method: "POST",
       body: JSON.stringify(data),

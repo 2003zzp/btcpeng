@@ -17,6 +17,7 @@ import math
 import mimetypes
 import os
 import random
+import subprocess
 import threading
 import time
 import urllib.error
@@ -39,6 +40,7 @@ SIGNAL_REVIEW_STATE_PATH = ROOT / "data" / "signal_review_state.json"
 FAST_CONFIRM_PATH = ROOT / "fast_signal_confirmer.py"
 FAST_CONFIRM_MODULE: Any | None = None
 FAST_CONFIRM_SOURCE = "fast_signal_confirmer_v2"
+SQUARE_POST_SKILL_DIR = Path(os.environ.get("BINANCE_SQUARE_SKILL_DIR", r"C:\Users\Administrator\.codex\skills\square-post"))
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -67,15 +69,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_new_positions_per_scan": 2,
     "margin_per_trade_usdt": 9.0,
     "leverage": 3,
-    "max_open_positions": 10,
+    "max_open_positions": 15,
     "max_exposure_pct": 65.0,
-    "max_daily_loss_enabled": False,
+    "max_daily_profit_enabled": True,
+    "max_daily_profit_usdt": 30.0,
+    "max_daily_loss_enabled": True,
     "max_daily_loss_usdt": 20.0,
     "stop_loss_cooldown_enabled": True,
     "stop_loss_cooldown_minutes": 60,
     "take_profit_roi_pct": 90.0,
     "stop_loss_roi_pct": 86.0,
     "telegram_enabled": True,
+    "square_publish_enabled": True,
+    "square_publish_on_open": True,
+    "square_publish_disclaimer": "仅为 Binance Futures Testnet 模拟盘记录，不构成投资建议。",
     "exclude_symbols": ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "USDPUSDT", "EURUSDT"],
     "blocked_symbols": [],
     "manual_watchlist": [],
@@ -383,6 +390,12 @@ class PaperBot:
         state.setdefault("positions", [])
         state.setdefault("exchange_open_positions", [])
         state.setdefault("reconciled_close_ids", [])
+        if "telegram_close_notified_ids" not in state:
+            state["telegram_close_notified_ids"] = [
+                str(item.get("id", ""))
+                for item in state.get("trade_history", [])
+                if item.get("closed_at") and item.get("id")
+            ][:1000]
         if self.config.get("execution_mode") == "binance_futures_testnet":
             state["positions"] = []
         state.setdefault("candidates", [])
@@ -598,6 +611,141 @@ class PaperBot:
         )
         self.send_telegram_message(message)
 
+    def notify_close_position(self, trade: dict[str, Any]) -> None:
+        side = self.side_cn(str(trade.get("side", "")))
+        pnl = fnum(trade.get("pnl_usdt"))
+        message = "\n".join(
+            [
+                "Binance Testnet 平仓完成",
+                f"币种：{trade.get('symbol', '-')} {side}",
+                f"平仓原因：{trade.get('close_reason', '-')}",
+                f"开仓价：{price_text(fnum(trade.get('entry_price')))}",
+                f"平仓价：{price_text(fnum(trade.get('exit_price')))}",
+                f"数量：{trade.get('quantity', '-')}",
+                f"保证金：{fnum(trade.get('margin_usdt')):.2f} U",
+                f"已实现盈亏：{pnl:+.2f} U",
+                f"ROI：{fnum(trade.get('roi_pct')):+.2f}%",
+                f"开仓理由：{trade.get('trigger_reason', '-')}",
+                f"时间：{trade.get('closed_at') or iso_now()}",
+            ]
+        )
+        self.send_telegram_message(message)
+
+    def notify_new_closed_trades(self, trades: list[dict[str, Any]]) -> None:
+        if not trades:
+            return
+        notified = [str(item) for item in self.state.get("telegram_close_notified_ids", []) if str(item)]
+        notified_set = set(notified)
+        added = []
+        for trade in sorted(trades, key=lambda item: str(item.get("closed_at", ""))):
+            trade_id = str(trade.get("id", ""))
+            if not trade_id or trade_id in notified_set:
+                continue
+            self.notify_close_position(trade)
+            notified_set.add(trade_id)
+            added.append(trade_id)
+        if added:
+            self.state["telegram_close_notified_ids"] = list(dict.fromkeys([*added, *notified]))[:1000]
+
+    def build_square_open_post(self, signal: Signal, record: dict[str, Any]) -> str:
+        side = self.side_cn(signal.side)
+        analyzer_text = "-"
+        if signal.analyzer_direction:
+            analyzer_text = f"{signal.analyzer_direction} {signal.analyzer_confidence_pct:.1f}%"
+        lines = [
+            f"模拟盘开仓记录：${signal.symbol} {side}",
+            f"开仓价：{price_text(signal.price)}",
+            f"保证金：{fnum(record.get('margin_usdt')):.2f} USDT，杠杆：{int(float(self.config.get('leverage', 3)))}x",
+            f"名义价值：{fnum(record.get('notional_usdt')):.2f} USDT",
+            f"止盈触发价：{record.get('take_profit', '-')}",
+            f"止损触发价：{record.get('stop_price', '-')}",
+            f"系统分：{signal.score:.2f}，二次确认：{analyzer_text}",
+            f"触发理由：{signal.trigger_reason}",
+        ]
+        if signal.analyzer_reason:
+            lines.append(f"确认理由：{signal.analyzer_reason}")
+        disclaimer = str(self.config.get("square_publish_disclaimer", "")).strip()
+        if disclaimer:
+            lines.append(disclaimer)
+        return "\n".join(lines)
+
+    def publish_square_text(self, text: str) -> dict[str, Any]:
+        if not self.config.get("square_publish_enabled", True):
+            return {"ok": False, "skipped": True, "error": "Binance Square 自动发布未启用"}
+        api_key = os.environ.get("BINANCE_SQUARE_OPENAPI_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("未配置 BINANCE_SQUARE_OPENAPI_KEY")
+        script = SQUARE_POST_SKILL_DIR / "scripts" / "post-text.mjs"
+        if not script.exists():
+            raise RuntimeError(f"未找到 Binance Square 发文脚本：{script}")
+        env = os.environ.copy()
+        env["BINANCE_SQUARE_OPENAPI_KEY"] = api_key
+        completed = subprocess.run(
+            ["node", str(script), "--text", text],
+            cwd=str(SQUARE_POST_SKILL_DIR),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=25,
+            check=False,
+        )
+        output = "\n".join(part.strip() for part in [completed.stdout, completed.stderr] if part.strip())
+        if completed.returncode != 0:
+            raise RuntimeError(output or f"Binance Square 发文脚本退出码 {completed.returncode}")
+        post_id = ""
+        link = ""
+        for line in completed.stdout.splitlines():
+            if line.startswith("ID:"):
+                post_id = line.split(":", 1)[1].strip()
+            elif line.startswith("Link:"):
+                link = line.split(":", 1)[1].strip()
+        return {"ok": True, "id": post_id, "link": link, "output": output}
+
+    def record_square_publish_result(self, entry_order_id: Any, payload: dict[str, Any]) -> None:
+        entry_id = str(entry_order_id or "")
+        if not entry_id:
+            return
+        with self.lock:
+            for item in self.state.get("open_order_history", []):
+                if str(item.get("entry_order_id") or "") == entry_id:
+                    item.update(payload)
+                    break
+            self.persist()
+
+    def publish_square_open_position_async(self, signal: Signal, record: dict[str, Any]) -> None:
+        if not self.config.get("square_publish_enabled", True) or not self.config.get("square_publish_on_open", True):
+            return
+        entry_order_id = record.get("entry_order_id")
+        text = self.build_square_open_post(signal, record)
+        record["square_post_status"] = "pending"
+        record["square_post_text"] = text
+        self.record_square_publish_result(entry_order_id, {"square_post_status": "pending", "square_post_text": text})
+
+        def worker() -> None:
+            try:
+                result = self.publish_square_text(text)
+                payload = {
+                    "square_post_status": "posted",
+                    "square_post_id": result.get("id") or "",
+                    "square_post_link": result.get("link") or "",
+                    "square_post_error": "",
+                }
+                record.update(payload)
+                self.record_square_publish_result(entry_order_id, payload)
+                link_text = f"：{payload['square_post_link']}" if payload.get("square_post_link") and payload.get("square_post_link") != "unavailable" else ""
+                with self.lock:
+                    self.event("info", f"{signal.symbol} 开仓信息已发布到 Binance Square{link_text}")
+                    self.persist()
+            except Exception as exc:
+                payload = {"square_post_status": "failed", "square_post_error": str(exc)}
+                record.update(payload)
+                self.record_square_publish_result(entry_order_id, payload)
+                with self.lock:
+                    self.event("warn", f"{signal.symbol} Binance Square 自动发布失败：{exc}")
+                    self.persist()
+
+        threading.Thread(target=worker, name=f"square-post-{signal.symbol}", daemon=True).start()
+
     def start(self) -> None:
         with self.lock:
             if self.state.get("running"):
@@ -685,6 +833,7 @@ class PaperBot:
             self.state["events"] = []
             self.state["analyzer_cache"] = {}
             self.state["reconciled_close_ids"] = []
+            self.state["telegram_close_notified_ids"] = []
             self.state["last_error"] = ""
             self.analyzer_cache.clear()
             self.analyzer_inflight.clear()
@@ -701,18 +850,27 @@ class PaperBot:
             "scan_interval_sec": int,
             "max_open_positions": int,
             "max_exposure_pct": float,
+            "max_daily_profit_enabled": str,
+            "max_daily_profit_usdt": float,
+            "max_daily_loss_enabled": str,
             "max_daily_loss_usdt": float,
             "signal_score_threshold": float,
             "analyzer_min_confidence_pct": float,
             "max_new_positions_per_scan": int,
             "trade_direction_mode": str,
             "blocked_symbols": str,
+            "square_publish_enabled": str,
+            "square_publish_on_open": str,
         }
         with self.lock:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                value = caster(patch[key])
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled"}:
+                    raw_value = str(patch[key]).strip().lower()
+                    value = raw_value in {"1", "true", "yes", "on"}
+                else:
+                    value = caster(patch[key])
                 if key == "trade_direction_mode":
                     value = str(value)
                     if value not in {"both", "long_only", "short_only"}:
@@ -728,6 +886,7 @@ class PaperBot:
                     "signal_score_threshold",
                     "analyzer_min_confidence_pct",
                     "max_exposure_pct",
+                    "max_daily_profit_usdt",
                     "max_daily_loss_usdt",
                 }:
                     value = max(0.01, float(value))
@@ -924,6 +1083,7 @@ class PaperBot:
         realized_history = self.fetch_realized_pnl_history(open_history)
         available_balance = self.get_available_balance()
         with self.lock:
+            self.notify_new_closed_trades(realized_history)
             self.state["trade_history"] = realized_history[:200]
             self.state["positions"] = positions
             self.state["exchange_open_positions"] = positions
@@ -1112,6 +1272,7 @@ class PaperBot:
         }
         self.state.setdefault("trade_history", []).insert(0, row)
         self.mark_signal_review_closed(pos, row)
+        self.notify_new_closed_trades([row])
         self.state["trade_history"] = self.state["trade_history"][:200]
         reconciled = list(dict.fromkeys([close_id, *[str(item) for item in self.state.get("reconciled_close_ids", [])]]))
         self.state["reconciled_close_ids"] = reconciled[:500]
@@ -1814,24 +1975,23 @@ class PaperBot:
             self.state["take_profit_count"] = int(self.state.get("take_profit_count", 0)) + 1
         elif "止损" in reason:
             self.state["stop_loss_count"] = int(self.state.get("stop_loss_count", 0)) + 1
-        self.state.setdefault("trade_history", []).insert(
-            0,
-            {
-                "id": pos.get("id"),
-                "symbol": pos.get("symbol"),
-                "side": pos.get("side"),
-                "entry_price": fnum(pos.get("entry_price")),
-                "exit_price": price,
-                "quantity": fnum(pos.get("quantity")),
-                "margin_usdt": fnum(pos.get("margin_usdt")),
-                "pnl_usdt": pnl,
-                "roi_pct": fnum(pos.get("roi_pct")),
-                "opened_at": pos.get("opened_at"),
-                "closed_at": iso_now(),
-                "close_reason": reason,
-                "trigger_reason": pos.get("trigger_reason"),
-            },
-        )
+        row = {
+            "id": pos.get("id"),
+            "symbol": pos.get("symbol"),
+            "side": pos.get("side"),
+            "entry_price": fnum(pos.get("entry_price")),
+            "exit_price": price,
+            "quantity": fnum(pos.get("quantity")),
+            "margin_usdt": fnum(pos.get("margin_usdt")),
+            "pnl_usdt": pnl,
+            "roi_pct": fnum(pos.get("roi_pct")),
+            "opened_at": pos.get("opened_at"),
+            "closed_at": iso_now(),
+            "close_reason": reason,
+            "trigger_reason": pos.get("trigger_reason"),
+        }
+        self.state.setdefault("trade_history", []).insert(0, row)
+        self.notify_new_closed_trades([row])
         self.state["trade_history"] = self.state["trade_history"][:200]
         self.event("trade", f"{pos['symbol']} {self.side_cn(pos['side'])} {reason}，PnL {pnl:+.2f} U")
 
@@ -1865,6 +2025,13 @@ class PaperBot:
         max_open = int(self.config.get("max_open_positions", 8))
         capacity = max(0, max_open - open_count)
         if capacity <= 0:
+            return 0
+        daily_pnl = self.daily_realized_pnl()
+        if self.config.get("max_daily_profit_enabled", True) and daily_pnl >= float(self.config.get("max_daily_profit_usdt", 30.0)):
+            self.event("risk", f"今日已实现盈利 {daily_pnl:+.2f} U，达到盈利停止开单阈值，本轮不再开新仓")
+            return 0
+        if self.config.get("max_daily_loss_enabled", True) and daily_pnl <= -float(self.config.get("max_daily_loss_usdt", 20.0)):
+            self.event("risk", f"今日已实现盈亏 {daily_pnl:+.2f} U，达到亏损停止开单阈值，本轮不再开新仓")
             return 0
         if self.config.get("max_daily_loss_enabled", False) and self.daily_realized_pnl() <= -float(self.config.get("max_daily_loss_usdt", 20.0)):
             self.event("risk", "已触发单日最大亏损限制，本轮不再开新仓")
@@ -1938,6 +2105,7 @@ class PaperBot:
                     f"Binance Testnet 开仓 {signal.symbol} {self.side_cn(signal.side)}，保证金 {record['margin_usdt']:.2f} U",
                 )
                 self.notify_open_position(signal, record)
+                self.publish_square_open_position_async(signal, record)
                 opened += 1
         return opened
 
