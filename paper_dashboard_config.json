@@ -14,8 +14,16 @@
     "EURUSDT"
   ],
   "execution_mode": "binance_futures_testnet",
+  "live_trading_enabled": false,
   "futures_testnet": {
     "base_url": "https://testnet.binancefuture.com",
+    "margin_type": "ISOLATED",
+    "quantity_safety_factor": 0.98,
+    "recv_window": 5000,
+    "working_type": "MARK_PRICE"
+  },
+  "futures_live": {
+    "base_url": "https://fapi.binance.com",
     "margin_type": "ISOLATED",
     "quantity_safety_factor": 0.98,
     "recv_window": 5000,

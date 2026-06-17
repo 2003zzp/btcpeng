@@ -58,6 +58,25 @@ function showToast(message, type = "info") {
   }, type === "error" ? 5200 : 3200);
 }
 
+function normalizeLiveTradingToggle() {
+  const input = els.form?.elements?.live_trading_enabled;
+  const label = input?.closest("label");
+  if (!input || !label) return;
+  label.classList.add("settings-check", "live-toggle");
+  for (const node of [...label.childNodes]) {
+    if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
+      node.textContent = "";
+    }
+  }
+  let text = label.querySelector("span");
+  if (!text) {
+    text = document.createElement("span");
+    label.appendChild(text);
+  }
+  text.textContent = "启动实盘交易";
+  label.title = "默认关闭。开启后会使用 BINANCE_LIVE_API_KEY 在币安实盘合约账户真实下单。";
+}
+
 async function runAction(button, pendingText, successText, fn) {
   const originalText = button ? button.innerHTML : "";
   try {
@@ -158,6 +177,7 @@ async function api(path, options = {}) {
 async function refresh() {
   try {
     currentState = await api("/api/state");
+    normalizeLiveTradingToggle();
     render(currentState);
   } catch (error) {
     els.scanText.textContent = "连接服务失败";
@@ -744,10 +764,15 @@ els.form.addEventListener("submit", async (event) => {
     for (const input of els.form.querySelectorAll("input[type='checkbox']")) {
       data[input.name] = input.checked ? "true" : "false";
     }
+    if (data.live_trading_enabled === "true" && !currentState?.config?.live_trading_enabled) {
+      const ok = window.confirm("确认启动实盘交易？开启后机器人会使用 BINANCE_LIVE_API_KEY 在币安实盘合约账户真实下单。");
+      if (!ok) return currentState;
+    }
     currentState = await api("/api/settings", {
       method: "POST",
       body: JSON.stringify(data),
     });
+    normalizeLiveTradingToggle();
     render(currentState);
     return currentState;
   });

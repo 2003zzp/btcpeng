@@ -868,6 +868,27 @@ main {
   line-height: 1.35;
 }
 
+label:has(input[name="live_trading_enabled"]) {
+  grid-column: span 2;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 86, 118, 0.62);
+  border-radius: 8px;
+  background: rgba(80, 10, 26, 0.52);
+  color: #ffd5df;
+}
+
+label:has(input[name="live_trading_enabled"]) input {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: #ff5676;
+}
+
 label {
   color: #c1d2ee;
   font-size: 14px;

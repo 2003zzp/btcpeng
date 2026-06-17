@@ -46,6 +46,7 @@ SQUARE_POST_SKILL_DIR = Path(os.environ.get("BINANCE_SQUARE_SKILL_DIR", r"C:\Use
 DEFAULT_CONFIG: dict[str, Any] = {
     "initial_equity_usdt": 100.0,
     "execution_mode": "binance_futures_testnet",
+    "live_trading_enabled": False,
     "scan_interval_sec": 20,
     "market_base_url": "https://fapi.binance.com",
     "request_timeout_sec": 6,
@@ -88,6 +89,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "manual_watchlist": [],
     "futures_testnet": {
         "base_url": "https://testnet.binancefuture.com",
+        "recv_window": 5000,
+        "margin_type": "ISOLATED",
+        "working_type": "MARK_PRICE",
+        "quantity_safety_factor": 0.98,
+    },
+    "futures_live": {
+        "base_url": "https://fapi.binance.com",
         "recv_window": 5000,
         "margin_type": "ISOLATED",
         "working_type": "MARK_PRICE",
@@ -379,7 +387,7 @@ class PaperBot:
         state.setdefault("last_scan_finished_at", None)
         state.setdefault("last_scan_duration_sec", 0.0)
         state.setdefault("scan_count", 0)
-        state["mode"] = self.config.get("execution_mode", "binance_futures_testnet")
+        state["mode"] = self.exchange_mode()
         state.setdefault("market_source", "unknown")
         state.setdefault("exchange_status", "unknown")
         state.setdefault("realized_pnl_usdt", 0.0)
@@ -396,7 +404,7 @@ class PaperBot:
                 for item in state.get("trade_history", [])
                 if item.get("closed_at") and item.get("id")
             ][:1000]
-        if self.config.get("execution_mode") == "binance_futures_testnet":
+        if self.exchange_mode() in {"binance_futures_testnet", "binance_futures_live"}:
             state["positions"] = []
         state.setdefault("candidates", [])
         state.setdefault("trade_history", [])
@@ -429,6 +437,28 @@ class PaperBot:
     def event(self, level: str, message: str) -> None:
         self.state.setdefault("events", []).insert(0, {"time": iso_now(), "level": level, "message": message})
         self.state["events"] = self.state["events"][:80]
+
+    def is_live_trading(self) -> bool:
+        return bool(self.config.get("live_trading_enabled", False))
+
+    def exchange_mode(self) -> str:
+        return "binance_futures_live" if self.is_live_trading() else "binance_futures_testnet"
+
+    def exchange_label(self) -> str:
+        return "Binance Futures 实盘" if self.is_live_trading() else "Binance Futures Testnet"
+
+    def exchange_record_prefix(self) -> str:
+        return "Binance Live" if self.is_live_trading() else "Binance Testnet"
+
+    def exchange_config(self) -> dict[str, Any]:
+        key = "futures_live" if self.is_live_trading() else "futures_testnet"
+        return self.config.get(key, {})
+
+    def record_belongs_to_current_exchange(self, record: dict[str, Any]) -> bool:
+        mode = str(record.get("execution_mode", ""))
+        if mode:
+            return mode == self.exchange_mode()
+        return not self.is_live_trading()
 
     def load_signal_review_state(self) -> dict[str, Any]:
         return load_json(SIGNAL_REVIEW_STATE_PATH, {"signals": {}, "open_orders": {}})
@@ -751,9 +781,10 @@ class PaperBot:
             if self.state.get("running"):
                 return
             self.state["running"] = True
+            self.state["mode"] = self.exchange_mode()
             self.state["started_at"] = self.state.get("started_at") or iso_now()
             self.stop_event.clear()
-            self.event("info", "机器人已启动，当前执行层为 Binance Futures Testnet")
+            self.event("info", f"机器人已启动，当前执行层为 {self.exchange_label()}")
             self.persist()
             self.thread = threading.Thread(target=self.run_loop, name="paper-dashboard-bot", daemon=True)
             self.thread.start()
@@ -859,6 +890,7 @@ class PaperBot:
             "max_new_positions_per_scan": int,
             "trade_direction_mode": str,
             "blocked_symbols": str,
+            "live_trading_enabled": str,
             "square_publish_enabled": str,
             "square_publish_on_open": str,
         }
@@ -866,7 +898,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -892,6 +924,7 @@ class PaperBot:
                     value = max(0.01, float(value))
                 self.config[key] = value
             save_json(self.config_path, self.config)
+            self.state["mode"] = self.exchange_mode()
             self.event("info", "参数已保存")
             self.persist()
             return self.snapshot()
@@ -979,11 +1012,17 @@ class PaperBot:
         return result
 
     def signed_exchange_request(self, method: str, path: str, params: dict[str, Any] | None = None) -> Any:
-        api_key = os.environ.get("BINANCE_API_KEY", "").strip()
-        api_secret = os.environ.get("BINANCE_API_SECRET", "").strip()
+        if self.is_live_trading():
+            api_key = os.environ.get("BINANCE_LIVE_API_KEY", "").strip()
+            api_secret = os.environ.get("BINANCE_LIVE_API_SECRET", "").strip()
+            key_hint = "BINANCE_LIVE_API_KEY 或 BINANCE_LIVE_API_SECRET"
+        else:
+            api_key = os.environ.get("BINANCE_API_KEY", "").strip()
+            api_secret = os.environ.get("BINANCE_API_SECRET", "").strip()
+            key_hint = "BINANCE_API_KEY 或 BINANCE_API_SECRET"
         if not api_key or not api_secret:
-            raise RuntimeError("缺少 BINANCE_API_KEY 或 BINANCE_API_SECRET，请在 .env 配置 Binance Futures Testnet key")
-        futures = self.config.get("futures_testnet", {})
+            raise RuntimeError(f"缺少 {key_hint}，请在 .env 配置 {self.exchange_label()} key")
+        futures = self.exchange_config()
         payload = dict(params or {})
         payload.setdefault("recvWindow", int(futures.get("recv_window", 5000)))
         payload["timestamp"] = int(time.time() * 1000)
@@ -993,7 +1032,7 @@ class PaperBot:
         signed["signature"] = signature
         return http_request_json(
             method,
-            futures.get("base_url", "https://testnet.binancefuture.com"),
+            futures.get("base_url", "https://fapi.binance.com" if self.is_live_trading() else "https://testnet.binancefuture.com"),
             path,
             signed,
             headers={"X-MBX-APIKEY": api_key},
@@ -1001,9 +1040,9 @@ class PaperBot:
         )
 
     def unsigned_exchange_request(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        futures = self.config.get("futures_testnet", {})
+        futures = self.exchange_config()
         return http_get_json(
-            futures.get("base_url", "https://testnet.binancefuture.com"),
+            futures.get("base_url", "https://fapi.binance.com" if self.is_live_trading() else "https://testnet.binancefuture.com"),
             path,
             params,
             timeout=float(self.config.get("request_timeout_sec", 6)),
@@ -1043,7 +1082,7 @@ class PaperBot:
     def sync_exchange_state(self) -> None:
         payload = self.signed_exchange_request("GET", "/fapi/v2/positionRisk")
         with self.lock:
-            open_history = list(self.state.get("open_order_history", []))
+            open_history = [item for item in self.state.get("open_order_history", []) if self.record_belongs_to_current_exchange(item)]
         positions = []
         for item in payload:
             amount = fnum(item.get("positionAmt"))
@@ -1151,7 +1190,8 @@ class PaperBot:
             open_record = self.find_open_record_for_income(item, open_history)
             reason = "Binance Testnet 止盈平仓" if pnl > 0 else "Binance Testnet 止损平仓"
             row = {
-                "id": f"income-{row_id}",
+                "id": f"{self.exchange_mode()}-income-{row_id}",
+                "execution_mode": self.exchange_mode(),
                 "symbol": symbol,
                 "side": open_record.get("side", ""),
                 "entry_price": fnum(open_record.get("entry_price")),
@@ -1250,6 +1290,7 @@ class PaperBot:
         closed_at = datetime.fromtimestamp(closed_at_ms / 1000, tz=timezone.utc).isoformat(timespec="seconds") if closed_at_ms > 0 else iso_now()
         row = {
             "id": close_id,
+            "execution_mode": self.exchange_mode(),
             "symbol": pos.get("symbol"),
             "side": pos.get("side"),
             "entry_price": fnum(pos.get("entry_price")),
@@ -1325,7 +1366,7 @@ class PaperBot:
         return "SELL" if signal_side == "LONG" else "BUY"
 
     def ensure_exchange_settings(self, symbol: str) -> None:
-        futures = self.config.get("futures_testnet", {})
+        futures = self.exchange_config()
         try:
             self.signed_exchange_request(
                 "POST",
@@ -1341,9 +1382,9 @@ class PaperBot:
         available = self.get_available_balance()
         margin = min(float(self.config.get("margin_per_trade_usdt", 9.0)), available)
         if margin <= 0:
-            raise RuntimeError("Binance Testnet 可用 USDT 余额不足")
+            raise RuntimeError(f"{self.exchange_label()} 可用 USDT 余额不足")
         leverage = float(self.config.get("leverage", 3))
-        futures = self.config.get("futures_testnet", {})
+        futures = self.exchange_config()
         notional = margin * leverage * float(futures.get("quantity_safety_factor", 0.98))
         if self.exposure_pct(extra_notional=notional) > float(self.config.get("max_exposure_pct", 65.0)):
             self.event("risk", "仓位敞口达到上限，本轮停止新增持仓")
@@ -1423,6 +1464,7 @@ class PaperBot:
 
         record = {
             "time": iso_now(),
+            "execution_mode": self.exchange_mode(),
             "symbol": signal.symbol,
             "side": signal.side,
             "entry_order_id": entry_order.get("orderId"),
@@ -1443,7 +1485,7 @@ class PaperBot:
             "decision_steps": list(signal.decision_steps),
             "signal_review_id": self.signal_review_id(int(self.state.get("scan_count", 0)), signal.symbol),
         }
-        self.state.setdefault("open_order_history", []).insert(0, {**record, "close_reason": "Binance Testnet 开仓记录"})
+        self.state.setdefault("open_order_history", []).insert(0, {**record, "close_reason": f"{self.exchange_record_prefix()} 开仓记录"})
         self.state["open_order_history"] = self.state["open_order_history"][:500]
         return record
 
@@ -1977,6 +2019,7 @@ class PaperBot:
             self.state["stop_loss_count"] = int(self.state.get("stop_loss_count", 0)) + 1
         row = {
             "id": pos.get("id"),
+            "execution_mode": self.exchange_mode(),
             "symbol": pos.get("symbol"),
             "side": pos.get("side"),
             "entry_price": fnum(pos.get("entry_price")),
