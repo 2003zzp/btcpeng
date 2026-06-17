@@ -685,7 +685,7 @@ class PaperBot:
         lines = [
             f"模拟盘开仓记录：${signal.symbol} {side}",
             f"开仓价：{price_text(signal.price)}",
-            f"保证金：{fnum(record.get('margin_usdt')):.2f} USDT，杠杆：{int(float(self.config.get('leverage', 3)))}x",
+            f"保证金：{fnum(record.get('margin_usdt')):.2f} USDT，杠杆：{int(fnum(record.get('leverage'), float(self.config.get('leverage', 3))))}x",
             f"名义价值：{fnum(record.get('notional_usdt')):.2f} USDT",
             f"止盈触发价：{record.get('take_profit', '-')}",
             f"止损触发价：{record.get('stop_price', '-')}",
@@ -1365,7 +1365,7 @@ class PaperBot:
     def close_side(signal_side: str) -> str:
         return "SELL" if signal_side == "LONG" else "BUY"
 
-    def ensure_exchange_settings(self, symbol: str) -> None:
+    def ensure_exchange_settings(self, symbol: str) -> int:
         futures = self.exchange_config()
         try:
             self.signed_exchange_request(
@@ -1376,15 +1376,27 @@ class PaperBot:
         except RuntimeError as exc:
             if "No need to change margin type" not in str(exc):
                 raise
-        self.signed_exchange_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": int(self.config.get("leverage", 3))})
+        target_leverage = max(1, int(self.config.get("leverage", 3)))
+        last_error = ""
+        for leverage in range(target_leverage, 0, -1):
+            try:
+                self.signed_exchange_request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
+                if leverage != target_leverage:
+                    self.event("warn", f"{symbol} 不支持 {target_leverage}x 杠杆，已自动降到 {leverage}x")
+                return leverage
+            except RuntimeError as exc:
+                last_error = str(exc)
+                if "Leverage" not in last_error and "-4028" not in last_error:
+                    raise
+        raise RuntimeError(f"{symbol} 无法设置杠杆：{last_error}")
 
     def exchange_open_position(self, signal: Signal, symbol_info: dict[str, Any]) -> dict[str, Any] | None:
         available = self.get_available_balance()
         margin = min(float(self.config.get("margin_per_trade_usdt", 9.0)), available)
         if margin <= 0:
             raise RuntimeError(f"{self.exchange_label()} 可用 USDT 余额不足")
-        leverage = float(self.config.get("leverage", 3))
         futures = self.exchange_config()
+        leverage = float(self.ensure_exchange_settings(signal.symbol))
         notional = margin * leverage * float(futures.get("quantity_safety_factor", 0.98))
         if self.exposure_pct(extra_notional=notional) > float(self.config.get("max_exposure_pct", 65.0)):
             self.event("risk", "仓位敞口达到上限，本轮停止新增持仓")
@@ -1392,8 +1404,6 @@ class PaperBot:
         qty_text = self.round_quantity(symbol_info, notional / signal.price)
         if fnum(qty_text) <= 0:
             raise RuntimeError(f"{signal.symbol} 计算出的下单数量为 0")
-
-        self.ensure_exchange_settings(signal.symbol)
         entry_order = self.signed_exchange_request(
             "POST",
             "/fapi/v1/order",
@@ -1472,6 +1482,7 @@ class PaperBot:
             "take_profit_algo_id": take_order.get("algoId"),
             "quantity": qty_text,
             "margin_usdt": margin,
+            "leverage": leverage,
             "notional_usdt": notional,
             "stop_price": self.round_price(symbol_info, stop_price),
             "take_profit": self.round_price(symbol_info, take_profit),
