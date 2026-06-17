@@ -66,7 +66,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "analyzer_realtime_before_open": True,
     "analyzer_max_workers": 2,
     "max_candidates_per_scan": 18,
-    "max_kline_enriched_candidates": 0,
+    "max_kline_enriched_candidates": 8,
+    "entry_quality_enabled": True,
+    "entry_quality_min_score": 6.0,
+    "entry_quality_long_only": True,
     "max_new_positions_per_scan": 2,
     "margin_per_trade_usdt": 9.0,
     "leverage": 3,
@@ -125,6 +128,9 @@ class Signal:
     volume_4h_ratio: float
     taker_long_short_ratio: float
     oi_volume_ratio: float
+    entry_quality_score: float
+    entry_quality_label: str
+    entry_quality_reason: str
     risk_level: str
     analyzer_direction: str
     analyzer_confidence_pct: float
@@ -494,6 +500,9 @@ class PaperBot:
             "funding_rate_pct": signal.funding_rate_pct,
             "long_short_ratio": signal.long_short_ratio,
             "taker_long_short_ratio": signal.taker_long_short_ratio,
+            "entry_quality_score": signal.entry_quality_score,
+            "entry_quality_label": signal.entry_quality_label,
+            "entry_quality_reason": signal.entry_quality_reason,
             "risk_level": signal.risk_level,
             "analyzer_direction": signal.analyzer_direction,
             "analyzer_confidence_pct": signal.analyzer_confidence_pct,
@@ -885,6 +894,9 @@ class PaperBot:
             "max_daily_profit_usdt": float,
             "max_daily_loss_enabled": str,
             "max_daily_loss_usdt": float,
+            "entry_quality_enabled": str,
+            "entry_quality_min_score": float,
+            "entry_quality_long_only": str,
             "signal_score_threshold": float,
             "analyzer_min_confidence_pct": float,
             "max_new_positions_per_scan": int,
@@ -898,7 +910,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled", "entry_quality_enabled", "entry_quality_long_only"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -920,6 +932,7 @@ class PaperBot:
                     "max_exposure_pct",
                     "max_daily_profit_usdt",
                     "max_daily_loss_usdt",
+                    "entry_quality_min_score",
                 }:
                     value = max(0.01, float(value))
                 self.config[key] = value
@@ -1614,6 +1627,95 @@ class PaperBot:
             return "正常"
         return "注意"
 
+    def entry_quality(self, side: str, change_24h: float, change_4h: float, change_1h: float, short_move: float, volume_ratio: float, trend: str, stats: dict[str, float], enriched: bool) -> dict[str, Any]:
+        score = 5.0
+        reasons: list[str] = []
+        if not self.config.get("entry_quality_enabled", True):
+            return {"score": 10.0, "label": "关闭", "reason": "入场质量过滤未启用"}
+        if self.config.get("entry_quality_long_only", True) and side != "LONG":
+            return {"score": 10.0, "label": "跳过", "reason": "入场质量过滤仅作用于做多"}
+        if not enriched:
+            score -= 2.0
+            reasons.append("未取得真实短线K线")
+        if trend == "up":
+            score += 1.2
+            reasons.append("短线趋势向上")
+        else:
+            score -= 1.6
+            reasons.append("短线趋势不顺")
+        if 0.35 <= short_move <= 4.5:
+            score += 1.4
+            reasons.append(f"15m涨幅健康 {short_move:+.2f}%")
+        elif short_move > 4.5:
+            score -= 1.6
+            reasons.append(f"15m拉升过快 {short_move:+.2f}%")
+        elif short_move < -0.4:
+            score -= 1.4
+            reasons.append(f"15m转弱 {short_move:+.2f}%")
+        if 0.5 <= change_1h <= 12:
+            score += 1.0
+            reasons.append(f"1h仍强 {change_1h:+.2f}%")
+        elif change_1h > 18:
+            score -= 1.4
+            reasons.append(f"1h过热 {change_1h:+.2f}%")
+        elif change_1h < 0:
+            score -= 1.0
+            reasons.append(f"1h转弱 {change_1h:+.2f}%")
+        if change_24h > 60:
+            score -= 1.8
+            reasons.append(f"24h涨幅过大 {change_24h:+.2f}%")
+        elif 7 <= change_24h <= 45:
+            score += 0.8
+            reasons.append(f"24h强势未极端 {change_24h:+.2f}%")
+        if 1.2 <= volume_ratio <= 5.5:
+            score += 1.0
+            reasons.append(f"放量合理 {volume_ratio:.2f}x")
+        elif volume_ratio > 8:
+            score -= 1.0
+            reasons.append(f"短线量能过热 {volume_ratio:.2f}x")
+        funding = fnum(stats.get("funding_rate_pct"))
+        oi_1h = fnum(stats.get("open_interest_1h_pct"))
+        oi_24h = fnum(stats.get("open_interest_24h_pct"))
+        long_short = fnum(stats.get("long_short_ratio"), 1.0)
+        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
+        if funding > 0.08:
+            score -= 1.5
+            reasons.append(f"资金费率过热 {funding:+.3f}%")
+        elif funding > 0.04:
+            score -= 0.6
+            reasons.append(f"资金费率偏热 {funding:+.3f}%")
+        else:
+            score += 0.4
+            reasons.append("资金费率未极端")
+        if 1 <= oi_1h <= 18:
+            score += 0.8
+            reasons.append(f"OI温和增加 {oi_1h:+.2f}%")
+        elif oi_1h > 30 or oi_24h > 55:
+            score -= 1.3
+            reasons.append("OI增加过快")
+        if taker_ratio >= 1.08:
+            score += 0.7
+            reasons.append(f"主动买入偏强 {taker_ratio:.2f}")
+        elif taker_ratio < 0.92:
+            score -= 0.8
+            reasons.append(f"主动买入偏弱 {taker_ratio:.2f}")
+        if long_short > 2.6:
+            score -= 1.0
+            reasons.append(f"多空比拥挤 {long_short:.2f}")
+        elif 1.05 <= long_short <= 2.2:
+            score += 0.4
+            reasons.append(f"多空比可接受 {long_short:.2f}")
+        score = max(0.0, min(10.0, score))
+        if score >= 7.5:
+            label = "优秀"
+        elif score >= float(self.config.get("entry_quality_min_score", 6.0)):
+            label = "合格"
+        elif score >= 4.5:
+            label = "偏弱"
+        else:
+            label = "不合格"
+        return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:7])}
+
     def analyzer_confirmation(self, symbol: str) -> dict[str, Any]:
         if not self.config.get("analyzer_confirmation_enabled", True):
             return {"direction": "关闭", "confidence": 0.0, "reason": "分析器确认未启用"}
@@ -1773,12 +1875,14 @@ class PaperBot:
             change_4h = 0.0
             volume_ratio = 1.0
             trend = "neutral"
+            kline_enriched = False
             try:
                 if index >= enrich_limit:
                     raise RuntimeError("skip slow kline enrichment")
                 klines = self.fetch_klines(symbol)
                 closes = [fnum(k[4]) for k in klines]
                 volumes = [fnum(k[7]) for k in klines]
+                kline_enriched = bool(closes)
                 if len(closes) > 16:
                     short_move = pct(closes[-1], closes[-16])
                     change_1h = short_move
@@ -1819,6 +1923,27 @@ class PaperBot:
                 reject = self.direction_mode_reject_reason(side)
 
             priority = "高" if score >= 6 else "中" if score >= 4.5 else "低"
+            try:
+                if index >= max(6, enrich_limit):
+                    raise RuntimeError("skip slow derivatives enrichment")
+                market_stats = self.fetch_signal_market_stats(symbol, item)
+            except Exception:
+                market_stats = {
+                    "open_interest_usdt": volume * 0.22,
+                    "open_interest_24h_pct": change * 0.55,
+                    "open_interest_4h_pct": change_4h * 0.75,
+                    "open_interest_1h_pct": change_1h * 0.75,
+                    "funding_rate_pct": 0.0,
+                    "long_short_ratio": 1.0,
+                    "volume_4h_ratio": max(0.1, min(20.0, volume_ratio * 3.2)),
+                    "taker_long_short_ratio": 1.0,
+                    "oi_volume_ratio": 0.22,
+                }
+            quality = self.entry_quality(side, change, change_4h, change_1h, short_move, volume_ratio, trend, market_stats, kline_enriched)
+            if not reject and self.config.get("entry_quality_enabled", True):
+                min_quality = float(self.config.get("entry_quality_min_score", 6.0))
+                if fnum(quality.get("score")) < min_quality:
+                    reject = f"入场质量 {fnum(quality.get('score')):.1f} 低于 {min_quality:.1f}：{quality.get('reason')}"
             analyzer_direction = "未分析"
             analyzer_confidence = 0.0
             analyzer_reason = ""
@@ -1837,22 +1962,6 @@ class PaperBot:
                     analyzer_reason = str(exc)
                     if not original_reject:
                         reject = f"分析器确认失败：{exc}"
-            try:
-                if index >= max(6, enrich_limit):
-                    raise RuntimeError("skip slow derivatives enrichment")
-                market_stats = self.fetch_signal_market_stats(symbol, item)
-            except Exception:
-                market_stats = {
-                    "open_interest_usdt": volume * 0.22,
-                    "open_interest_24h_pct": change * 0.55,
-                    "open_interest_4h_pct": change_4h * 0.75,
-                    "open_interest_1h_pct": change_1h * 0.75,
-                    "funding_rate_pct": 0.0,
-                    "long_short_ratio": 1.0,
-                    "volume_4h_ratio": max(0.1, min(20.0, volume_ratio * 3.2)),
-                    "taker_long_short_ratio": 1.0,
-                    "oi_volume_ratio": 0.22,
-                }
             risk_level = self.classify_signal_risk(
                 score,
                 market_stats["funding_rate_pct"],
@@ -1872,6 +1981,7 @@ class PaperBot:
                 analyzer_confidence,
                 analyzer_reason,
             )
+            decision_steps.insert(-1, f"入场质量：{quality.get('label')} {fnum(quality.get('score')):.1f}，{quality.get('reason') or '-'}")
             signals.append(
                 Signal(
                     symbol=symbol,
@@ -1893,6 +2003,9 @@ class PaperBot:
                     volume_4h_ratio=round(market_stats["volume_4h_ratio"], 2),
                     taker_long_short_ratio=round(market_stats["taker_long_short_ratio"], 3),
                     oi_volume_ratio=round(market_stats["oi_volume_ratio"], 2),
+                    entry_quality_score=fnum(quality.get("score")),
+                    entry_quality_label=str(quality.get("label", "")),
+                    entry_quality_reason=str(quality.get("reason", "")),
                     risk_level=risk_level,
                     analyzer_direction=analyzer_direction,
                     analyzer_confidence_pct=round(analyzer_confidence, 1),
@@ -2100,6 +2213,14 @@ class PaperBot:
             if opened >= min(capacity, int(self.config.get("max_new_positions_per_scan", 2))):
                 break
             if signal.reject_reason or signal.price <= 0:
+                continue
+            quality_applies = self.config.get("entry_quality_enabled", True) and (
+                not self.config.get("entry_quality_long_only", True) or signal.side == "LONG"
+            )
+            if quality_applies and fnum(signal.entry_quality_score) < float(self.config.get("entry_quality_min_score", 6.0)):
+                quality_reason = f"入场质量 {signal.entry_quality_score:.1f} 未达标：{signal.entry_quality_reason}"
+                self.update_signal_decision(signal, quality_reason, f"开仓前复核：{quality_reason}")
+                self.event("risk", f"{signal.symbol} {quality_reason}，跳过开仓")
                 continue
             blocked_reason = self.blocked_symbol_reject_reason(signal.symbol)
             if blocked_reason:

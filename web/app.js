@@ -77,6 +77,28 @@ function normalizeLiveTradingToggle() {
   label.title = "默认关闭。开启后会使用 BINANCE_LIVE_API_KEY 在币安实盘合约账户真实下单。";
 }
 
+function normalizeSettingsLabels() {
+  normalizeLiveTradingToggle();
+  const qualityInput = els.form?.elements?.entry_quality_min_score;
+  const qualityLabel = qualityInput?.closest("label");
+  if (qualityLabel) {
+    for (const node of [...qualityLabel.childNodes]) {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) node.textContent = "入场质量阈值 ";
+    }
+  }
+  const qualityToggle = els.form?.elements?.entry_quality_enabled;
+  const toggleLabel = qualityToggle?.closest("label");
+  if (toggleLabel) {
+    toggleLabel.classList.add("settings-check");
+    let text = toggleLabel.querySelector("span");
+    if (!text) {
+      text = document.createElement("span");
+      toggleLabel.appendChild(text);
+    }
+    text.textContent = "启用入场质量过滤";
+  }
+}
+
 async function runAction(button, pendingText, successText, fn) {
   const originalText = button ? button.innerHTML : "";
   try {
@@ -177,7 +199,7 @@ async function api(path, options = {}) {
 async function refresh() {
   try {
     currentState = await api("/api/state");
-    normalizeLiveTradingToggle();
+    normalizeSettingsLabels();
     render(currentState);
   } catch (error) {
     els.scanText.textContent = "连接服务失败";
@@ -590,8 +612,15 @@ function renderCharts(rows) {
 
 function renderCandidates(rows) {
   if (!els.candidateRows) return;
+  const headRow = els.candidateRows.closest("table")?.querySelector("thead tr");
+  if (headRow && !headRow.querySelector("[data-entry-quality-head]")) {
+    const th = document.createElement("th");
+    th.dataset.entryQualityHead = "true";
+    th.textContent = "质量";
+    headRow.insertBefore(th, headRow.children[2] || null);
+  }
   if (!rows.length) {
-    els.candidateRows.innerHTML = `<tr><td colspan="22" class="empty">候选表空</td></tr>`;
+    els.candidateRows.innerHTML = `<tr><td colspan="23" class="empty">候选表空</td></tr>`;
     return;
   }
   els.candidateRows.innerHTML = rows
@@ -605,6 +634,7 @@ function renderCandidates(rows) {
         <tr>
           <td>${row.symbol}</td>
           <td><span class="score-badge">${Number(row.score || 0).toFixed(1)}</span></td>
+          <td title="${titleText(row.entry_quality_reason || "-")}"><span class="score-badge">${escapeHtml(row.entry_quality_label || "-")} ${Number(row.entry_quality_score || 0).toFixed(1)}</span></td>
           <td>${sidePill(row.side)}</td>
           <td>${row.analyzer_direction || "-"}</td>
           <td class="${Number(row.analyzer_confidence_pct || 0) > 90 ? "positive" : "danger"}">${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%</td>
@@ -772,7 +802,7 @@ els.form.addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify(data),
     });
-    normalizeLiveTradingToggle();
+    normalizeSettingsLabels();
     render(currentState);
     return currentState;
   });

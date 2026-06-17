@@ -204,6 +204,14 @@
             <span>启动实盘交易</span>
           </label>
           <label>
+            入场质量阈值
+            <input name="entry_quality_min_score" type="number" min="0" max="10" step="0.1" />
+          </label>
+          <label class="settings-check">
+            <input name="entry_quality_enabled" type="checkbox" />
+            <span>启用入场质量过滤</span>
+          </label>
+          <label>
             今日盈利停开 (U)
             <input name="max_daily_profit_usdt" type="number" min="0.01" step="0.01" />
           </label>
