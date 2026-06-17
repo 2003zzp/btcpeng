@@ -70,6 +70,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "entry_quality_enabled": True,
     "entry_quality_min_score": 6.0,
     "entry_quality_long_only": True,
+    "dynamic_position_sizing_enabled": True,
+    "dynamic_max_leverage": 6,
+    "dynamic_max_margin_multiplier": 1.5,
     "max_new_positions_per_scan": 2,
     "margin_per_trade_usdt": 9.0,
     "leverage": 3,
@@ -897,6 +900,9 @@ class PaperBot:
             "entry_quality_enabled": str,
             "entry_quality_min_score": float,
             "entry_quality_long_only": str,
+            "dynamic_position_sizing_enabled": str,
+            "dynamic_max_leverage": int,
+            "dynamic_max_margin_multiplier": float,
             "signal_score_threshold": float,
             "analyzer_min_confidence_pct": float,
             "max_new_positions_per_scan": int,
@@ -910,7 +916,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled", "entry_quality_enabled", "entry_quality_long_only"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled", "entry_quality_enabled", "entry_quality_long_only", "dynamic_position_sizing_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -921,7 +927,7 @@ class PaperBot:
                         value = "both"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "scan_interval_sec", "max_open_positions", "max_new_positions_per_scan"}:
+                if key in {"leverage", "scan_interval_sec", "max_open_positions", "max_new_positions_per_scan", "dynamic_max_leverage"}:
                     value = max(1, int(value))
                 if key in {
                     "margin_per_trade_usdt",
@@ -933,6 +939,7 @@ class PaperBot:
                     "max_daily_profit_usdt",
                     "max_daily_loss_usdt",
                     "entry_quality_min_score",
+                    "dynamic_max_margin_multiplier",
                 }:
                     value = max(0.01, float(value))
                 self.config[key] = value
@@ -1378,7 +1385,7 @@ class PaperBot:
     def close_side(signal_side: str) -> str:
         return "SELL" if signal_side == "LONG" else "BUY"
 
-    def ensure_exchange_settings(self, symbol: str) -> int:
+    def ensure_exchange_settings(self, symbol: str, target_leverage: int | None = None) -> int:
         futures = self.exchange_config()
         try:
             self.signed_exchange_request(
@@ -1389,7 +1396,7 @@ class PaperBot:
         except RuntimeError as exc:
             if "No need to change margin type" not in str(exc):
                 raise
-        target_leverage = max(1, int(self.config.get("leverage", 3)))
+        target_leverage = max(1, int(target_leverage if target_leverage is not None else self.config.get("leverage", 3)))
         last_error = ""
         for leverage in range(target_leverage, 0, -1):
             try:
@@ -1403,13 +1410,84 @@ class PaperBot:
                     raise
         raise RuntimeError(f"{symbol} 无法设置杠杆：{last_error}")
 
+    def position_plan(self, signal: Signal, available: float) -> dict[str, Any]:
+        base_margin = float(self.config.get("margin_per_trade_usdt", 9.0))
+        configured_leverage = max(1, int(self.config.get("leverage", 3)))
+        if not self.config.get("dynamic_position_sizing_enabled", True):
+            margin = min(base_margin, available)
+            return {
+                "margin_usdt": margin,
+                "target_leverage": configured_leverage,
+                "margin_multiplier": 1.0,
+                "tier": "fixed",
+                "reason": "fixed sizing",
+            }
+
+        quality = fnum(signal.entry_quality_score)
+        tier = "low"
+        margin_multiplier = 0.6
+        target_leverage = 3
+        if quality >= 9.0:
+            tier = "excellent"
+            margin_multiplier = 1.5
+            target_leverage = 6
+        elif quality >= 8.0:
+            tier = "strong"
+            margin_multiplier = 1.2
+            target_leverage = 6
+        elif quality >= 7.0:
+            tier = "standard"
+            margin_multiplier = 1.0
+            target_leverage = 5
+
+        heat_reasons: list[str] = []
+        if signal.funding_rate_pct > 0.04:
+            heat_reasons.append("funding")
+        if signal.open_interest_1h_pct > 30 or signal.open_interest_24h_pct > 55:
+            heat_reasons.append("oi")
+        if signal.long_short_ratio > 2.6:
+            heat_reasons.append("crowded")
+        if signal.short_move_pct > 4.5:
+            heat_reasons.append("fast_15m")
+        if self.daily_realized_pnl() < 0:
+            heat_reasons.append("daily_loss")
+
+        for _ in heat_reasons[:2]:
+            if margin_multiplier > 1.2:
+                margin_multiplier = 1.2
+                target_leverage = min(target_leverage, 6)
+            elif margin_multiplier > 1.0:
+                margin_multiplier = 1.0
+                target_leverage = min(target_leverage, 5)
+            else:
+                margin_multiplier = 0.6
+                target_leverage = min(target_leverage, 3)
+
+        max_multiplier = float(self.config.get("dynamic_max_margin_multiplier", 1.5))
+        max_dynamic_leverage = max(1, int(self.config.get("dynamic_max_leverage", 6)))
+        target_leverage = max(1, min(target_leverage, configured_leverage, max_dynamic_leverage))
+        margin_multiplier = max(0.1, min(margin_multiplier, max_multiplier))
+        margin = min(base_margin * margin_multiplier, available)
+        reason = f"quality={quality:.1f}, tier={tier}, multiplier={margin_multiplier:.2f}, target_leverage={target_leverage}x"
+        if heat_reasons:
+            reason += ", heat_downshift=" + ",".join(heat_reasons[:2])
+        signal.decision_steps.append(f"仓位计划：{reason}, margin={margin:.2f}U")
+        return {
+            "margin_usdt": margin,
+            "target_leverage": target_leverage,
+            "margin_multiplier": margin_multiplier,
+            "tier": tier,
+            "reason": reason,
+        }
+
     def exchange_open_position(self, signal: Signal, symbol_info: dict[str, Any]) -> dict[str, Any] | None:
         available = self.get_available_balance()
-        margin = min(float(self.config.get("margin_per_trade_usdt", 9.0)), available)
+        sizing = self.position_plan(signal, available)
+        margin = fnum(sizing.get("margin_usdt"))
         if margin <= 0:
             raise RuntimeError(f"{self.exchange_label()} 可用 USDT 余额不足")
         futures = self.exchange_config()
-        leverage = float(self.ensure_exchange_settings(signal.symbol))
+        leverage = float(self.ensure_exchange_settings(signal.symbol, int(sizing.get("target_leverage", self.config.get("leverage", 3)))))
         notional = margin * leverage * float(futures.get("quantity_safety_factor", 0.98))
         if self.exposure_pct(extra_notional=notional) > float(self.config.get("max_exposure_pct", 65.0)):
             self.event("risk", "仓位敞口达到上限，本轮停止新增持仓")
@@ -1496,6 +1574,9 @@ class PaperBot:
             "quantity": qty_text,
             "margin_usdt": margin,
             "leverage": leverage,
+            "sizing_tier": sizing.get("tier"),
+            "sizing_margin_multiplier": sizing.get("margin_multiplier"),
+            "sizing_reason": sizing.get("reason"),
             "notional_usdt": notional,
             "stop_price": self.round_price(symbol_info, stop_price),
             "take_profit": self.round_price(symbol_info, take_profit),

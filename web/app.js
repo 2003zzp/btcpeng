@@ -79,23 +79,40 @@ function normalizeLiveTradingToggle() {
 
 function normalizeSettingsLabels() {
   normalizeLiveTradingToggle();
-  const qualityInput = els.form?.elements?.entry_quality_min_score;
-  const qualityLabel = qualityInput?.closest("label");
-  if (qualityLabel) {
-    for (const node of [...qualityLabel.childNodes]) {
-      if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) node.textContent = "入场质量阈值 ";
+  const labelTextMap = {
+    margin_per_trade_usdt: "基础开仓保证金 (U)",
+    leverage: "最高杠杆上限",
+    entry_quality_min_score: "入场质量阈值",
+    dynamic_max_leverage: "动态最高杠杆",
+    dynamic_max_margin_multiplier: "最大保证金倍率",
+  };
+  for (const [name, textValue] of Object.entries(labelTextMap)) {
+    const input = els.form?.elements?.[name];
+    const label = input?.closest("label");
+    if (!label) continue;
+    for (const node of [...label.childNodes]) {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) node.textContent = `${textValue} `;
     }
   }
-  const qualityToggle = els.form?.elements?.entry_quality_enabled;
-  const toggleLabel = qualityToggle?.closest("label");
-  if (toggleLabel) {
-    toggleLabel.classList.add("settings-check");
-    let text = toggleLabel.querySelector("span");
+  const toggles = {
+    entry_quality_enabled: "启用入场质量过滤",
+    dynamic_position_sizing_enabled: "启用质量分动态仓位",
+  };
+  for (const [name, textValue] of Object.entries(toggles)) {
+    const input = els.form?.elements?.[name];
+    const label = input?.closest("label");
+    if (!label) continue;
+    label.classList.add("settings-check");
+    let text = label.querySelector("span");
     if (!text) {
       text = document.createElement("span");
-      toggleLabel.appendChild(text);
+      label.appendChild(text);
     }
-    text.textContent = "启用入场质量过滤";
+    text.textContent = textValue;
+  }
+  const sizingLabel = els.form?.elements?.dynamic_position_sizing_enabled?.closest("label");
+  if (sizingLabel) {
+    sizingLabel.title = "开启后，基础保证金按质量分乘以 0.6x/1.0x/1.2x/1.5x，杠杆最高不超过动态最高杠杆和上方最高杠杆上限。";
   }
 }
 

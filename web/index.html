@@ -231,6 +231,18 @@
             <input name="square_publish_on_open" type="checkbox" />
             <span>开仓后自动发布到 Binance Square</span>
           </label>
+          <label class="settings-check">
+            <input name="dynamic_position_sizing_enabled" type="checkbox" />
+            <span>启用质量分动态仓位</span>
+          </label>
+          <label>
+            动态最高杠杆
+            <input name="dynamic_max_leverage" type="number" min="1" max="20" step="1" />
+          </label>
+          <label>
+            最大保证金倍率
+            <input name="dynamic_max_margin_multiplier" type="number" min="0.1" max="3" step="0.1" />
+          </label>
         </form>
       </section>
 
