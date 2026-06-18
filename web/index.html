@@ -177,6 +177,22 @@
             止损 ROI (%)
             <input name="stop_loss_roi_pct" type="number" min="1" step="1" />
           </label>
+          <label class="settings-check">
+            <input name="auto_stop_lift_enabled" type="checkbox" />
+            <span>启用自动推损</span>
+          </label>
+          <label>
+            保本触发 ROI (%)
+            <input name="breakeven_trigger_roi_pct" type="number" min="1" step="1" />
+          </label>
+          <label>
+            锁利触发 ROI (%)
+            <input name="lock_profit_trigger_roi_pct" type="number" min="1" step="1" />
+          </label>
+          <label>
+            锁利 ROI (%)
+            <input name="lock_profit_roi_pct" type="number" min="0" step="1" />
+          </label>
           <label>
             扫描间隔 (秒)
             <input name="scan_interval_sec" type="number" min="2" step="1" />

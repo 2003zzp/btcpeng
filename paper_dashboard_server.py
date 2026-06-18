@@ -17,6 +17,8 @@ import math
 import mimetypes
 import os
 import random
+import socket
+import ssl
 import subprocess
 import threading
 import time
@@ -51,7 +53,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "live_trading_enabled": False,
     "scan_interval_sec": 20,
     "market_base_url": "https://fapi.binance.com",
-    "request_timeout_sec": 6,
+    "request_timeout_sec": 10,
     "quote_asset": "USDT",
     "min_quote_volume_usdt": 20_000_000,
     "min_abs_24h_change_pct": 6.0,
@@ -88,6 +90,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "stop_loss_cooldown_minutes": 60,
     "take_profit_roi_pct": 90.0,
     "stop_loss_roi_pct": 86.0,
+    "auto_stop_lift_enabled": True,
+    "breakeven_trigger_roi_pct": 70.0,
+    "lock_profit_trigger_roi_pct": 120.0,
+    "lock_profit_roi_pct": 30.0,
     "telegram_enabled": True,
     "square_publish_enabled": True,
     "square_publish_on_open": True,
@@ -293,8 +299,17 @@ def http_get_json(base_url: str, path: str, params: dict[str, Any] | None = None
             "User-Agent": "paper-futures-dashboard/1.0",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (TimeoutError, socket.timeout, ssl.SSLError, urllib.error.URLError) as exc:
+            last_error = exc
+            if attempt >= 2:
+                break
+            time.sleep(0.6 * (attempt + 1))
+    raise RuntimeError(f"HTTP GET failed after retries: {last_error}") from last_error
 
 
 def http_request_json(
@@ -319,13 +334,21 @@ def http_request_json(
     elif query:
         url = f"{url}?{query}"
     req = urllib.request.Request(url, data=data, headers=request_headers, method=method.upper())
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Binance Testnet HTTP {exc.code}: {body}") from exc
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Binance Testnet HTTP {exc.code}: {body}") from exc
+        except (TimeoutError, socket.timeout, ssl.SSLError, urllib.error.URLError) as exc:
+            last_error = exc
+            if attempt >= 2:
+                break
+            time.sleep(0.6 * (attempt + 1))
+    raise RuntimeError(f"Binance request failed after retries: {last_error}") from last_error
 
 
 def quantize_down(value: float, step: str) -> str:
@@ -669,13 +692,14 @@ class PaperBot:
     def notify_close_position(self, trade: dict[str, Any]) -> None:
         side = self.side_cn(str(trade.get("side", "")))
         pnl = fnum(trade.get("pnl_usdt"))
+        exit_price = self.display_exit_price(trade)
         message = "\n".join(
             [
                 "Binance Testnet 平仓完成",
                 f"币种：{trade.get('symbol', '-')} {side}",
                 f"平仓原因：{trade.get('close_reason', '-')}",
                 f"开仓价：{price_text(fnum(trade.get('entry_price')))}",
-                f"平仓价：{price_text(fnum(trade.get('exit_price')))}",
+                f"平仓价：{price_text(exit_price)}",
                 f"数量：{trade.get('quantity', '-')}",
                 f"保证金：{fnum(trade.get('margin_usdt')):.2f} U",
                 f"已实现盈亏：{pnl:+.2f} U",
@@ -776,7 +800,7 @@ class PaperBot:
                 item.get("symbol", ""),
                 item.get("side", ""),
                 fnum(item.get("entry_price")),
-                fnum(item.get("exit_price"), fnum(item.get("last_price"))),
+                self.display_exit_price(item),
                 fnum(item.get("quantity")),
                 round(fnum(item.get("pnl_usdt")), 6),
                 item.get("close_reason", ""),
@@ -1068,6 +1092,10 @@ class PaperBot:
             "leverage": int,
             "take_profit_roi_pct": float,
             "stop_loss_roi_pct": float,
+            "auto_stop_lift_enabled": str,
+            "breakeven_trigger_roi_pct": float,
+            "lock_profit_trigger_roi_pct": float,
+            "lock_profit_roi_pct": float,
             "scan_interval_sec": int,
             "max_open_positions": int,
             "max_exposure_pct": float,
@@ -1094,7 +1122,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled", "entry_quality_enabled", "entry_quality_long_only", "dynamic_position_sizing_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled", "entry_quality_enabled", "entry_quality_long_only", "dynamic_position_sizing_enabled", "auto_stop_lift_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -1111,6 +1139,9 @@ class PaperBot:
                     "margin_per_trade_usdt",
                     "take_profit_roi_pct",
                     "stop_loss_roi_pct",
+                    "breakeven_trigger_roi_pct",
+                    "lock_profit_trigger_roi_pct",
+                    "lock_profit_roi_pct",
                     "signal_score_threshold",
                     "analyzer_min_confidence_pct",
                     "max_exposure_pct",
@@ -1168,6 +1199,7 @@ class PaperBot:
             self.update_signal_future_returns(price_map)
             try:
                 self.sync_exchange_state()
+                self.apply_auto_stop_lift()
             except Exception as exc:
                 with self.lock:
                     self.state["exchange_status"] = "error"
@@ -1309,6 +1341,12 @@ class PaperBot:
                     "roi_pct": unrealized / max(0.01, margin) * 100.0,
                     "liquidation_price": fnum(item.get("liquidationPrice")),
                     "entry_order_id": open_record.get("entry_order_id", ""),
+                    "stop_algo_id": open_record.get("stop_algo_id", ""),
+                    "stop_price": open_record.get("stop_price", ""),
+                    "take_profit_algo_id": open_record.get("take_profit_algo_id", ""),
+                    "take_profit": open_record.get("take_profit", ""),
+                    "stop_lift_stage": open_record.get("stop_lift_stage", ""),
+                    "stop_lift_roi_pct": open_record.get("stop_lift_roi_pct", 0.0),
                     "signal_review_id": open_record.get("signal_review_id", ""),
                     "score": fnum(open_record.get("score")),
                     "analyzer_direction": open_record.get("analyzer_direction", ""),
@@ -1366,6 +1404,59 @@ class PaperBot:
             return {}
         return max(candidates, key=lambda record: parse_time_ms(record.get("time")))
 
+    def estimate_exit_price_from_pnl(self, open_record: dict[str, Any], pnl: float) -> float:
+        entry = fnum(open_record.get("entry_price"))
+        qty = abs(fnum(open_record.get("quantity")))
+        side = str(open_record.get("side", ""))
+        if entry <= 0 or qty <= 0:
+            return 0.0
+        move = pnl / qty
+        if side == "SHORT":
+            return max(0.0, entry - move)
+        return max(0.0, entry + move)
+
+    def display_exit_price(self, trade: dict[str, Any]) -> float:
+        price = fnum(trade.get("exit_price"))
+        if price > 0:
+            return price
+        return self.estimate_exit_price_from_pnl(trade, fnum(trade.get("pnl_usdt")))
+
+    def infer_exit_price_for_income(self, symbol: str, open_record: dict[str, Any], income_time: float, pnl: float) -> float:
+        entry = fnum(open_record.get("entry_price"))
+        opened_ms = parse_time_ms(open_record.get("time"))
+        if not symbol or opened_ms <= 0:
+            return self.estimate_exit_price_from_pnl(open_record, pnl)
+        try:
+            trades = self.fetch_recent_user_trades(symbol, max(0, opened_ms - 60_000))
+        except Exception:
+            return self.estimate_exit_price_from_pnl(open_record, pnl)
+        close_side = self.close_side(str(open_record.get("side", "")))
+        target_qty = abs(fnum(open_record.get("quantity")))
+        window_end = income_time + 10 * 60 * 1000 if income_time > 0 else float("inf")
+        exit_trades = []
+        collected_qty = 0.0
+        for trade in sorted(trades, key=lambda item: fnum(item.get("time"))):
+            trade_time = fnum(trade.get("time"))
+            if trade_time < opened_ms or trade_time > window_end:
+                continue
+            if str(trade.get("side", "")).upper() != close_side:
+                continue
+            qty = abs(fnum(first_present(trade, ["qty", "executedQty"])))
+            price = fnum(first_present(trade, ["price"]))
+            if qty <= 0 or price <= 0:
+                continue
+            exit_trades.append(trade)
+            collected_qty += qty
+            if target_qty > 0 and collected_qty >= target_qty * 0.98:
+                break
+        if exit_trades:
+            qty_sum = sum(abs(fnum(first_present(trade, ["qty", "executedQty"]))) for trade in exit_trades)
+            notional = sum(fnum(first_present(trade, ["price"])) * abs(fnum(first_present(trade, ["qty", "executedQty"]))) for trade in exit_trades)
+            if qty_sum > 0:
+                return notional / qty_sum
+        estimated = self.estimate_exit_price_from_pnl(open_record, pnl)
+        return estimated if estimated > 0 else entry
+
     def fetch_realized_pnl_history(self, open_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
         start_ms = parse_time_ms(self.state.get("test_started_at"))
         if not start_ms:
@@ -1387,13 +1478,14 @@ class PaperBot:
             seen.add(row_id)
             open_record = self.find_open_record_for_income(item, open_history)
             reason = "Binance Testnet 止盈平仓" if pnl > 0 else "Binance Testnet 止损平仓"
+            exit_price = self.infer_exit_price_for_income(symbol, open_record, income_time, pnl)
             row = {
                 "id": f"{self.exchange_mode()}-income-{row_id}",
                 "execution_mode": self.exchange_mode(),
                 "symbol": symbol,
                 "side": open_record.get("side", ""),
                 "entry_price": fnum(open_record.get("entry_price")),
-                "exit_price": 0.0,
+                "exit_price": exit_price,
                 "quantity": fnum(open_record.get("quantity")),
                 "margin_usdt": fnum(open_record.get("margin_usdt")),
                 "pnl_usdt": pnl,
@@ -1412,6 +1504,8 @@ class PaperBot:
                 "decision_summary": open_record.get("decision_summary", ""),
                 "decision_steps": open_record.get("decision_steps", []),
             }
+            if fnum(row.get("exit_price")) <= 0:
+                row["exit_price"] = self.display_exit_price(row)
             self.mark_signal_review_closed(open_record, row)
             rows.append(row)
         rows.sort(key=lambda row: str(row.get("closed_at", "")), reverse=True)
@@ -1657,6 +1751,112 @@ class PaperBot:
             "tier": tier,
             "reason": reason,
         }
+
+    def stop_lift_plan(self, pos: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.config.get("auto_stop_lift_enabled", True):
+            return None
+        roi = fnum(pos.get("roi_pct"))
+        leverage = max(1.0, fnum(pos.get("leverage"), float(self.config.get("leverage", 3))))
+        entry = fnum(pos.get("entry_price"))
+        if entry <= 0:
+            return None
+        current_stage = str(pos.get("stop_lift_stage") or "")
+        lock_trigger = float(self.config.get("lock_profit_trigger_roi_pct", 120.0))
+        breakeven_trigger = float(self.config.get("breakeven_trigger_roi_pct", 70.0))
+        if roi >= lock_trigger and current_stage != "lock":
+            target_roi = float(self.config.get("lock_profit_roi_pct", 30.0))
+            stage = "lock"
+            label = f"锁利 {target_roi:.0f}% ROI"
+        elif roi >= breakeven_trigger and current_stage not in {"breakeven", "lock"}:
+            target_roi = 0.0
+            stage = "breakeven"
+            label = "保本"
+        else:
+            return None
+        price_move = target_roi / leverage / 100.0
+        if str(pos.get("side")) == "LONG":
+            target_stop = entry * (1.0 + price_move)
+        else:
+            target_stop = entry * (1.0 - price_move)
+        return {"stage": stage, "target_stop": target_stop, "target_roi": target_roi, "label": label}
+
+    def replace_stop_order(self, pos: dict[str, Any], symbol_info: dict[str, Any], plan: dict[str, Any]) -> bool:
+        symbol = str(pos.get("symbol") or "")
+        side = str(pos.get("side") or "")
+        if not symbol or side not in {"LONG", "SHORT"}:
+            return False
+        futures = self.exchange_config()
+        new_stop = self.round_price(symbol_info, fnum(plan.get("target_stop")))
+        old_stop = fnum(pos.get("stop_price"))
+        new_stop_num = fnum(new_stop)
+        if old_stop > 0:
+            if side == "LONG" and new_stop_num <= old_stop:
+                return False
+            if side == "SHORT" and new_stop_num >= old_stop:
+                return False
+        old_algo_id = pos.get("stop_algo_id")
+        if old_algo_id:
+            try:
+                self.signed_exchange_request(
+                    "DELETE",
+                    "/fapi/v1/algoOrder",
+                    {"symbol": symbol, "algoId": old_algo_id},
+                )
+            except Exception as exc:
+                self.event("warn", f"{symbol} 取消旧止损单失败，继续尝试提交新止损：{exc}")
+        new_order = self.signed_exchange_request(
+            "POST",
+            "/fapi/v1/algoOrder",
+            {
+                "algoType": "CONDITIONAL",
+                "symbol": symbol,
+                "side": self.close_side(side),
+                "type": "STOP_MARKET",
+                "triggerPrice": new_stop,
+                "closePosition": "true",
+                "workingType": futures.get("working_type", "MARK_PRICE"),
+            },
+        )
+        pos["stop_price"] = new_stop
+        pos["stop_algo_id"] = new_order.get("algoId")
+        pos["stop_lift_stage"] = plan.get("stage")
+        pos["stop_lift_roi_pct"] = plan.get("target_roi")
+        pos["stop_lift_updated_at"] = iso_now()
+        for item in self.state.get("open_order_history", []):
+            if str(item.get("symbol")) == symbol and str(item.get("entry_order_id") or "") == str(pos.get("entry_order_id") or ""):
+                item.update({
+                    "stop_price": new_stop,
+                    "stop_algo_id": new_order.get("algoId"),
+                    "stop_lift_stage": plan.get("stage"),
+                    "stop_lift_roi_pct": plan.get("target_roi"),
+                    "stop_lift_updated_at": pos["stop_lift_updated_at"],
+                })
+                break
+        self.event("trade", f"{symbol} 自动推损到 {new_stop}（{plan.get('label')}）")
+        return True
+
+    def apply_auto_stop_lift(self) -> None:
+        if not self.config.get("auto_stop_lift_enabled", True):
+            return
+        positions = list(self.state.get("positions", []))
+        if not positions:
+            return
+        exchange_symbols = {info["symbol"]: info for info in self.fetch_exchange_symbols()}
+        updated = False
+        for pos in positions:
+            plan = self.stop_lift_plan(pos)
+            if not plan:
+                continue
+            symbol_info = exchange_symbols.get(str(pos.get("symbol")))
+            if not symbol_info:
+                continue
+            try:
+                if self.replace_stop_order(pos, symbol_info, plan):
+                    updated = True
+            except Exception as exc:
+                self.event("error", f"{pos.get('symbol')} 自动推损失败：{exc}")
+        if updated:
+            self.persist()
 
     def exchange_open_position(self, signal: Signal, symbol_info: dict[str, Any]) -> dict[str, Any] | None:
         available = self.get_available_balance()

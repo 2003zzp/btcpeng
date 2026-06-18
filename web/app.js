@@ -82,7 +82,12 @@ function normalizeSettingsLabels() {
   const labelTextMap = {
     margin_per_trade_usdt: "基础开仓保证金 (U)",
     leverage: "最高杠杆上限",
+    take_profit_roi_pct: "初始止盈 ROI (%)",
+    stop_loss_roi_pct: "初始止损 ROI (%)",
     entry_quality_min_score: "入场质量阈值",
+    breakeven_trigger_roi_pct: "保本触发 ROI (%)",
+    lock_profit_trigger_roi_pct: "锁利触发 ROI (%)",
+    lock_profit_roi_pct: "锁利 ROI (%)",
     dynamic_max_leverage: "动态最高杠杆",
     dynamic_max_margin_multiplier: "最大保证金倍率",
   };
@@ -97,6 +102,7 @@ function normalizeSettingsLabels() {
   const toggles = {
     entry_quality_enabled: "启用入场质量过滤",
     dynamic_position_sizing_enabled: "启用质量分动态仓位",
+    auto_stop_lift_enabled: "启用自动推损",
   };
   for (const [name, textValue] of Object.entries(toggles)) {
     const input = els.form?.elements?.[name];
@@ -113,6 +119,10 @@ function normalizeSettingsLabels() {
   const sizingLabel = els.form?.elements?.dynamic_position_sizing_enabled?.closest("label");
   if (sizingLabel) {
     sizingLabel.title = "开启后，基础保证金按质量分乘以 0.6x/1.0x/1.2x/1.5x，杠杆最高不超过动态最高杠杆和上方最高杠杆上限。";
+  }
+  const stopLiftLabel = els.form?.elements?.auto_stop_lift_enabled?.closest("label");
+  if (stopLiftLabel) {
+    stopLiftLabel.title = "盈利达到保本/锁利触发 ROI 后，系统会自动把止损价往有利方向推。";
   }
 }
 
