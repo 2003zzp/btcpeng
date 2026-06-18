@@ -203,6 +203,10 @@ function signedClass(value) {
   return "";
 }
 
+function accountModeLabel(config = currentState?.config) {
+  return config?.live_trading_enabled ? "实盘" : "模拟仓";
+}
+
 function clampPct(value) {
   return Math.max(0, Math.min(100, Number(value || 0)));
 }
@@ -236,6 +240,10 @@ async function refresh() {
 
 function render(payload) {
   const { state, metrics, config } = payload;
+  const modeLabel = accountModeLabel(config);
+  if (els.syncBtn && !els.syncBtn.disabled) {
+    els.syncBtn.innerHTML = `<span class="button-icon">↻</span>同步${modeLabel}`;
+  }
   els.runningText.textContent = state.running ? "运行中" : "已停止";
   els.runningText.className = state.running ? "positive" : "danger";
 
@@ -247,10 +255,10 @@ function render(payload) {
   }
   els.sourceText.textContent = `行情源：${state.market_source || "-"}`;
   if (state.exchange_status && state.exchange_status !== "unknown") {
-    els.sourceText.textContent += ` / 模拟仓：${state.exchange_status}`;
+    els.sourceText.textContent += ` / ${modeLabel}：${state.exchange_status}`;
   }
   const exchangeStatus = state.exchange_status || "unknown";
-  els.exchangeBadge.textContent = exchangeStatus === "connected" ? "TESTNET 已连接" : "TESTNET 待同步";
+  els.exchangeBadge.textContent = exchangeStatus === "connected" ? `${modeLabel}已连接` : `${modeLabel}待同步`;
   els.exchangeBadge.className = `version ${exchangeStatus === "connected" ? "connected" : "offline"}`;
 
   els.equityText.textContent = money(metrics.equity_usdt);
@@ -799,7 +807,8 @@ els.resetBtn.addEventListener("click", async () => {
 });
 
 els.syncBtn.addEventListener("click", async () => {
-  await runAction(els.syncBtn, "正在同步模拟仓...", "模拟仓同步完成", async () => {
+  const modeLabel = accountModeLabel();
+  await runAction(els.syncBtn, `正在同步${modeLabel}...`, `${modeLabel}同步完成`, async () => {
     currentState = await api("/api/sync-exchange", { method: "POST" });
     render(currentState);
     return currentState;
@@ -818,10 +827,11 @@ els.form.addEventListener("submit", async (event) => {
   event.preventDefault();
   await runAction(els.form.querySelector("button[type='submit']"), "正在保存参数...", "参数已保存", async () => {
     const data = Object.fromEntries(new FormData(els.form).entries());
+    const previousLiveTradingEnabled = Boolean(currentState?.config?.live_trading_enabled);
     for (const input of els.form.querySelectorAll("input[type='checkbox']")) {
       data[input.name] = input.checked ? "true" : "false";
     }
-    if (data.live_trading_enabled === "true" && !currentState?.config?.live_trading_enabled) {
+    if (data.live_trading_enabled === "true" && !previousLiveTradingEnabled) {
       const ok = window.confirm("确认启动实盘交易？开启后机器人会使用 BINANCE_LIVE_API_KEY 在币安实盘合约账户真实下单。");
       if (!ok) return currentState;
     }
@@ -829,6 +839,13 @@ els.form.addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify(data),
     });
+    if (Boolean(currentState?.config?.live_trading_enabled) !== previousLiveTradingEnabled) {
+      try {
+        currentState = await api("/api/sync-exchange", { method: "POST" });
+      } catch (error) {
+        showToast(`${accountModeLabel(currentState?.config)}账户同步失败：${error.message}`, "error");
+      }
+    }
     normalizeSettingsLabels();
     render(currentState);
     return currentState;

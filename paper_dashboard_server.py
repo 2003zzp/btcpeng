@@ -319,6 +319,7 @@ def http_request_json(
     params: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 6,
+    error_label: str = "HTTP",
 ) -> Any:
     query = urllib.parse.urlencode(params or {}, doseq=True)
     url = f"{base_url.rstrip('/')}{path}"
@@ -342,7 +343,7 @@ def http_request_json(
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Binance Testnet HTTP {exc.code}: {body}") from exc
+            raise RuntimeError(f"{error_label} HTTP {exc.code}: {body}") from exc
         except (TimeoutError, socket.timeout, ssl.SSLError, urllib.error.URLError) as exc:
             last_error = exc
             if attempt >= 2:
@@ -1038,7 +1039,7 @@ class PaperBot:
             with self.lock:
                 self.state["exchange_status"] = "error"
                 self.state["last_error"] = str(exc)
-                self.event("error", f"Binance Testnet 同步失败：{exc}")
+                self.event("error", f"{self.exchange_label()} 同步失败：{exc}")
                 self.persist()
         return self.snapshot()
 
@@ -1119,6 +1120,7 @@ class PaperBot:
             "square_publish_on_open": str,
         }
         with self.lock:
+            previous_mode = self.exchange_mode()
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
@@ -1153,7 +1155,24 @@ class PaperBot:
                     value = max(0.01, float(value))
                 self.config[key] = value
             save_json(self.config_path, self.config)
-            self.state["mode"] = self.exchange_mode()
+            current_mode = self.exchange_mode()
+            self.state["mode"] = current_mode
+            if current_mode != previous_mode:
+                for key in {
+                    "available_balance_usdt",
+                    "account_equity_usdt",
+                    "wallet_balance_usdt",
+                    "account_unrealized_pnl_usdt",
+                    "exchange_account_mode",
+                }:
+                    self.state.pop(key, None)
+                self.state["positions"] = []
+                self.state["exchange_open_positions"] = []
+                self.state["trade_history"] = []
+                self.state["exchange_status"] = "unknown"
+                self.state["last_error"] = ""
+                self.state["equity_high_watermark_usdt"] = float(self.config.get("initial_equity_usdt", 100.0))
+                self.state["max_drawdown_pct"] = 0.0
             self.event("info", "参数已保存")
             self.persist()
             return self.snapshot()
@@ -1204,7 +1223,7 @@ class PaperBot:
                 with self.lock:
                     self.state["exchange_status"] = "error"
                     self.state["last_error"] = str(exc)
-                    self.event("error", f"Binance Testnet 同步失败：{exc}")
+                    self.event("error", f"{self.exchange_label()} 同步失败：{exc}")
                     self.persist()
                 return
             with self.lock:
@@ -1267,6 +1286,7 @@ class PaperBot:
             signed,
             headers={"X-MBX-APIKEY": api_key},
             timeout=float(self.config.get("request_timeout_sec", 6)),
+            error_label=self.exchange_label(),
         )
 
     def unsigned_exchange_request(self, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -1308,6 +1328,18 @@ class PaperBot:
             if item.get("asset") == "USDT":
                 return fnum(item.get("availableBalance"))
         return 0.0
+
+    def get_account_balance_snapshot(self) -> dict[str, float]:
+        payload = self.signed_exchange_request("GET", "/fapi/v2/account")
+        assets = payload.get("assets", []) if isinstance(payload, dict) else []
+        quote_asset = str(self.config.get("quote_asset", "USDT")).upper()
+        asset_row = next((item for item in assets if item.get("asset") == quote_asset), {})
+        return {
+            "equity_usdt": fnum(payload.get("totalMarginBalance") or asset_row.get("marginBalance")),
+            "available_balance_usdt": fnum(payload.get("availableBalance") or asset_row.get("availableBalance")),
+            "wallet_balance_usdt": fnum(payload.get("totalWalletBalance") or asset_row.get("walletBalance")),
+            "unrealized_pnl_usdt": fnum(payload.get("totalUnrealizedProfit") or asset_row.get("unrealizedProfit")),
+        }
 
     def sync_exchange_state(self) -> None:
         payload = self.signed_exchange_request("GET", "/fapi/v2/positionRisk")
@@ -1356,14 +1388,18 @@ class PaperBot:
                 }
             )
         realized_history = self.fetch_realized_pnl_history(open_history)
-        available_balance = self.get_available_balance()
+        account_balance = self.get_account_balance_snapshot()
         with self.lock:
             self.notify_new_closed_trades(realized_history)
             self.state["trade_history"] = realized_history[:200]
             self.state["positions"] = positions
             self.state["exchange_open_positions"] = positions
             self.state["exchange_status"] = "connected"
-            self.state["available_balance_usdt"] = available_balance
+            self.state["exchange_account_mode"] = self.exchange_mode()
+            self.state["account_equity_usdt"] = account_balance["equity_usdt"]
+            self.state["available_balance_usdt"] = account_balance["available_balance_usdt"]
+            self.state["wallet_balance_usdt"] = account_balance["wallet_balance_usdt"]
+            self.state["account_unrealized_pnl_usdt"] = account_balance["unrealized_pnl_usdt"]
             self.refresh_trade_counters()
             self.update_risk_state()
             self.persist()
@@ -2744,7 +2780,7 @@ class PaperBot:
         return opened
 
     def available_margin(self) -> float:
-        if "available_balance_usdt" in self.state:
+        if self.state.get("exchange_account_mode") == self.exchange_mode() and "available_balance_usdt" in self.state:
             return max(0.0, fnum(self.state.get("available_balance_usdt")))
         equity = self.equity()
         used = sum(fnum(pos.get("margin_usdt")) for pos in self.state.get("positions", []))
@@ -2773,11 +2809,14 @@ class PaperBot:
         self.state["realized_pnl_usdt"] = sum(fnum(trade.get("pnl_usdt")) for trade in closed)
 
     def equity(self) -> float:
-        if "available_balance_usdt" in self.state:
-            available = fnum(self.state.get("available_balance_usdt"))
-            used = sum(fnum(pos.get("margin_usdt")) for pos in self.state.get("positions", []))
-            unrealized = sum(fnum(pos.get("unrealized_pnl_usdt")) for pos in self.state.get("positions", []))
-            return available + used + unrealized
+        if self.state.get("exchange_account_mode") == self.exchange_mode():
+            if "account_equity_usdt" in self.state:
+                return fnum(self.state.get("account_equity_usdt"))
+            if "available_balance_usdt" in self.state:
+                available = fnum(self.state.get("available_balance_usdt"))
+                used = sum(fnum(pos.get("margin_usdt")) for pos in self.state.get("positions", []))
+                unrealized = sum(fnum(pos.get("unrealized_pnl_usdt")) for pos in self.state.get("positions", []))
+                return available + used + unrealized
         initial = float(self.config.get("initial_equity_usdt", 100.0))
         realized = fnum(self.state.get("realized_pnl_usdt"))
         unrealized = sum(fnum(pos.get("unrealized_pnl_usdt")) for pos in self.state.get("positions", []))
