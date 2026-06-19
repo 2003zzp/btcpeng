@@ -400,6 +400,8 @@ class PaperBot:
         self.state = self.load_state()
         self.thread: threading.Thread | None = None
         self.stop_event = threading.Event()
+        self.exchange_time_offsets: dict[str, dict[str, float]] = {}
+        self.position_mode_cache: dict[str, Any] = {"mode": "", "synced_at_ms": 0}
         self.analyzer_cache: dict[str, dict[str, Any]] = dict(self.state.get("analyzer_cache", {}))
         stale_errors = [
             symbol
@@ -499,6 +501,32 @@ class PaperBot:
     def exchange_config(self) -> dict[str, Any]:
         key = "futures_live" if self.is_live_trading() else "futures_testnet"
         return self.config.get(key, {})
+
+    def exchange_base_url(self) -> str:
+        futures = self.exchange_config()
+        return futures.get("base_url", "https://fapi.binance.com" if self.is_live_trading() else "https://testnet.binancefuture.com")
+
+    def exchange_time_offset_ms(self, force: bool = False) -> int:
+        mode = self.exchange_mode()
+        now_ms = int(time.time() * 1000)
+        cached = self.exchange_time_offsets.get(mode, {})
+        if not force and cached and now_ms - int(cached.get("synced_at_ms", 0)) < 5 * 60 * 1000:
+            return int(cached.get("offset_ms", 0))
+        try:
+            started_ms = int(time.time() * 1000)
+            payload = http_get_json(
+                self.exchange_base_url(),
+                "/fapi/v1/time",
+                timeout=min(5.0, float(self.config.get("request_timeout_sec", 6))),
+            )
+            finished_ms = int(time.time() * 1000)
+            server_time_ms = int(fnum(payload.get("serverTime")))
+            local_midpoint_ms = (started_ms + finished_ms) // 2
+            offset_ms = server_time_ms - local_midpoint_ms
+            self.exchange_time_offsets[mode] = {"offset_ms": offset_ms, "synced_at_ms": finished_ms}
+            return offset_ms
+        except Exception:
+            return int(cached.get("offset_ms", 0)) if cached else 0
 
     def record_belongs_to_current_exchange(self, record: dict[str, Any]) -> bool:
         mode = str(record.get("execution_mode", ""))
@@ -1272,27 +1300,36 @@ class PaperBot:
         if not api_key or not api_secret:
             raise RuntimeError(f"缺少 {key_hint}，请在 .env 配置 {self.exchange_label()} key")
         futures = self.exchange_config()
-        payload = dict(params or {})
-        payload.setdefault("recvWindow", int(futures.get("recv_window", 5000)))
-        payload["timestamp"] = int(time.time() * 1000)
-        query = urllib.parse.urlencode(payload, doseq=True)
-        signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
-        signed = dict(payload)
-        signed["signature"] = signature
-        return http_request_json(
-            method,
-            futures.get("base_url", "https://fapi.binance.com" if self.is_live_trading() else "https://testnet.binancefuture.com"),
-            path,
-            signed,
-            headers={"X-MBX-APIKEY": api_key},
-            timeout=float(self.config.get("request_timeout_sec", 6)),
-            error_label=self.exchange_label(),
-        )
+
+        def send(force_time_sync: bool = False) -> Any:
+            payload = dict(params or {})
+            payload.setdefault("recvWindow", max(30000, int(futures.get("recv_window", 5000))))
+            payload["timestamp"] = int(time.time() * 1000) + self.exchange_time_offset_ms(force=force_time_sync)
+            query = urllib.parse.urlencode(payload, doseq=True)
+            signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+            signed = dict(payload)
+            signed["signature"] = signature
+            return http_request_json(
+                method,
+                self.exchange_base_url(),
+                path,
+                signed,
+                headers={"X-MBX-APIKEY": api_key},
+                timeout=float(self.config.get("request_timeout_sec", 6)),
+                error_label=self.exchange_label(),
+            )
+
+        try:
+            return send()
+        except RuntimeError as exc:
+            if '"code":-1021' in str(exc) or "outside of the recvWindow" in str(exc):
+                return send(force_time_sync=True)
+            raise
 
     def unsigned_exchange_request(self, path: str, params: dict[str, Any] | None = None) -> Any:
         futures = self.exchange_config()
         return http_get_json(
-            futures.get("base_url", "https://fapi.binance.com" if self.is_live_trading() else "https://testnet.binancefuture.com"),
+            self.exchange_base_url(),
             path,
             params,
             timeout=float(self.config.get("request_timeout_sec", 6)),
@@ -1693,16 +1730,53 @@ class PaperBot:
     def close_side(signal_side: str) -> str:
         return "SELL" if signal_side == "LONG" else "BUY"
 
+    def position_mode(self, force: bool = False) -> str:
+        now_ms = int(time.time() * 1000)
+        cached_mode = str(self.position_mode_cache.get("mode") or "")
+        cached_at = int(self.position_mode_cache.get("synced_at_ms") or 0)
+        if not force and cached_mode and now_ms - cached_at < 5 * 60 * 1000:
+            return cached_mode
+        payload = self.signed_exchange_request("GET", "/fapi/v1/positionSide/dual")
+        mode = "hedge" if bool(payload.get("dualSidePosition")) else "one_way"
+        self.position_mode_cache = {"mode": mode, "synced_at_ms": now_ms}
+        return mode
+
+    def position_side_params(self, side: str, force: bool = False) -> dict[str, str]:
+        return {"positionSide": side} if self.position_mode(force=force) == "hedge" else {}
+
+    def signed_exchange_request_position_aware(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any],
+        signal_side: str,
+    ) -> Any:
+        payload = {**params, **self.position_side_params(signal_side)}
+        try:
+            return self.signed_exchange_request(method, path, payload)
+        except RuntimeError as exc:
+            if "-4061" in str(exc) or "position side does not match" in str(exc):
+                self.position_mode_cache = {"mode": "", "synced_at_ms": 0}
+                payload = {**params, **self.position_side_params(signal_side, force=True)}
+                return self.signed_exchange_request(method, path, payload)
+            raise
+
     def ensure_exchange_settings(self, symbol: str, target_leverage: int | None = None) -> int:
         futures = self.exchange_config()
+        margin_type = str(futures.get("margin_type", "ISOLATED")).upper()
         try:
             self.signed_exchange_request(
                 "POST",
                 "/fapi/v1/marginType",
-                {"symbol": symbol, "marginType": futures.get("margin_type", "ISOLATED")},
+                {"symbol": symbol, "marginType": margin_type},
             )
         except RuntimeError as exc:
             if "No need to change margin type" not in str(exc):
+                if self.is_live_trading() and margin_type == "ISOLATED" and ("-4168" in str(exc) or "Multi-Assets mode" in str(exc)):
+                    raise RuntimeError(
+                        "实盘账户已开启多资产模式，币安不允许在 Multi-Assets mode 下切换逐仓。"
+                        "请先在币安合约设置里关闭多资产模式/切回单资产模式，再重新开仓。"
+                    ) from exc
                 raise
         target_leverage = max(1, int(target_leverage if target_leverage is not None else self.config.get("leverage", 3)))
         last_error = ""
@@ -1840,7 +1914,7 @@ class PaperBot:
                 )
             except Exception as exc:
                 self.event("warn", f"{symbol} 取消旧止损单失败，继续尝试提交新止损：{exc}")
-        new_order = self.signed_exchange_request(
+        new_order = self.signed_exchange_request_position_aware(
             "POST",
             "/fapi/v1/algoOrder",
             {
@@ -1852,6 +1926,7 @@ class PaperBot:
                 "closePosition": "true",
                 "workingType": futures.get("working_type", "MARK_PRICE"),
             },
+            side,
         )
         pos["stop_price"] = new_stop
         pos["stop_algo_id"] = new_order.get("algoId")
@@ -1877,7 +1952,7 @@ class PaperBot:
         positions = list(self.state.get("positions", []))
         if not positions:
             return
-        exchange_symbols = {info["symbol"]: info for info in self.fetch_exchange_symbols()}
+        exchange_symbols = self.get_exchange_symbols()
         updated = False
         for pos in positions:
             plan = self.stop_lift_plan(pos)
@@ -1895,8 +1970,11 @@ class PaperBot:
             self.persist()
 
     def exchange_open_position(self, signal: Signal, symbol_info: dict[str, Any]) -> dict[str, Any] | None:
+        sizing = self.position_plan(signal, self.get_available_balance())
+        return self.exchange_open_position_with_sizing(signal, symbol_info, sizing)
+
+    def exchange_open_position_with_sizing(self, signal: Signal, symbol_info: dict[str, Any], sizing: dict[str, Any]) -> dict[str, Any] | None:
         available = self.get_available_balance()
-        sizing = self.position_plan(signal, available)
         margin = fnum(sizing.get("margin_usdt"))
         if margin <= 0:
             raise RuntimeError(f"{self.exchange_label()} 可用 USDT 余额不足")
@@ -1909,7 +1987,7 @@ class PaperBot:
         qty_text = self.round_quantity(symbol_info, notional / signal.price)
         if fnum(qty_text) <= 0:
             raise RuntimeError(f"{signal.symbol} 计算出的下单数量为 0")
-        entry_order = self.signed_exchange_request(
+        entry_order = self.signed_exchange_request_position_aware(
             "POST",
             "/fapi/v1/order",
             {
@@ -1918,6 +1996,7 @@ class PaperBot:
                 "type": "MARKET",
                 "quantity": qty_text,
             },
+            signal.side,
         )
 
         stop_pct = float(self.config.get("stop_loss_roi_pct", 86.0)) / max(1.0, leverage) / 100.0
@@ -1932,7 +2011,7 @@ class PaperBot:
         stop_order: dict[str, Any] = {}
         take_order: dict[str, Any] = {}
         try:
-            stop_order = self.signed_exchange_request(
+            stop_order = self.signed_exchange_request_position_aware(
                 "POST",
                 "/fapi/v1/algoOrder",
                 {
@@ -1944,8 +2023,9 @@ class PaperBot:
                     "closePosition": "true",
                     "workingType": futures.get("working_type", "MARK_PRICE"),
                 },
+                signal.side,
             )
-            take_order = self.signed_exchange_request(
+            take_order = self.signed_exchange_request_position_aware(
                 "POST",
                 "/fapi/v1/algoOrder",
                 {
@@ -1957,11 +2037,12 @@ class PaperBot:
                     "closePosition": "true",
                     "workingType": futures.get("working_type", "MARK_PRICE"),
                 },
+                signal.side,
             )
         except Exception as exc:
             self.event("error", f"{signal.symbol} 已开仓但保护单提交失败：{exc}")
             try:
-                self.signed_exchange_request(
+                self.signed_exchange_request_position_aware(
                     "POST",
                     "/fapi/v1/order",
                     {
@@ -1971,6 +2052,7 @@ class PaperBot:
                         "quantity": qty_text,
                         "reduceOnly": "true",
                     },
+                    signal.side,
                 )
                 self.event("risk", f"{signal.symbol} 保护单失败，已提交紧急平仓")
             except Exception as close_exc:
@@ -2012,7 +2094,7 @@ class PaperBot:
         symbol = pos["symbol"]
         side = self.close_side(pos["side"])
         qty_text = str(pos.get("quantity"))
-        self.signed_exchange_request(
+        self.signed_exchange_request_position_aware(
             "POST",
             "/fapi/v1/order",
             {
@@ -2022,6 +2104,7 @@ class PaperBot:
                 "quantity": qty_text,
                 "reduceOnly": "true",
             },
+            str(pos.get("side", "")),
         )
 
     def fetch_klines(self, symbol: str) -> list[list[Any]]:
@@ -2418,23 +2501,26 @@ class PaperBot:
                 reject = self.direction_mode_reject_reason(side)
 
             priority = "高" if score >= 6 else "中" if score >= 4.5 else "低"
-            try:
-                if index >= max(6, enrich_limit):
-                    raise RuntimeError("skip slow derivatives enrichment")
-                market_stats = self.fetch_signal_market_stats(symbol, item)
-            except Exception:
-                market_stats = {
-                    "open_interest_usdt": volume * 0.22,
-                    "open_interest_24h_pct": change * 0.55,
-                    "open_interest_4h_pct": change_4h * 0.75,
-                    "open_interest_1h_pct": change_1h * 0.75,
-                    "funding_rate_pct": 0.0,
-                    "long_short_ratio": 1.0,
-                    "volume_4h_ratio": max(0.1, min(20.0, volume_ratio * 3.2)),
-                    "taker_long_short_ratio": 1.0,
-                    "oi_volume_ratio": 0.22,
-                }
-            quality = self.entry_quality(side, change, change_4h, change_1h, short_move, volume_ratio, trend, market_stats, kline_enriched)
+            market_stats = {
+                "open_interest_usdt": volume * 0.22,
+                "open_interest_24h_pct": change * 0.55,
+                "open_interest_4h_pct": change_4h * 0.75,
+                "open_interest_1h_pct": change_1h * 0.75,
+                "funding_rate_pct": 0.0,
+                "long_short_ratio": 1.0,
+                "volume_4h_ratio": max(0.1, min(20.0, volume_ratio * 3.2)),
+                "taker_long_short_ratio": 1.0,
+                "oi_volume_ratio": 0.22,
+            }
+            quality = {"score": 0.0, "label": "跳过", "reason": "第一关未通过，跳过入场质量"}
+            if not reject:
+                try:
+                    if index >= max(6, enrich_limit):
+                        raise RuntimeError("skip slow derivatives enrichment")
+                    market_stats = self.fetch_signal_market_stats(symbol, item)
+                except Exception:
+                    pass
+                quality = self.entry_quality(side, change, change_4h, change_1h, short_move, volume_ratio, trend, market_stats, kline_enriched)
             if not reject and self.config.get("entry_quality_enabled", True):
                 min_quality = float(self.config.get("entry_quality_min_score", 6.0))
                 if fnum(quality.get("score")) < min_quality:
@@ -2701,7 +2787,7 @@ class PaperBot:
         try:
             exchange_symbols = self.get_exchange_symbols()
         except Exception as exc:
-            self.event("error", f"读取 Binance Testnet 交易规则失败：{exc}")
+            self.event("error", f"读取 {self.exchange_label()} 交易规则失败：{exc}")
             return 0
         opened = 0
         for signal in signals:
@@ -2734,8 +2820,8 @@ class PaperBot:
                 continue
             symbol_info = exchange_symbols.get(signal.symbol)
             if not symbol_info:
-                self.update_signal_decision(signal, "Testnet 无此交易对", "开仓前复核：不在 Binance Futures Testnet 交易对中")
-                self.event("warn", f"{signal.symbol} 不在 Binance Futures Testnet 交易对中，跳过")
+                self.update_signal_decision(signal, f"{self.exchange_label()} 无此交易对", f"开仓前复核：不在 {self.exchange_label()} 交易对中")
+                self.event("warn", f"{signal.symbol} 不在 {self.exchange_label()} 交易对中，跳过")
                 continue
             if self.config.get("analyzer_confirmation_enabled", True) and self.config.get("analyzer_realtime_before_open", True):
                 try:
@@ -2760,19 +2846,19 @@ class PaperBot:
             try:
                 record = self.exchange_open_position(signal, symbol_info)
             except Exception as exc:
-                self.update_signal_decision(signal, f"Binance Testnet 开仓失败：{exc}", f"下单结果：失败，{exc}")
-                self.event("error", f"{signal.symbol} Binance Testnet 开仓失败：{exc}")
+                self.update_signal_decision(signal, f"{self.exchange_label()} 开仓失败：{exc}", f"下单结果：失败，{exc}")
+                self.event("error", f"{signal.symbol} {self.exchange_label()} 开仓失败：{exc}")
                 continue
             if record:
                 signal.reject_reason = ""
-                signal.decision_summary = "已提交 Binance Testnet 开仓"
+                signal.decision_summary = f"已提交 {self.exchange_label()} 开仓"
                 signal.decision_steps.append(f"下单结果：已开仓，订单 {record.get('entry_order_id') or '-'}")
                 record["decision_summary"] = signal.decision_summary
                 record["decision_steps"] = list(signal.decision_steps)
                 self.mark_signal_review_opened(signal, record)
                 self.event(
                     "trade",
-                    f"Binance Testnet 开仓 {signal.symbol} {self.side_cn(signal.side)}，保证金 {record['margin_usdt']:.2f} U",
+                    f"{self.exchange_label()} 开仓 {signal.symbol} {self.side_cn(signal.side)}，保证金 {record['margin_usdt']:.2f} U",
                 )
                 self.notify_open_position(signal, record)
                 self.publish_square_open_position_async(signal, record)
