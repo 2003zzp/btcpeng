@@ -69,7 +69,7 @@ def deep_update(target: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
 def load_json(path: Path, fallback: Any) -> Any:
     if not path.exists():
         return fallback
-    with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 

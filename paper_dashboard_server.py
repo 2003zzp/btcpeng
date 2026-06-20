@@ -67,6 +67,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "analyzer_min_confidence_pct": 90.0,
     "analyzer_timeout_sec": 12.0,
     "analyzer_cache_ttl_sec": 60,
+    "analyzer_failed_cache_ttl_sec": 120,
     "analyzer_realtime_before_open": True,
     "analyzer_max_workers": 2,
     "max_candidates_per_scan": 18,
@@ -81,7 +82,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "margin_per_trade_usdt": 9.0,
     "leverage": 3,
     "max_open_positions": 15,
-    "max_exposure_pct": 65.0,
+    "max_exposure_pct": 200.0,
     "max_daily_profit_enabled": True,
     "max_daily_profit_usdt": 30.0,
     "max_daily_loss_enabled": True,
@@ -237,7 +238,7 @@ def price_text(value: Any) -> str:
 def load_json(path: Path, fallback: Any) -> Any:
     if not path.exists():
         return fallback
-    with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 
@@ -2294,7 +2295,7 @@ class PaperBot:
             label = "不合格"
         return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:7])}
 
-    def analyzer_confirmation(self, symbol: str) -> dict[str, Any]:
+    def analyzer_confirmation(self, symbol: str, system_side: str = "") -> dict[str, Any]:
         if not self.config.get("analyzer_confirmation_enabled", True):
             return {"direction": "关闭", "confidence": 0.0, "reason": "分析器确认未启用"}
         now = time.time()
@@ -2302,6 +2303,15 @@ class PaperBot:
         ttl = max(30, int(self.config.get("analyzer_cache_ttl_sec", 300)))
         if cached and now - fnum(cached.get("time")) <= ttl:
             return cached
+        failed_ttl = max(ttl, int(self.config.get("analyzer_failed_cache_ttl_sec", 120)))
+        if cached and now - fnum(cached.get("time")) <= failed_ttl:
+            direction = str(cached.get("direction", "等待"))
+            confidence = fnum(cached.get("confidence"))
+            min_confidence = float(self.config.get("analyzer_min_confidence_pct", 90.0))
+            if direction in {"错误", "观望"} or confidence <= min_confidence:
+                return cached
+            if system_side and self.analyzer_reject_reason(system_side, cached):
+                return cached
         self.enqueue_analyzer(symbol)
         return {"direction": "等待", "confidence": 0.0, "reason": "分析器后台分析中"}
 
@@ -2344,8 +2354,12 @@ class PaperBot:
                 candidate["analyzer_direction"] = result.get("direction", "等待")
                 candidate["analyzer_confidence_pct"] = round(fnum(result.get("confidence")), 1)
                 candidate["analyzer_reason"] = result.get("reason", "")
-                if candidate.get("reject_reason") == "等待分析器确认":
-                    candidate["reject_reason"] = self.analyzer_reject_reason(str(candidate.get("side", "")), result)
+                updated_reject = self.analyzer_reject_reason(str(candidate.get("side", "")), result)
+                current_reject = str(candidate.get("reject_reason", ""))
+                if current_reject == "等待分析器确认" or current_reject.startswith("分析器"):
+                    candidate["reject_reason"] = updated_reject
+                    candidate["decision_summary"] = self.decision_summary(updated_reject)
+                    self.sync_candidate_decision_steps(candidate)
         self.persist()
 
     def run_analyzer_job(self, symbol: str) -> None:
@@ -2392,6 +2406,7 @@ class PaperBot:
     def refresh_candidate_analyzer_cache(self) -> None:
         now = time.time()
         ttl = max(30, int(self.config.get("analyzer_cache_ttl_sec", 300)))
+        failed_ttl = max(ttl, int(self.config.get("analyzer_failed_cache_ttl_sec", 120)))
         for candidate in self.state.get("candidates", []):
             symbol = str(candidate.get("symbol", ""))
             result = self.analyzer_cache.get(symbol)
@@ -2399,14 +2414,18 @@ class PaperBot:
                 continue
             if result.get("source") != FAST_CONFIRM_SOURCE:
                 continue
-            if now - fnum(result.get("time")) > ttl:
+            age = now - fnum(result.get("time"))
+            cached_reject = self.analyzer_reject_reason(str(candidate.get("side", "")), result)
+            valid_ttl = failed_ttl if cached_reject else ttl
+            if age > valid_ttl:
                 continue
             candidate["analyzer_direction"] = result.get("direction", "等待")
             candidate["analyzer_confidence_pct"] = round(fnum(result.get("confidence")), 1)
             candidate["analyzer_reason"] = result.get("reason", "")
             reject = str(candidate.get("reject_reason", ""))
             if reject == "等待分析器确认" or reject.startswith("分析器"):
-                candidate["reject_reason"] = self.analyzer_reject_reason(str(candidate.get("side", "")), result)
+                candidate["reject_reason"] = cached_reject
+                self.sync_candidate_decision_steps(candidate)
 
     def demo_tickers(self) -> list[dict[str, Any]]:
         symbols = ["BLESSUSDT", "BEATUSDT", "SAHARAUSDT", "VELVETUSDT", "OPNUSDT", "EPICUSDT", "ZKJUSDT"]
@@ -2512,7 +2531,7 @@ class PaperBot:
                 "taker_long_short_ratio": 1.0,
                 "oi_volume_ratio": 0.22,
             }
-            quality = {"score": 0.0, "label": "跳过", "reason": "第一关未通过，跳过入场质量"}
+            quality = {"score": 10.0, "label": "关闭", "reason": "入场质量第二关已临时关闭，仅使用系统总分和分析器确认"}
             if not reject:
                 try:
                     if index >= max(6, enrich_limit):
@@ -2520,11 +2539,7 @@ class PaperBot:
                     market_stats = self.fetch_signal_market_stats(symbol, item)
                 except Exception:
                     pass
-                quality = self.entry_quality(side, change, change_4h, change_1h, short_move, volume_ratio, trend, market_stats, kline_enriched)
-            if not reject and self.config.get("entry_quality_enabled", True):
-                min_quality = float(self.config.get("entry_quality_min_score", 6.0))
-                if fnum(quality.get("score")) < min_quality:
-                    reject = f"入场质量 {fnum(quality.get('score')):.1f} 低于 {min_quality:.1f}：{quality.get('reason')}"
+                # 入场质量第二关临时关闭：保留 OI/资金费率等展示数据，但不计算质量分、不拦截开仓。
             analyzer_direction = "未分析"
             analyzer_confidence = 0.0
             analyzer_reason = ""
@@ -2532,7 +2547,7 @@ class PaperBot:
             if should_update_analyzer and self.config.get("analyzer_confirmation_enabled", True):
                 original_reject = reject
                 try:
-                    analyzer_result = self.analyzer_confirmation(symbol)
+                    analyzer_result = self.analyzer_confirmation(symbol, side)
                     analyzer_direction = str(analyzer_result.get("direction", "观望"))
                     analyzer_confidence = fnum(analyzer_result.get("confidence"))
                     analyzer_reason = str(analyzer_result.get("reason", ""))
@@ -2653,6 +2668,30 @@ class PaperBot:
             signal.decision_steps.append(f"最终结论：{signal.decision_summary}")
         else:
             signal.decision_steps[-1] = f"最终结论：{signal.decision_summary}"
+
+    def sync_candidate_decision_steps(self, candidate: dict[str, Any]) -> None:
+        steps = candidate.get("decision_steps")
+        if not isinstance(steps, list):
+            return
+        direction = str(candidate.get("analyzer_direction", "未分析"))
+        confidence = fnum(candidate.get("analyzer_confidence_pct"))
+        reason = str(candidate.get("analyzer_reason", ""))
+        analyzer_step = f"分析器：{direction} {confidence:.1f}%，{reason or '-'}"
+        replaced = False
+        for index, step in enumerate(steps):
+            if str(step).startswith("分析器："):
+                steps[index] = analyzer_step
+                replaced = True
+                break
+        if not replaced:
+            insert_at = max(0, len(steps) - 1)
+            steps.insert(insert_at, analyzer_step)
+        summary = self.decision_summary(str(candidate.get("reject_reason", "")))
+        candidate["decision_summary"] = summary
+        if steps and str(steps[-1]).startswith("最终结论："):
+            steps[-1] = f"最终结论：{summary}"
+        else:
+            steps.append(f"最终结论：{summary}")
 
     def decision_summary(self, reject: str) -> str:
         return reject or "通过候选筛选，等待开仓前实时确认"
@@ -2795,9 +2834,7 @@ class PaperBot:
                 break
             if signal.reject_reason or signal.price <= 0:
                 continue
-            quality_applies = self.config.get("entry_quality_enabled", True) and (
-                not self.config.get("entry_quality_long_only", True) or signal.side == "LONG"
-            )
+            quality_applies = False  # 入场质量第二关临时关闭，仅保留第一关总分和第三关分析器确认。
             if quality_applies and fnum(signal.entry_quality_score) < float(self.config.get("entry_quality_min_score", 6.0)):
                 quality_reason = f"入场质量 {signal.entry_quality_score:.1f} 未达标：{signal.entry_quality_reason}"
                 self.update_signal_decision(signal, quality_reason, f"开仓前复核：{quality_reason}")
