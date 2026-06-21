@@ -227,6 +227,10 @@
             入场质量阈值
             <input name="entry_quality_min_score" type="number" min="0" max="10" step="0.1" />
           </label>
+          <label>
+            置信度阈值 (%)
+            <input name="analyzer_min_confidence_pct" type="number" min="1" max="100" step="0.1" />
+          </label>
           <label class="settings-check">
             <input name="entry_quality_enabled" type="checkbox" />
             <span>启用入场质量过滤</span>
@@ -324,7 +328,7 @@
               </tr>
             </thead>
             <tbody id="candidateRows">
-              <tr><td colspan="22" class="empty">候选表空</td></tr>
+              <tr><td colspan="23" class="empty">候选表空</td></tr>
             </tbody>
           </table>
         </div>
