@@ -654,8 +654,14 @@ function renderCandidates(rows) {
     th.textContent = "质量";
     headRow.insertBefore(th, headRow.children[2] || null);
   }
+  if (headRow && !headRow.querySelector("[data-entry-timing-head]")) {
+    const th = document.createElement("th");
+    th.dataset.entryTimingHead = "true";
+    th.textContent = "入场点";
+    headRow.insertBefore(th, headRow.children[3] || null);
+  }
   if (!rows.length) {
-    els.candidateRows.innerHTML = `<tr><td colspan="23" class="empty">候选表空</td></tr>`;
+    els.candidateRows.innerHTML = `<tr><td colspan="24" class="empty">候选表空</td></tr>`;
     return;
   }
   els.candidateRows.innerHTML = rows
@@ -670,6 +676,7 @@ function renderCandidates(rows) {
           <td>${row.symbol}</td>
           <td><span class="score-badge">${Number(row.score || 0).toFixed(1)}</span></td>
           <td title="${titleText(row.entry_quality_reason || "-")}"><span class="score-badge">${escapeHtml(row.entry_quality_label || "-")} ${Number(row.entry_quality_score || 0).toFixed(1)}</span></td>
+          <td title="${titleText(row.entry_timing_reason || "-")}"><span class="score-badge">${escapeHtml(row.entry_timing_label || "-")} ${Number(row.entry_timing_score || 0).toFixed(1)}</span></td>
           <td>${sidePill(row.side)}</td>
           <td>${row.analyzer_direction || "-"}</td>
           <td class="${Number(row.analyzer_confidence_pct || 0) > 90 ? "positive" : "danger"}">${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%</td>
