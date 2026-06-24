@@ -1166,6 +1166,7 @@ class PaperBot:
             "entry_timing_small_leverage_cap": int,
             "signal_score_threshold": float,
             "analyzer_min_confidence_pct": float,
+            "analyzer_realtime_before_open": str,
             "max_new_positions_per_scan": int,
             "trade_direction_mode": str,
             "blocked_symbols": str,
@@ -1178,7 +1179,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled", "analyzer_realtime_before_open"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:

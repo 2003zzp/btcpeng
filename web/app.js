@@ -93,7 +93,9 @@ function normalizeSettingsLabels() {
       if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) node.textContent = `${textValue} `;
     }
   }
-  const toggles = {};
+  const toggles = {
+    analyzer_realtime_before_open: "启用分析器二次确认",
+  };
   for (const [name, textValue] of Object.entries(toggles)) {
     const input = els.form?.elements?.[name];
     const label = input?.closest("label");
@@ -105,6 +107,10 @@ function normalizeSettingsLabels() {
       label.appendChild(text);
     }
     text.textContent = textValue;
+  }
+  const realtimeLabel = els.form?.elements?.analyzer_realtime_before_open?.closest("label");
+  if (realtimeLabel) {
+    realtimeLabel.title = "开启后，候选通过后下单前会再次实时跑分析器；关闭后，只使用候选阶段已经通过的分析器结果，开仓更快。";
   }
 }
 
