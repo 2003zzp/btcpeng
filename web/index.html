@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#061020" />
     <link rel="icon" href="data:," />
-    <title>妖币模拟仓自动交易系统</title>
+    <title>妖币自动交易系统</title>
     <link rel="stylesheet" href="/styles.css" />
     <script defer src="/app.js"></script>
   </head>
@@ -14,7 +14,7 @@
       <div class="brand">
         <span class="brand-mark">⌁</span>
         <div class="brand-copy">
-          <h1>妖币模拟仓自动交易系统</h1>
+          <h1>妖币自动交易系统</h1>
           <span class="version-pill">V1.5</span>
         </div>
         <span id="exchangeBadge" class="version">TESTNET</span>
@@ -177,22 +177,6 @@
             止损 ROI (%)
             <input name="stop_loss_roi_pct" type="number" min="1" step="1" />
           </label>
-          <label class="settings-check">
-            <input name="auto_stop_lift_enabled" type="checkbox" />
-            <span>启用自动推损</span>
-          </label>
-          <label>
-            保本触发 ROI (%)
-            <input name="breakeven_trigger_roi_pct" type="number" min="1" step="1" />
-          </label>
-          <label>
-            锁利触发 ROI (%)
-            <input name="lock_profit_trigger_roi_pct" type="number" min="1" step="1" />
-          </label>
-          <label>
-            锁利 ROI (%)
-            <input name="lock_profit_roi_pct" type="number" min="0" step="1" />
-          </label>
           <label>
             扫描间隔 (秒)
             <input name="scan_interval_sec" type="number" min="2" step="1" />
@@ -224,10 +208,6 @@
             <span>启动实盘交易</span>
           </label>
           <label>
-            入场质量阈值
-            <input name="entry_quality_min_score" type="number" min="0" max="10" step="0.1" />
-          </label>
-          <label>
             置信度阈值 (%)
             <input name="analyzer_min_confidence_pct" type="number" min="1" max="100" step="0.1" />
           </label>
@@ -255,10 +235,6 @@
             小仓杠杆上限
             <input name="entry_timing_small_leverage_cap" type="number" min="1" max="20" step="1" />
           </label>
-          <label class="settings-check">
-            <input name="entry_quality_enabled" type="checkbox" />
-            <span>启用入场质量过滤</span>
-          </label>
           <label>
             今日盈利停开 (U)
             <input name="max_daily_profit_usdt" type="number" min="0.01" step="0.01" />
@@ -278,18 +254,6 @@
           <label class="settings-check">
             <input name="square_publish_on_open" type="checkbox" />
             <span>开仓后自动发布到 Binance Square</span>
-          </label>
-          <label class="settings-check">
-            <input name="dynamic_position_sizing_enabled" type="checkbox" />
-            <span>启用质量分动态仓位</span>
-          </label>
-          <label>
-            动态最高杠杆
-            <input name="dynamic_max_leverage" type="number" min="1" max="20" step="1" />
-          </label>
-          <label>
-            最大保证金倍率
-            <input name="dynamic_max_margin_multiplier" type="number" min="0.1" max="3" step="0.1" />
           </label>
         </form>
       </section>
@@ -352,7 +316,7 @@
               </tr>
             </thead>
             <tbody id="candidateRows">
-              <tr><td colspan="24" class="empty">候选表空</td></tr>
+              <tr><td colspan="23" class="empty">候选表空</td></tr>
             </tbody>
           </table>
         </div>
@@ -361,7 +325,7 @@
       <section class="table-section">
         <div class="section-title">
           <span>◇</span>
-          <h2>模拟仓交易记录</h2>
+          <h2>交易记录</h2>
         </div>
         <div class="table-wrap">
           <table>

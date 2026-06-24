@@ -71,7 +71,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "analyzer_realtime_before_open": True,
     "analyzer_max_workers": 2,
     "max_candidates_per_scan": 18,
-    "max_kline_enriched_candidates": 8,
+    "max_kline_enriched_candidates": 0,
     "entry_quality_enabled": True,
     "entry_quality_min_score": 6.0,
     "entry_quality_long_only": True,
@@ -81,9 +81,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "entry_timing_small_score": 4.5,
     "entry_timing_small_multiplier": 0.55,
     "entry_timing_small_leverage_cap": 4,
-    "dynamic_position_sizing_enabled": True,
-    "dynamic_max_leverage": 6,
-    "dynamic_max_margin_multiplier": 1.5,
     "max_new_positions_per_scan": 2,
     "margin_per_trade_usdt": 9.0,
     "leverage": 3,
@@ -97,10 +94,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "stop_loss_cooldown_minutes": 60,
     "take_profit_roi_pct": 90.0,
     "stop_loss_roi_pct": 86.0,
-    "auto_stop_lift_enabled": True,
-    "breakeven_trigger_roi_pct": 70.0,
-    "lock_profit_trigger_roi_pct": 120.0,
-    "lock_profit_roi_pct": 30.0,
     "telegram_enabled": True,
     "square_publish_enabled": True,
     "square_publish_on_open": True,
@@ -154,6 +147,7 @@ class Signal:
     entry_timing_score: float
     entry_timing_label: str
     entry_timing_reason: str
+    entry_type: str
     risk_level: str
     analyzer_direction: str
     analyzer_confidence_pct: float
@@ -482,7 +476,8 @@ class PaperBot:
         state["trade_history"] = [
             item
             for item in state.get("trade_history", [])
-            if str(item.get("id", "")).startswith("income-")
+            if self.record_belongs_to_current_exchange(item)
+            and not str(item.get("id", "")).startswith(f"{self.exchange_mode()}-income-")
         ]
         state.setdefault("events", [])
         state.setdefault("analyzer_cache", {})
@@ -584,6 +579,7 @@ class PaperBot:
             "entry_timing_score": signal.entry_timing_score,
             "entry_timing_label": signal.entry_timing_label,
             "entry_timing_reason": signal.entry_timing_reason,
+            "entry_type": signal.entry_type,
             "risk_level": signal.risk_level,
             "analyzer_direction": signal.analyzer_direction,
             "analyzer_confidence_pct": signal.analyzer_confidence_pct,
@@ -1152,10 +1148,6 @@ class PaperBot:
             "leverage": int,
             "take_profit_roi_pct": float,
             "stop_loss_roi_pct": float,
-            "auto_stop_lift_enabled": str,
-            "breakeven_trigger_roi_pct": float,
-            "lock_profit_trigger_roi_pct": float,
-            "lock_profit_roi_pct": float,
             "scan_interval_sec": int,
             "max_open_positions": int,
             "max_exposure_pct": float,
@@ -1172,9 +1164,6 @@ class PaperBot:
             "entry_timing_small_score": float,
             "entry_timing_small_multiplier": float,
             "entry_timing_small_leverage_cap": int,
-            "dynamic_position_sizing_enabled": str,
-            "dynamic_max_leverage": int,
-            "dynamic_max_margin_multiplier": float,
             "signal_score_threshold": float,
             "analyzer_min_confidence_pct": float,
             "max_new_positions_per_scan": int,
@@ -1189,7 +1178,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled", "dynamic_position_sizing_enabled", "auto_stop_lift_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "live_trading_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -1200,15 +1189,12 @@ class PaperBot:
                         value = "both"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "scan_interval_sec", "max_open_positions", "max_new_positions_per_scan", "dynamic_max_leverage", "entry_timing_small_leverage_cap"}:
+                if key in {"leverage", "scan_interval_sec", "max_open_positions", "max_new_positions_per_scan", "entry_timing_small_leverage_cap"}:
                     value = max(1, int(value))
                 if key in {
                     "margin_per_trade_usdt",
                     "take_profit_roi_pct",
                     "stop_loss_roi_pct",
-                    "breakeven_trigger_roi_pct",
-                    "lock_profit_trigger_roi_pct",
-                    "lock_profit_roi_pct",
                     "signal_score_threshold",
                     "analyzer_min_confidence_pct",
                     "max_exposure_pct",
@@ -1219,7 +1205,6 @@ class PaperBot:
                     "entry_timing_normal_score",
                     "entry_timing_small_score",
                     "entry_timing_small_multiplier",
-                    "dynamic_max_margin_multiplier",
                 }:
                     value = max(0.01, float(value))
                 self.config[key] = value
@@ -1287,7 +1272,6 @@ class PaperBot:
             self.update_signal_future_returns(price_map)
             try:
                 self.sync_exchange_state()
-                self.apply_auto_stop_lift()
             except Exception as exc:
                 with self.lock:
                     self.state["exchange_status"] = "error"
@@ -1477,27 +1461,24 @@ class PaperBot:
             self.state["exchange_account_mode"] = self.exchange_mode()
             self.persist()
 
-        realized_history: list[dict[str, Any]] = []
+        position_history: list[dict[str, Any]] | None = None
         try:
-            realized_history = self.fetch_realized_pnl_history(open_history)
+            position_history = self.fetch_today_position_history(open_history)
         except Exception as exc:
             with self.lock:
-                self.event("warn", f"{self.exchange_label()} 资金流水同步失败，已保留持仓对账结果：{exc}")
+                self.event("warn", f"{self.exchange_label()} 仓位历史同步失败，已保留持仓对账结果：{exc}")
 
         account_balance = self.get_account_balance_snapshot()
         with self.lock:
-            if realized_history:
-                self.notify_new_closed_trades(realized_history)
-                merged_history = [*realized_history, *self.state.get("trade_history", [])]
-                seen_history_ids: set[str] = set()
-                deduped_history: list[dict[str, Any]] = []
-                for trade in merged_history:
-                    trade_id = str(trade.get("id", ""))
-                    if not trade_id or trade_id in seen_history_ids:
-                        continue
-                    seen_history_ids.add(trade_id)
-                    deduped_history.append(trade)
-                self.state["trade_history"] = deduped_history[:200]
+            if position_history is not None and (position_history or not closed_records):
+                self.notify_new_closed_trades(position_history)
+                today = datetime.now().astimezone().date().isoformat()
+                old_other_days = [
+                    trade
+                    for trade in self.state.get("trade_history", [])
+                    if not str(trade.get("closed_at", "")).startswith(today)
+                ]
+                self.state["trade_history"] = [*position_history, *old_other_days][:200]
             self.state["account_equity_usdt"] = account_balance["equity_usdt"]
             self.state["available_balance_usdt"] = account_balance["available_balance_usdt"]
             self.state["wallet_balance_usdt"] = account_balance["wallet_balance_usdt"]
@@ -1512,25 +1493,6 @@ class PaperBot:
             params["startTime"] = max(0, start_time_ms)
         payload = self.signed_exchange_request("GET", "/fapi/v1/userTrades", params)
         return payload if isinstance(payload, list) else []
-
-    def fetch_realized_pnl_income(self, start_time_ms: int = 0) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"incomeType": "REALIZED_PNL", "limit": 1000}
-        if start_time_ms > 0:
-            params["startTime"] = max(0, start_time_ms)
-        payload = self.signed_exchange_request("GET", "/fapi/v1/income", params)
-        return payload if isinstance(payload, list) else []
-
-    def find_open_record_for_income(self, income: dict[str, Any], open_history: list[dict[str, Any]]) -> dict[str, Any]:
-        symbol = str(income.get("symbol", ""))
-        income_time = fnum(income.get("time"))
-        candidates = [
-            record
-            for record in open_history
-            if str(record.get("symbol", "")) == symbol and parse_time_ms(record.get("time")) <= income_time
-        ]
-        if not candidates:
-            return {}
-        return max(candidates, key=lambda record: parse_time_ms(record.get("time")))
 
     def find_open_record_for_position(self, symbol: str, side: str, open_history: list[dict[str, Any]]) -> dict[str, Any]:
         candidates = [
@@ -1559,95 +1521,155 @@ class PaperBot:
             return price
         return self.estimate_exit_price_from_pnl(trade, fnum(trade.get("pnl_usdt")))
 
-    def infer_exit_price_for_income(self, symbol: str, open_record: dict[str, Any], income_time: float, pnl: float) -> float:
-        entry = fnum(open_record.get("entry_price"))
-        opened_ms = parse_time_ms(open_record.get("time"))
-        if not symbol or opened_ms <= 0:
-            return self.estimate_exit_price_from_pnl(open_record, pnl)
-        try:
-            trades = self.fetch_recent_user_trades(symbol, max(0, opened_ms - 60_000))
-        except Exception:
-            return self.estimate_exit_price_from_pnl(open_record, pnl)
-        close_side = self.close_side(str(open_record.get("side", "")))
-        target_qty = abs(fnum(open_record.get("quantity")))
-        window_end = income_time + 10 * 60 * 1000 if income_time > 0 else float("inf")
-        exit_trades = []
-        collected_qty = 0.0
-        for trade in sorted(trades, key=lambda item: fnum(item.get("time"))):
-            trade_time = fnum(trade.get("time"))
-            if trade_time < opened_ms or trade_time > window_end:
-                continue
-            if str(trade.get("side", "")).upper() != close_side:
-                continue
-            qty = abs(fnum(first_present(trade, ["qty", "executedQty"])))
-            price = fnum(first_present(trade, ["price"]))
-            if qty <= 0 or price <= 0:
-                continue
-            exit_trades.append(trade)
-            collected_qty += qty
-            if target_qty > 0 and collected_qty >= target_qty * 0.98:
-                break
-        if exit_trades:
-            qty_sum = sum(abs(fnum(first_present(trade, ["qty", "executedQty"]))) for trade in exit_trades)
-            notional = sum(fnum(first_present(trade, ["price"])) * abs(fnum(first_present(trade, ["qty", "executedQty"]))) for trade in exit_trades)
-            if qty_sum > 0:
-                return notional / qty_sum
-        estimated = self.estimate_exit_price_from_pnl(open_record, pnl)
-        return estimated if estimated > 0 else entry
+    def today_local_range_ms(self) -> tuple[int, int]:
+        start = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
-    def fetch_realized_pnl_history(self, open_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        start_ms = parse_time_ms(self.state.get("test_started_at"))
-        if not start_ms:
-            open_times = [parse_time_ms(record.get("time")) for record in open_history]
-            open_times = [value for value in open_times if value > 0]
-            if open_times:
-                start_ms = min(open_times)
-        rows = []
+    def open_history_symbols(self, open_history: list[dict[str, Any]]) -> list[str]:
+        symbols = []
         seen = set()
-        for item in self.fetch_realized_pnl_income(start_ms):
-            pnl = fnum(item.get("income"))
-            if abs(pnl) <= 0:
+        for record in open_history:
+            symbol = str(record.get("symbol", ""))
+            if not symbol or symbol in seen:
                 continue
-            symbol = str(item.get("symbol", ""))
-            income_time = fnum(item.get("time"))
-            row_id = str(item.get("tranId") or f"{symbol}-{income_time}-{pnl}")
-            if row_id in seen:
-                continue
-            seen.add(row_id)
-            open_record = self.find_open_record_for_income(item, open_history)
-            reason = "Binance Testnet 止盈平仓" if pnl > 0 else "Binance Testnet 止损平仓"
-            exit_price = self.infer_exit_price_for_income(symbol, open_record, income_time, pnl)
-            row = {
-                "id": f"{self.exchange_mode()}-income-{row_id}",
-                "execution_mode": self.exchange_mode(),
-                "symbol": symbol,
-                "side": open_record.get("side", ""),
-                "entry_price": fnum(open_record.get("entry_price")),
-                "exit_price": exit_price,
-                "quantity": fnum(open_record.get("quantity")),
-                "margin_usdt": fnum(open_record.get("margin_usdt")),
-                "pnl_usdt": pnl,
-                "roi_pct": pnl / max(0.01, fnum(open_record.get("margin_usdt"))) * 100.0 if open_record else 0.0,
-                "opened_at": open_record.get("time") or "",
-                "closed_at": datetime.fromtimestamp(income_time / 1000, tz=timezone.utc).isoformat(timespec="seconds")
-                if income_time > 0
-                else iso_now(),
-                "close_reason": reason,
-                "trigger_reason": open_record.get("trigger_reason", "Binance Testnet 资金流水"),
-                "entry_order_id": open_record.get("entry_order_id", ""),
-                "signal_review_id": open_record.get("signal_review_id", ""),
-                "strategy_score": fnum(open_record.get("score")),
-                "analyzer_direction": open_record.get("analyzer_direction", ""),
-                "analyzer_confidence_pct": fnum(open_record.get("analyzer_confidence_pct")),
-                "decision_summary": open_record.get("decision_summary", ""),
-                "decision_steps": open_record.get("decision_steps", []),
-            }
-            if fnum(row.get("exit_price")) <= 0:
-                row["exit_price"] = self.display_exit_price(row)
-            self.mark_signal_review_closed(open_record, row)
-            rows.append(row)
+            seen.add(symbol)
+            symbols.append(symbol)
+        return symbols
+
+    def find_open_record_for_trade_window(
+        self,
+        symbol: str,
+        side: str,
+        closed_ms: int,
+        open_history: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        candidates = [
+            record
+            for record in open_history
+            if str(record.get("symbol", "")) == symbol
+            and str(record.get("side", "")) == side
+            and parse_time_ms(record.get("time")) <= closed_ms
+        ]
+        if not candidates:
+            return {}
+        return max(candidates, key=lambda record: parse_time_ms(record.get("time")))
+
+    def fetch_today_position_history(self, open_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        start_ms, end_ms = self.today_local_range_ms()
+        rows: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for symbol in self.open_history_symbols(open_history):
+            trades = self.fetch_recent_user_trades(symbol, max(0, start_ms - 24 * 60 * 60 * 1000))
+            close_groups = self.group_closed_position_trades(symbol, trades, start_ms, end_ms)
+            for group in close_groups:
+                close_ms = int(group.get("time_ms", 0))
+                side = str(group.get("side", ""))
+                open_record = self.find_open_record_for_trade_window(symbol, side, close_ms, open_history)
+                row = self.closed_position_row_from_trade_group(symbol, group, open_record)
+                trade_id = str(row.get("id", ""))
+                if not trade_id or trade_id in seen_ids:
+                    continue
+                seen_ids.add(trade_id)
+                if open_record:
+                    self.mark_signal_review_closed(open_record, row)
+                rows.append(row)
         rows.sort(key=lambda row: str(row.get("closed_at", "")), reverse=True)
         return rows
+
+    def group_closed_position_trades(
+        self,
+        symbol: str,
+        trades: list[dict[str, Any]],
+        start_ms: int,
+        end_ms: int,
+    ) -> list[dict[str, Any]]:
+        groups: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        for trade in sorted(trades, key=lambda item: fnum(item.get("time"))):
+            pnl = fnum(first_present(trade, ["realizedPnl", "realizedProfit"]))
+            trade_time = int(fnum(trade.get("time")))
+            if abs(pnl) <= 0 or trade_time < start_ms or trade_time >= end_ms:
+                continue
+            position_side = str(trade.get("positionSide", "")).upper()
+            trade_side = str(trade.get("side", "")).upper()
+            if position_side in {"LONG", "SHORT"}:
+                side = position_side
+            else:
+                side = "LONG" if trade_side == "SELL" else "SHORT"
+            qty = abs(fnum(first_present(trade, ["qty", "executedQty"])))
+            price = fnum(first_present(trade, ["price"]))
+            order_id = str(trade.get("orderId", ""))
+            if (
+                current
+                and current.get("side") == side
+                and order_id
+                and str(current.get("last_order_id", "")) == order_id
+                and trade_time - int(current.get("time_ms", 0)) <= 10 * 60 * 1000
+            ):
+                current["pnl"] = fnum(current.get("pnl")) + pnl
+                current["qty"] = fnum(current.get("qty")) + qty
+                current["notional"] = fnum(current.get("notional")) + price * qty
+                current["time_ms"] = max(int(current.get("time_ms", 0)), trade_time)
+                current.setdefault("trade_ids", []).append(str(trade.get("id", "")))
+            else:
+                if current:
+                    groups.append(current)
+                current = {
+                    "symbol": symbol,
+                    "side": side,
+                    "pnl": pnl,
+                    "qty": qty,
+                    "notional": price * qty,
+                    "time_ms": trade_time,
+                    "last_order_id": order_id,
+                    "trade_ids": [str(trade.get("id", ""))],
+                }
+        if current:
+            groups.append(current)
+        return groups
+
+    def closed_position_row_from_trade_group(
+        self,
+        symbol: str,
+        group: dict[str, Any],
+        open_record: dict[str, Any],
+    ) -> dict[str, Any]:
+        pnl = fnum(group.get("pnl"))
+        qty = fnum(group.get("qty"))
+        exit_price = fnum(group.get("notional")) / qty if qty > 0 else 0.0
+        closed_ms = int(fnum(group.get("time_ms")))
+        closed_at = datetime.fromtimestamp(closed_ms / 1000, tz=timezone.utc).isoformat(timespec="seconds") if closed_ms > 0 else iso_now()
+        margin = fnum(open_record.get("margin_usdt"))
+        reason = "止盈平仓" if pnl > 0 else "止损平仓"
+        row_id = f"{self.exchange_mode()}-position-{symbol}-{group.get('side')}-{closed_ms}-{group.get('last_order_id')}"
+        row = {
+            "id": row_id,
+            "execution_mode": self.exchange_mode(),
+            "symbol": symbol,
+            "side": str(group.get("side", "")),
+            "entry_price": fnum(open_record.get("entry_price")),
+            "exit_price": exit_price,
+            "quantity": qty or fnum(open_record.get("quantity")),
+            "margin_usdt": margin,
+            "pnl_usdt": pnl,
+            "roi_pct": pnl / max(0.01, margin) * 100.0 if margin > 0 else 0.0,
+            "opened_at": open_record.get("time") or "",
+            "closed_at": closed_at,
+            "close_reason": f"{self.exchange_label()} {reason}",
+            "trigger_reason": open_record.get("trigger_reason", f"{self.exchange_label()} 仓位历史"),
+            "entry_order_id": open_record.get("entry_order_id", ""),
+            "close_order_id": group.get("last_order_id", ""),
+            "signal_review_id": open_record.get("signal_review_id", ""),
+            "strategy_score": fnum(open_record.get("score")),
+            "analyzer_direction": open_record.get("analyzer_direction", ""),
+            "analyzer_confidence_pct": fnum(open_record.get("analyzer_confidence_pct")),
+            "decision_summary": open_record.get("decision_summary", ""),
+            "decision_steps": open_record.get("decision_steps", []),
+        }
+        if fnum(row.get("exit_price")) <= 0:
+            row["exit_price"] = self.display_exit_price(row)
+        return row
 
     def summarize_exit_trades(self, pos: dict[str, Any]) -> dict[str, float]:
         symbol = str(pos.get("symbol", ""))
@@ -1860,39 +1882,57 @@ class PaperBot:
     def position_plan(self, signal: Signal, available: float) -> dict[str, Any]:
         base_margin = float(self.config.get("margin_per_trade_usdt", 9.0))
         configured_leverage = max(1, int(self.config.get("leverage", 3)))
-        if not self.config.get("dynamic_position_sizing_enabled", True):
+        if not self.config.get("entry_timing_enabled", True):
             margin = min(base_margin, available)
             return {
                 "margin_usdt": margin,
                 "target_leverage": configured_leverage,
                 "margin_multiplier": 1.0,
                 "tier": "fixed",
-                "reason": "fixed sizing",
+                "reason": "entry timing disabled, fixed sizing",
             }
 
-        quality = fnum(signal.entry_quality_score)
         timing = fnum(signal.entry_timing_score)
-        tier = "low"
-        margin_multiplier = 0.6
-        target_leverage = 3
-        quality_active = str(signal.entry_quality_label or "") not in {"关闭", "跳过"} and self.config.get("entry_quality_enabled", True)
-        if quality_active:
-            if quality >= 9.0:
-                tier = "excellent"
-                margin_multiplier = 1.5
-                target_leverage = 6
-            elif quality >= 8.0:
-                tier = "strong"
-                margin_multiplier = 1.2
-                target_leverage = 6
-            elif quality >= 7.0:
-                tier = "standard"
-                margin_multiplier = 1.0
-                target_leverage = 5
-        elif signal.score >= 6.0 and fnum(signal.analyzer_confidence_pct) >= 95.0:
-            tier = "signal_strong"
+        timing_label = str(signal.entry_timing_label or "")
+        entry_type = str(signal.entry_type or "")
+        small_score = float(self.config.get("entry_timing_small_score", 4.5))
+        normal_score = float(self.config.get("entry_timing_normal_score", 7.0))
+        small_multiplier = float(self.config.get("entry_timing_small_multiplier", 0.55))
+        small_leverage_cap = max(1, int(self.config.get("entry_timing_small_leverage_cap", 4)))
+
+        if timing >= normal_score:
+            tier = "entry_normal"
             margin_multiplier = 1.0
-            target_leverage = 5
+            target_leverage = configured_leverage
+        elif timing >= small_score:
+            tier = "entry_small"
+            margin_multiplier = small_multiplier
+            target_leverage = min(configured_leverage, small_leverage_cap)
+        else:
+            tier = "entry_tiny"
+            margin_multiplier = min(small_multiplier, 0.35)
+            target_leverage = min(configured_leverage, small_leverage_cap, 3)
+
+        if entry_type == "回踩承接" and timing >= normal_score:
+            tier = "entry_pullback"
+            margin_multiplier = 1.15
+            target_leverage = configured_leverage
+        elif entry_type == "突破启动" and timing >= normal_score:
+            tier = "entry_breakout"
+            margin_multiplier = 1.0
+            target_leverage = configured_leverage
+        elif entry_type == "加速追随":
+            tier = f"{tier}_follow"
+            margin_multiplier = min(margin_multiplier, small_multiplier)
+            target_leverage = min(target_leverage, small_leverage_cap)
+        elif entry_type == "高位冲刺":
+            tier = f"{tier}_late_chase"
+            margin_multiplier = min(margin_multiplier, 0.35)
+            target_leverage = min(target_leverage, 3)
+        elif entry_type == "数据不足":
+            tier = f"{tier}_insufficient"
+            margin_multiplier = min(margin_multiplier, small_multiplier)
+            target_leverage = min(target_leverage, small_leverage_cap)
 
         heat_reasons: list[str] = []
         if signal.funding_rate_pct > 0.04:
@@ -1907,38 +1947,20 @@ class PaperBot:
             heat_reasons.append("daily_loss")
 
         for _ in heat_reasons[:2]:
-            if margin_multiplier > 1.2:
-                margin_multiplier = 1.2
-                target_leverage = min(target_leverage, 6)
-            elif margin_multiplier > 1.0:
+            if margin_multiplier > 1.0:
                 margin_multiplier = 1.0
-                target_leverage = min(target_leverage, 5)
+                target_leverage = min(target_leverage, configured_leverage)
+            elif margin_multiplier > small_multiplier:
+                margin_multiplier = small_multiplier
+                target_leverage = min(target_leverage, small_leverage_cap)
             else:
                 margin_multiplier = 0.6
                 target_leverage = min(target_leverage, 3)
 
-        timing_label = str(signal.entry_timing_label or "")
-        if self.config.get("entry_timing_enabled", True):
-            small_score = float(self.config.get("entry_timing_small_score", 4.5))
-            normal_score = float(self.config.get("entry_timing_normal_score", 7.0))
-            small_multiplier = float(self.config.get("entry_timing_small_multiplier", 0.55))
-            small_leverage_cap = max(1, int(self.config.get("entry_timing_small_leverage_cap", 4)))
-            if timing < normal_score:
-                target_leverage = min(target_leverage, small_leverage_cap)
-            if timing < normal_score and timing >= small_score:
-                margin_multiplier = min(margin_multiplier, small_multiplier)
-                tier = f"{tier}_timing_small"
-            elif timing < small_score:
-                margin_multiplier = min(margin_multiplier, 0.35)
-                target_leverage = min(target_leverage, 3)
-                tier = f"{tier}_timing_poor"
-
-        max_multiplier = float(self.config.get("dynamic_max_margin_multiplier", 1.5))
-        max_dynamic_leverage = max(1, int(self.config.get("dynamic_max_leverage", 6)))
-        target_leverage = max(1, min(target_leverage, configured_leverage, max_dynamic_leverage))
-        margin_multiplier = max(0.1, min(margin_multiplier, max_multiplier))
+        target_leverage = max(1, min(target_leverage, configured_leverage))
+        margin_multiplier = max(0.1, min(margin_multiplier, 1.15))
         margin = min(base_margin * margin_multiplier, available)
-        reason = f"quality={quality:.1f}, timing={timing:.1f}({timing_label}), tier={tier}, multiplier={margin_multiplier:.2f}, target_leverage={target_leverage}x"
+        reason = f"timing={timing:.1f}({timing_label}/{entry_type}), tier={tier}, multiplier={margin_multiplier:.2f}, target_leverage={target_leverage}x"
         if heat_reasons:
             reason += ", heat_downshift=" + ",".join(heat_reasons[:2])
         signal.decision_steps.append(f"仓位计划：{reason}, margin={margin:.2f}U")
@@ -1949,113 +1971,6 @@ class PaperBot:
             "tier": tier,
             "reason": reason,
         }
-
-    def stop_lift_plan(self, pos: dict[str, Any]) -> dict[str, Any] | None:
-        if not self.config.get("auto_stop_lift_enabled", True):
-            return None
-        roi = fnum(pos.get("roi_pct"))
-        leverage = max(1.0, fnum(pos.get("leverage"), float(self.config.get("leverage", 3))))
-        entry = fnum(pos.get("entry_price"))
-        if entry <= 0:
-            return None
-        current_stage = str(pos.get("stop_lift_stage") or "")
-        lock_trigger = float(self.config.get("lock_profit_trigger_roi_pct", 120.0))
-        breakeven_trigger = float(self.config.get("breakeven_trigger_roi_pct", 70.0))
-        if roi >= lock_trigger and current_stage != "lock":
-            target_roi = float(self.config.get("lock_profit_roi_pct", 30.0))
-            stage = "lock"
-            label = f"锁利 {target_roi:.0f}% ROI"
-        elif roi >= breakeven_trigger and current_stage not in {"breakeven", "lock"}:
-            target_roi = 0.0
-            stage = "breakeven"
-            label = "保本"
-        else:
-            return None
-        price_move = target_roi / leverage / 100.0
-        if str(pos.get("side")) == "LONG":
-            target_stop = entry * (1.0 + price_move)
-        else:
-            target_stop = entry * (1.0 - price_move)
-        return {"stage": stage, "target_stop": target_stop, "target_roi": target_roi, "label": label}
-
-    def replace_stop_order(self, pos: dict[str, Any], symbol_info: dict[str, Any], plan: dict[str, Any]) -> bool:
-        symbol = str(pos.get("symbol") or "")
-        side = str(pos.get("side") or "")
-        if not symbol or side not in {"LONG", "SHORT"}:
-            return False
-        futures = self.exchange_config()
-        new_stop = self.round_price(symbol_info, fnum(plan.get("target_stop")))
-        old_stop = fnum(pos.get("stop_price"))
-        new_stop_num = fnum(new_stop)
-        if old_stop > 0:
-            if side == "LONG" and new_stop_num <= old_stop:
-                return False
-            if side == "SHORT" and new_stop_num >= old_stop:
-                return False
-        old_algo_id = pos.get("stop_algo_id")
-        if old_algo_id:
-            try:
-                self.signed_exchange_request(
-                    "DELETE",
-                    "/fapi/v1/algoOrder",
-                    {"symbol": symbol, "algoId": old_algo_id},
-                )
-            except Exception as exc:
-                self.event("warn", f"{symbol} 取消旧止损单失败，继续尝试提交新止损：{exc}")
-        new_order = self.signed_exchange_request_position_aware(
-            "POST",
-            "/fapi/v1/algoOrder",
-            {
-                "algoType": "CONDITIONAL",
-                "symbol": symbol,
-                "side": self.close_side(side),
-                "type": "STOP_MARKET",
-                "triggerPrice": new_stop,
-                "closePosition": "true",
-                "workingType": futures.get("working_type", "MARK_PRICE"),
-            },
-            side,
-        )
-        pos["stop_price"] = new_stop
-        pos["stop_algo_id"] = new_order.get("algoId")
-        pos["stop_lift_stage"] = plan.get("stage")
-        pos["stop_lift_roi_pct"] = plan.get("target_roi")
-        pos["stop_lift_updated_at"] = iso_now()
-        for item in self.state.get("open_order_history", []):
-            if str(item.get("symbol")) == symbol and str(item.get("entry_order_id") or "") == str(pos.get("entry_order_id") or ""):
-                item.update({
-                    "stop_price": new_stop,
-                    "stop_algo_id": new_order.get("algoId"),
-                    "stop_lift_stage": plan.get("stage"),
-                    "stop_lift_roi_pct": plan.get("target_roi"),
-                    "stop_lift_updated_at": pos["stop_lift_updated_at"],
-                })
-                break
-        self.event("trade", f"{symbol} 自动推损到 {new_stop}（{plan.get('label')}）")
-        return True
-
-    def apply_auto_stop_lift(self) -> None:
-        if not self.config.get("auto_stop_lift_enabled", True):
-            return
-        positions = list(self.state.get("positions", []))
-        if not positions:
-            return
-        exchange_symbols = self.get_exchange_symbols()
-        updated = False
-        for pos in positions:
-            plan = self.stop_lift_plan(pos)
-            if not plan:
-                continue
-            symbol_info = exchange_symbols.get(str(pos.get("symbol")))
-            if not symbol_info:
-                continue
-            try:
-                if self.replace_stop_order(pos, symbol_info, plan):
-                    updated = True
-            except Exception as exc:
-                self.event("error", f"{pos.get('symbol')} 自动推损失败：{exc}")
-        if updated:
-            self.persist()
 
     def exchange_open_position(self, signal: Signal, symbol_info: dict[str, Any]) -> dict[str, Any] | None:
         sizing = self.position_plan(signal, self.get_available_balance())
@@ -2173,6 +2088,7 @@ class PaperBot:
             "entry_timing_score": signal.entry_timing_score,
             "entry_timing_label": signal.entry_timing_label,
             "entry_timing_reason": signal.entry_timing_reason,
+            "entry_type": signal.entry_type,
             "decision_summary": signal.decision_summary,
             "decision_steps": list(signal.decision_steps),
             "signal_review_id": self.signal_review_id(int(self.state.get("scan_count", 0)), signal.symbol),
@@ -2396,9 +2312,9 @@ class PaperBot:
         trend: str,
     ) -> dict[str, Any]:
         if not self.config.get("entry_timing_enabled", True):
-            return {"score": 10.0, "label": "关闭", "reason": "入场点评分未启用"}
+            return {"score": 10.0, "label": "关闭", "type": "关闭", "reason": "入场点评分未启用"}
         if price <= 0 or len(closes) < 30:
-            return {"score": 5.0, "label": "一般", "reason": "短线K线不足，按一般入场处理"}
+            return {"score": 5.0, "label": "一般", "type": "数据不足", "reason": "短线K线不足，按一般入场处理"}
 
         score = 5.0
         reasons: list[str] = []
@@ -2520,7 +2436,89 @@ class PaperBot:
             label = "偏贵"
         else:
             label = "差"
-        return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:7])}
+        entry_type = self.classify_entry_type(side, price, closes, short_move, volume_ratio, trend)
+        return {"score": round(score, 1), "label": label, "type": entry_type, "reason": " / ".join(reasons[:7])}
+
+    def classify_entry_type(
+        self,
+        side: str,
+        price: float,
+        closes: list[float],
+        short_move: float,
+        volume_ratio: float,
+        trend: str,
+    ) -> str:
+        if price <= 0 or len(closes) < 30:
+            return "数据不足"
+        ema30 = ema(closes[-30:])
+        ema12 = ema(closes[-12:]) if len(closes) >= 12 else ema30
+        recent = closes[-16:] if len(closes) >= 16 else closes
+        recent_high = max(recent)
+        recent_low = min(recent)
+        if side == "LONG":
+            ema_distance = pct(price, ema30) if ema30 > 0 else 0.0
+            high_distance = pct(price, recent_high) if recent_high > 0 else 0.0
+            stop_distance = pct(price, recent_low) * -1 if price > 0 else 0.0
+            if price < ema30 or trend != "up":
+                return "结构破坏"
+            if ema_distance > 8 or short_move > 10 or (volume_ratio > 8 and high_distance >= -1):
+                return "高位冲刺"
+            if price > recent_high * 0.998 and 1.2 <= short_move <= 6 and 1.2 <= volume_ratio <= 5:
+                return "突破启动"
+            if 0 <= ema_distance <= 3.5 and 0 < stop_distance <= 5 and -4 <= high_distance <= 0.5:
+                return "回踩承接"
+            if price > ema12 > ema30 and 0 <= ema_distance <= 7 and short_move <= 8:
+                return "加速追随"
+            return "结构破坏" if stop_distance > 9 else "加速追随"
+
+        ema_distance = pct(ema30, price) if price > 0 else 0.0
+        low_distance = pct(recent_low, price) if price > 0 else 0.0
+        stop_distance = pct(recent_high, price) if price > 0 else 0.0
+        if price > ema30 or trend != "down":
+            return "结构破坏"
+        if ema_distance > 8 or short_move < -10 or (volume_ratio > 8 and low_distance <= 1):
+            return "高位冲刺"
+        if price < recent_low * 1.002 and -6 <= short_move <= -1.2 and 1.2 <= volume_ratio <= 5:
+            return "突破启动"
+        if 0 <= ema_distance <= 3.5 and 0 < stop_distance <= 5 and -4 <= low_distance <= 0.5:
+            return "回踩承接"
+        if price < ema12 < ema30 and 0 <= ema_distance <= 7 and short_move >= -8:
+            return "加速追随"
+        return "结构破坏" if stop_distance > 9 else "加速追随"
+
+    def enrich_signal_entry_timing(self, signal: Signal) -> None:
+        klines = self.fetch_klines(signal.symbol)
+        closes = [fnum(k[4]) for k in klines]
+        volumes = [fnum(k[7]) for k in klines]
+        price = closes[-1] if closes else signal.price
+        short_move = signal.short_move_pct
+        change_1h = signal.change_1h_pct
+        change_4h = signal.change_4h_pct
+        volume_ratio = signal.volume_ratio
+        trend = "up" if signal.side == "LONG" else "down"
+        if len(closes) > 16:
+            short_move = pct(closes[-1], closes[-16])
+            change_1h = short_move
+            trend = infer_trend(closes)
+        if len(closes) > 40:
+            change_4h = pct(closes[-1], closes[-40])
+        if len(volumes) > 25:
+            recent = sum(volumes[-5:])
+            base = sum(volumes[-25:-5]) / 20 * 5
+            volume_ratio = recent / base if base > 0 else volume_ratio
+        timing = self.entry_timing(signal.side, price, closes, signal.change_24h_pct, short_move, volume_ratio, trend)
+        signal.price = price or signal.price
+        signal.short_move_pct = short_move
+        signal.change_1h_pct = change_1h
+        signal.change_4h_pct = change_4h
+        signal.volume_ratio = volume_ratio
+        signal.entry_timing_score = fnum(timing.get("score"))
+        signal.entry_timing_label = str(timing.get("label", ""))
+        signal.entry_timing_reason = str(timing.get("reason", ""))
+        signal.entry_type = str(timing.get("type", ""))
+        signal.decision_steps.append(
+            f"开仓前入场类型：{signal.entry_type} / {signal.entry_timing_label} {signal.entry_timing_score:.1f}，{signal.entry_timing_reason or '-'}"
+        )
 
     def analyzer_confirmation(self, symbol: str, system_side: str = "") -> dict[str, Any]:
         if not self.config.get("analyzer_confirmation_enabled", True):
@@ -2688,7 +2686,7 @@ class PaperBot:
         candidates = candidates[: int(self.config.get("max_candidates_per_scan", 18))]
 
         signals: list[Signal] = []
-        enrich_limit = int(self.config.get("max_kline_enriched_candidates", 8))
+        enrich_limit = 0
         for index, item in enumerate(candidates):
             symbol = item["symbol"]
             price = fnum(item.get("lastPrice"))
@@ -2760,7 +2758,7 @@ class PaperBot:
                 "oi_volume_ratio": 0.22,
             }
             quality = {"score": 10.0, "label": "关闭", "reason": "入场质量第二关已临时关闭，仅使用系统总分和分析器确认"}
-            timing = self.entry_timing(side, price, closes, change, short_move, volume_ratio, trend)
+            timing = {"score": 5.0, "label": "待算", "type": "待开仓计算", "reason": "通过系统分和分析器后，开仓前单独拉取该币K线计算入场类型和仓位"}
             if not reject:
                 try:
                     if index >= max(6, enrich_limit):
@@ -2807,7 +2805,7 @@ class PaperBot:
                 analyzer_reason,
             )
             decision_steps.insert(-1, f"入场质量：{quality.get('label')} {fnum(quality.get('score')):.1f}，{quality.get('reason') or '-'}")
-            decision_steps.insert(-1, f"入场点：{timing.get('label')} {fnum(timing.get('score')):.1f}，{timing.get('reason') or '-'}")
+            decision_steps.insert(-1, f"入场点：{timing.get('type', '-')} / {timing.get('label')} {fnum(timing.get('score')):.1f}，{timing.get('reason') or '-'}")
             signals.append(
                 Signal(
                     symbol=symbol,
@@ -2835,6 +2833,7 @@ class PaperBot:
                     entry_timing_score=fnum(timing.get("score")),
                     entry_timing_label=str(timing.get("label", "")),
                     entry_timing_reason=str(timing.get("reason", "")),
+                    entry_type=str(timing.get("type", "")),
                     risk_level=risk_level,
                     analyzer_direction=analyzer_direction,
                     analyzer_confidence_pct=round(analyzer_confidence, 1),
@@ -3073,13 +3072,6 @@ class PaperBot:
                 self.update_signal_decision(signal, quality_reason, f"开仓前复核：{quality_reason}")
                 self.event("risk", f"{signal.symbol} {quality_reason}，跳过开仓")
                 continue
-            if self.config.get("entry_timing_enabled", True):
-                min_timing = float(self.config.get("entry_timing_min_score", 3.0))
-                if fnum(signal.entry_timing_score) < min_timing:
-                    timing_reason = f"入场点 {signal.entry_timing_label} {signal.entry_timing_score:.1f} 低于 {min_timing:.1f}：{signal.entry_timing_reason}"
-                    self.update_signal_decision(signal, timing_reason, f"开仓前复核：{timing_reason}")
-                    self.event("risk", f"{signal.symbol} {timing_reason}，跳过开仓")
-                    continue
             blocked_reason = self.blocked_symbol_reject_reason(signal.symbol)
             if blocked_reason:
                 self.update_signal_decision(signal, blocked_reason, f"开仓前复核：{blocked_reason}")
@@ -3120,6 +3112,33 @@ class PaperBot:
                     self.update_signal_decision(signal, f"开仓前实时确认失败：{exc}", f"开仓前实时确认失败：{exc}")
                     self.event("error", f"{signal.symbol} 开仓前实时确认失败：{exc}")
                     continue
+            if self.config.get("entry_timing_enabled", True):
+                try:
+                    self.enrich_signal_entry_timing(signal)
+                except Exception as exc:
+                    signal.entry_timing_score = 5.0
+                    signal.entry_timing_label = "待算失败"
+                    signal.entry_type = "数据不足"
+                    signal.entry_timing_reason = f"开仓前K线读取失败，按小仓处理：{exc}"
+                    signal.decision_steps.append(f"开仓前入场类型：数据不足 / 待算失败 5.0，{exc}")
+                    self.event("warn", f"{signal.symbol} 开仓前入场类型计算失败，按小仓处理：{exc}")
+                min_timing = float(self.config.get("entry_timing_min_score", 3.0))
+                if signal.entry_type == "结构破坏":
+                    timing_reason = f"入场类型结构破坏：{signal.entry_timing_reason}"
+                    self.update_signal_decision(signal, timing_reason, f"开仓前复核：{timing_reason}")
+                    self.event("risk", f"{signal.symbol} {timing_reason}，跳过开仓")
+                    continue
+                small_timing = float(self.config.get("entry_timing_small_score", 4.5))
+                if signal.entry_type == "高位冲刺" and fnum(signal.entry_timing_score) < small_timing:
+                    timing_reason = f"高位冲刺且入场分 {signal.entry_timing_score:.1f} 低于 {small_timing:.1f}：{signal.entry_timing_reason}"
+                    self.update_signal_decision(signal, timing_reason, f"开仓前复核：{timing_reason}")
+                    self.event("risk", f"{signal.symbol} {timing_reason}，跳过开仓")
+                    continue
+                if fnum(signal.entry_timing_score) < min_timing:
+                    timing_reason = f"入场点 {signal.entry_timing_label} {signal.entry_timing_score:.1f} 低于 {min_timing:.1f}：{signal.entry_timing_reason}"
+                    self.update_signal_decision(signal, timing_reason, f"开仓前复核：{timing_reason}")
+                    self.event("risk", f"{signal.symbol} {timing_reason}，跳过开仓")
+                    continue
             try:
                 record = self.exchange_open_position(signal, symbol_info)
             except Exception as exc:
@@ -3157,18 +3176,23 @@ class PaperBot:
         return (self.gross_exposure() + extra_notional) / equity * 100.0
 
     def daily_realized_pnl(self) -> float:
-        today = utc_now().date().isoformat()
+        today = datetime.now().astimezone().date().isoformat()
         total = 0.0
         for trade in self.state.get("trade_history", []):
-            closed_at = str(trade.get("closed_at", ""))
-            if closed_at.startswith(today):
+            closed_dt = local_datetime(trade.get("closed_at"))
+            if closed_dt and closed_dt.date().isoformat() == today:
                 total += fnum(trade.get("pnl_usdt"))
         return total
 
     def refresh_trade_counters(self) -> None:
-        closed = [trade for trade in self.state.get("trade_history", []) if trade.get("closed_at")]
-        self.state["take_profit_count"] = sum(1 for trade in closed if "止盈" in str(trade.get("close_reason", "")))
-        self.state["stop_loss_count"] = sum(1 for trade in closed if "止损" in str(trade.get("close_reason", "")))
+        today = datetime.now().astimezone().date().isoformat()
+        closed = []
+        for trade in self.state.get("trade_history", []):
+            closed_dt = local_datetime(trade.get("closed_at"))
+            if closed_dt and closed_dt.date().isoformat() == today:
+                closed.append(trade)
+        self.state["take_profit_count"] = sum(1 for trade in closed if fnum(trade.get("pnl_usdt")) > 0)
+        self.state["stop_loss_count"] = sum(1 for trade in closed if fnum(trade.get("pnl_usdt")) < 0)
         self.state["realized_pnl_usdt"] = sum(fnum(trade.get("pnl_usdt")) for trade in closed)
 
     def equity(self) -> float:

@@ -84,12 +84,6 @@ function normalizeSettingsLabels() {
     leverage: "最高杠杆上限",
     take_profit_roi_pct: "初始止盈 ROI (%)",
     stop_loss_roi_pct: "初始止损 ROI (%)",
-    entry_quality_min_score: "入场质量阈值",
-    breakeven_trigger_roi_pct: "保本触发 ROI (%)",
-    lock_profit_trigger_roi_pct: "锁利触发 ROI (%)",
-    lock_profit_roi_pct: "锁利 ROI (%)",
-    dynamic_max_leverage: "动态最高杠杆",
-    dynamic_max_margin_multiplier: "最大保证金倍率",
   };
   for (const [name, textValue] of Object.entries(labelTextMap)) {
     const input = els.form?.elements?.[name];
@@ -99,11 +93,7 @@ function normalizeSettingsLabels() {
       if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) node.textContent = `${textValue} `;
     }
   }
-  const toggles = {
-    entry_quality_enabled: "启用入场质量过滤",
-    dynamic_position_sizing_enabled: "启用质量分动态仓位",
-    auto_stop_lift_enabled: "启用自动推损",
-  };
+  const toggles = {};
   for (const [name, textValue] of Object.entries(toggles)) {
     const input = els.form?.elements?.[name];
     const label = input?.closest("label");
@@ -115,14 +105,6 @@ function normalizeSettingsLabels() {
       label.appendChild(text);
     }
     text.textContent = textValue;
-  }
-  const sizingLabel = els.form?.elements?.dynamic_position_sizing_enabled?.closest("label");
-  if (sizingLabel) {
-    sizingLabel.title = "开启后，基础保证金按质量分乘以 0.6x/1.0x/1.2x/1.5x，杠杆最高不超过动态最高杠杆和上方最高杠杆上限。";
-  }
-  const stopLiftLabel = els.form?.elements?.auto_stop_lift_enabled?.closest("label");
-  if (stopLiftLabel) {
-    stopLiftLabel.title = "盈利达到保本/锁利触发 ROI 后，系统会自动把止损价往有利方向推。";
   }
 }
 
@@ -648,20 +630,14 @@ function renderCharts(rows) {
 function renderCandidates(rows) {
   if (!els.candidateRows) return;
   const headRow = els.candidateRows.closest("table")?.querySelector("thead tr");
-  if (headRow && !headRow.querySelector("[data-entry-quality-head]")) {
-    const th = document.createElement("th");
-    th.dataset.entryQualityHead = "true";
-    th.textContent = "质量";
-    headRow.insertBefore(th, headRow.children[2] || null);
-  }
   if (headRow && !headRow.querySelector("[data-entry-timing-head]")) {
     const th = document.createElement("th");
     th.dataset.entryTimingHead = "true";
-    th.textContent = "入场点";
-    headRow.insertBefore(th, headRow.children[3] || null);
+    th.textContent = "入场分";
+    headRow.insertBefore(th, headRow.children[2] || null);
   }
   if (!rows.length) {
-    els.candidateRows.innerHTML = `<tr><td colspan="24" class="empty">候选表空</td></tr>`;
+    els.candidateRows.innerHTML = `<tr><td colspan="23" class="empty">候选表空</td></tr>`;
     return;
   }
   els.candidateRows.innerHTML = rows
@@ -675,8 +651,7 @@ function renderCandidates(rows) {
         <tr>
           <td>${row.symbol}</td>
           <td><span class="score-badge">${Number(row.score || 0).toFixed(1)}</span></td>
-          <td title="${titleText(row.entry_quality_reason || "-")}"><span class="score-badge">${escapeHtml(row.entry_quality_label || "-")} ${Number(row.entry_quality_score || 0).toFixed(1)}</span></td>
-          <td title="${titleText(row.entry_timing_reason || "-")}"><span class="score-badge">${escapeHtml(row.entry_timing_label || "-")} ${Number(row.entry_timing_score || 0).toFixed(1)}</span></td>
+          <td title="${titleText(row.entry_timing_reason || "-")}"><span class="score-badge">${escapeHtml(row.entry_type || row.entry_timing_label || "-")} ${Number(row.entry_timing_score || 0).toFixed(1)}</span></td>
           <td>${sidePill(row.side)}</td>
           <td>${row.analyzer_direction || "-"}</td>
           <td class="${Number(row.analyzer_confidence_pct || 0) > 90 ? "positive" : "danger"}">${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%</td>
