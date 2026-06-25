@@ -24,6 +24,7 @@ const els = {
   dailyPnlText: document.querySelector("#dailyPnlText"),
   scanDurationText: document.querySelector("#scanDurationText"),
   candidateRows: document.querySelector("#candidateRows"),
+  entryTypeRows: document.querySelector("#entryTypeRows"),
   positionRows: document.querySelector("#positionRows"),
   historyRows: document.querySelector("#historyRows"),
   eventLog: document.querySelector("#eventLog"),
@@ -84,6 +85,8 @@ function normalizeSettingsLabels() {
     leverage: "最高杠杆上限",
     take_profit_roi_pct: "初始止盈 ROI (%)",
     stop_loss_roi_pct: "初始止损 ROI (%)",
+    early_breakout_min_confidence_pct: "启动池置信度 (%)",
+    early_breakout_score_threshold: "启动池系统分阈值",
   };
   for (const [name, textValue] of Object.entries(labelTextMap)) {
     const input = els.form?.elements?.[name];
@@ -95,6 +98,8 @@ function normalizeSettingsLabels() {
   }
   const toggles = {
     analyzer_realtime_before_open: "启用分析器二次确认",
+    early_breakout_enabled: "启用早期启动池",
+    equity_take_profit_enabled: "启用总资产止盈全平",
   };
   for (const [name, textValue] of Object.entries(toggles)) {
     const input = els.form?.elements?.[name];
@@ -111,6 +116,18 @@ function normalizeSettingsLabels() {
   const realtimeLabel = els.form?.elements?.analyzer_realtime_before_open?.closest("label");
   if (realtimeLabel) {
     realtimeLabel.title = "开启后，候选通过后下单前会再次实时跑分析器；关闭后，只使用候选阶段已经通过的分析器结果，开仓更快。";
+  }
+  const earlyLabel = els.form?.elements?.early_breakout_enabled?.closest("label");
+  if (earlyLabel) {
+    earlyLabel.title = "开启后，系统会额外扫描24h涨幅温和、短线刚放量转强的做多候选，并按小仓试单。";
+  }
+  const earlyScoreLabel = els.form?.elements?.early_breakout_score_threshold?.closest("label");
+  if (earlyScoreLabel) {
+    earlyScoreLabel.title = "早期启动池使用单独评分：24h温和启动、15m突破、4h转强、短线趋势、量能启动；不使用强波动评分。";
+  }
+  const equityTakeProfitLabel = els.form?.elements?.equity_take_profit_enabled?.closest("label");
+  if (equityTakeProfitLabel) {
+    equityTakeProfitLabel.title = "开启后，当合约总资产 - 昨日合约总账户余额 达到总资产止盈收益阈值时，系统停止新增开仓并提交全部平仓。";
   }
 }
 
@@ -278,6 +295,7 @@ function render(payload) {
   }
 
   renderCandidates(state.candidates || []);
+  renderEntryTypeStats(metrics.entry_type_stats || []);
   renderPositions(state.positions || []);
   renderHistory(state.trade_history || []);
   renderEvents(state.events || []);
@@ -633,6 +651,51 @@ function renderCharts(rows) {
   drawRiskChart(rows);
 }
 
+function candidateNextAction(row, confidenceThreshold) {
+  const reject = String(row.reject_reason || "");
+  const summary = String(row.decision_summary || "");
+  const decisionText = `${reject} ${summary}`;
+  const confidence = Number(row.analyzer_confidence_pct || 0);
+  const analyzerDirection = row.analyzer_direction || "";
+
+  if (summary.includes("已提交") || reject.includes("已提交")) return "已提交";
+  if (reject.includes("等待分析器")) return "等待分析器";
+  if (reject.includes("已有持仓")) return "已有持仓";
+  if (reject.includes("禁止开仓")) return "禁开跳过";
+  if (reject.includes("止损冷静期")) return "冷静期";
+  if (decisionText.includes("今日") || decisionText.includes("敞口") || decisionText.includes("持仓上限")) return "风控拦截";
+  if (decisionText.includes("入场") || decisionText.includes("结构破坏") || decisionText.includes("高位冲刺")) return "入场处理";
+  if (reject.includes("方向") || reject.includes("观望") || reject.includes("置信度") || reject.includes("分析器")) return "分析器拒绝";
+  if (!reject && analyzerDirection && confidence > confidenceThreshold) return "开仓前入场评分";
+  if (reject === "待开仓" && analyzerDirection && confidence > confidenceThreshold) return "开仓前入场评分";
+  if (!analyzerDirection || confidence <= 0) return "等待分析器";
+  return "继续观察";
+}
+
+function renderEntryTypeStats(rows) {
+  if (!els.entryTypeRows) return;
+  if (!rows.length) {
+    els.entryTypeRows.innerHTML = `<tr><td colspan="6" class="empty">暂无入场类型复盘</td></tr>`;
+    return;
+  }
+  els.entryTypeRows.innerHTML = rows
+    .map((row) => {
+      const profitFactor = Number(row.profit_factor || 0);
+      const profitText = profitFactor >= 999 ? "∞" : profitFactor.toFixed(2);
+      return `
+        <tr>
+          <td><span class="score-badge">${escapeHtml(row.entry_type || "未记录")}</span></td>
+          <td>${Number(row.closed_trades || 0)}</td>
+          <td class="${signedClass(Number(row.win_rate_pct || 0) - 50)}">${pct(row.win_rate_pct)}</td>
+          <td class="${signedClass(row.pnl_usdt)}">${money(row.pnl_usdt)}</td>
+          <td class="${signedClass(row.avg_roi_pct)}">${pct(row.avg_roi_pct)}</td>
+          <td>${profitText}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
 function renderCandidates(rows) {
   if (!els.candidateRows) return;
   const headRow = els.candidateRows.closest("table")?.querySelector("thead tr");
@@ -640,10 +703,10 @@ function renderCandidates(rows) {
     const th = document.createElement("th");
     th.dataset.entryTimingHead = "true";
     th.textContent = "入场分";
-    headRow.insertBefore(th, headRow.children[2] || null);
+    headRow.insertBefore(th, headRow.children[3] || null);
   }
   if (!rows.length) {
-    els.candidateRows.innerHTML = `<tr><td colspan="23" class="empty">候选表空</td></tr>`;
+    els.candidateRows.innerHTML = `<tr><td colspan="25" class="empty">候选表空</td></tr>`;
     return;
   }
   els.candidateRows.innerHTML = rows
@@ -653,14 +716,22 @@ function renderCandidates(rows) {
       const decisionTitle = decisionSteps.length ? decisionSteps.join("\n") : row.decision_summary || reject;
       const decisionText = row.decision_summary || reject;
       const riskCls = row.risk_level === "危险" ? "risk-high" : row.risk_level === "注意" ? "risk-watch" : "risk-ok";
+      const heatLabel = row.signal_heat_level === "hot" ? "过热" : row.signal_heat_level === "warm" ? "升温" : "";
+      const modeText = row.signal_mode === "early_breakout" ? `早启${heatLabel ? `/${heatLabel}` : ""}` : "强波动";
+      const confidenceThreshold = row.signal_mode === "early_breakout"
+        ? Number(currentState?.config?.early_breakout_min_confidence_pct || 85)
+        : Number(currentState?.config?.analyzer_min_confidence_pct || 90);
+      const nextAction = candidateNextAction(row, confidenceThreshold);
       return `
         <tr>
           <td>${row.symbol}</td>
+          <td><span class="score-badge">${modeText}</span></td>
           <td><span class="score-badge">${Number(row.score || 0).toFixed(1)}</span></td>
           <td title="${titleText(row.entry_timing_reason || "-")}"><span class="score-badge">${escapeHtml(row.entry_type || row.entry_timing_label || "-")} ${Number(row.entry_timing_score || 0).toFixed(1)}</span></td>
           <td>${sidePill(row.side)}</td>
           <td>${row.analyzer_direction || "-"}</td>
-          <td class="${Number(row.analyzer_confidence_pct || 0) > 90 ? "positive" : "danger"}">${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%</td>
+          <td class="${Number(row.analyzer_confidence_pct || 0) > confidenceThreshold ? "positive" : "danger"}">${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%</td>
+          <td><span class="next-action" title="${titleText(decisionTitle)}">${escapeHtml(nextAction)}</span></td>
           <td>${reject}</td>
           <td><span class="decision-chain" title="${titleText(decisionTitle)}">${escapeHtml(decisionText)}</span></td>
           <td>${price(row.price)} U</td>

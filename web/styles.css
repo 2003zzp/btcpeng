@@ -831,21 +831,42 @@ main {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr)) 190px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
   align-items: end;
 }
 
 .settings-grid .button {
-  order: 20;
+  grid-column: 1 / -1;
+  justify-self: end;
+  min-width: 190px;
+}
+
+.settings-group {
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid rgba(91, 156, 255, 0.24);
+  border-radius: 8px;
+  background: rgba(5, 17, 34, 0.35);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.settings-group legend {
+  padding: 0 6px;
+  color: #54e7ff;
+  font-size: 13px;
+  font-weight: 900;
 }
 
 .settings-wide {
-  grid-column: span 2;
+  grid-column: 1 / -1;
 }
 
 .settings-check {
-  grid-column: span 2;
   min-height: 46px;
   display: flex;
   align-items: center;
@@ -869,7 +890,6 @@ main {
 }
 
 label:has(input[name="live_trading_enabled"]) {
-  grid-column: span 2;
   min-height: 46px;
   display: flex;
   align-items: center;
@@ -997,6 +1017,10 @@ table {
   table-layout: auto;
 }
 
+.compact-table {
+  min-width: 760px;
+}
+
 thead {
   background: rgba(16, 44, 82, 0.56);
 }
@@ -1105,6 +1129,22 @@ td:first-child {
   vertical-align: bottom;
   white-space: nowrap;
   cursor: help;
+}
+
+.next-action {
+  min-width: 76px;
+  min-height: 24px;
+  border: 1px solid rgba(84, 231, 255, 0.24);
+  border-radius: 999px;
+  padding: 3px 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #dff8ff;
+  background: rgba(14, 95, 142, 0.18);
+  font-size: 12px;
+  font-weight: 900;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .risk-ok {

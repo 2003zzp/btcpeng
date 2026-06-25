@@ -161,104 +161,147 @@
           <h2>参数实时调节面板</h2>
         </div>
         <form id="settingsForm" class="settings-grid">
-          <label>
-            开仓保证金 (U)
-            <input name="margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
-          </label>
-          <label>
-            杠杆倍数 (1-20X)
-            <input name="leverage" type="number" min="1" max="20" step="1" />
-          </label>
-          <label>
-            止盈 ROI (%)
-            <input name="take_profit_roi_pct" type="number" min="1" step="1" />
-          </label>
-          <label>
-            止损 ROI (%)
-            <input name="stop_loss_roi_pct" type="number" min="1" step="1" />
-          </label>
-          <label>
-            扫描间隔 (秒)
-            <input name="scan_interval_sec" type="number" min="2" step="1" />
-          </label>
-          <label>
-            最大持仓数
-            <input name="max_open_positions" type="number" min="1" step="1" />
-          </label>
-          <label>
-            最大仓位敞口 (%)
-            <input name="max_exposure_pct" type="number" min="1" step="1" />
-          </label>
-          <label>
-            交易方向
-            <select name="trade_direction_mode">
-              <option value="both">多空都可以</option>
-              <option value="long_only">只做多</option>
-              <option value="short_only">只做空</option>
-            </select>
-          </label>
-          <label class="settings-wide">
-            禁止开仓币种
-            <input name="blocked_symbols" type="text" placeholder="BTCUSDT, ETHUSDT" />
-          </label>
+          <fieldset class="settings-group">
+            <legend>交易执行</legend>
+            <label>
+              开仓保证金 (U)
+              <input name="margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
+            </label>
+            <label>
+              杠杆倍数 (1-20X)
+              <input name="leverage" type="number" min="1" max="20" step="1" />
+            </label>
+            <label>
+              止盈 ROI (%)
+              <input name="take_profit_roi_pct" type="number" min="1" step="1" />
+            </label>
+            <label>
+              止损 ROI (%)
+              <input name="stop_loss_roi_pct" type="number" min="1" step="1" />
+            </label>
+            <label class="settings-check">
+              <input name="live_trading_enabled" type="checkbox" />
+              <span>启动实盘交易</span>
+            </label>
+          </fieldset>
+
+          <fieldset class="settings-group">
+            <legend>筛选策略</legend>
+            <label>
+              扫描间隔 (秒)
+              <input name="scan_interval_sec" type="number" min="2" step="1" />
+            </label>
+            <label>
+              交易方向
+              <select name="trade_direction_mode">
+                <option value="both">多空都可以</option>
+                <option value="long_only">只做多</option>
+                <option value="short_only">只做空</option>
+              </select>
+            </label>
+            <label>
+              启动池系统分阈值
+              <input name="early_breakout_score_threshold" type="number" min="0" max="10" step="0.1" />
+            </label>
+            <label class="settings-check">
+              <input name="early_breakout_enabled" type="checkbox" />
+              <span>启用早期启动池</span>
+            </label>
+            <label class="settings-wide">
+              禁止开仓币种
+              <input name="blocked_symbols" type="text" placeholder="BTCUSDT, ETHUSDT" />
+            </label>
+          </fieldset>
+
+          <fieldset class="settings-group">
+            <legend>分析器</legend>
+            <label>
+              置信度阈值 (%)
+              <input name="analyzer_min_confidence_pct" type="number" min="1" max="100" step="0.1" />
+            </label>
+            <label>
+              启动池置信度 (%)
+              <input name="early_breakout_min_confidence_pct" type="number" min="1" max="100" step="0.1" />
+            </label>
+            <label class="settings-check">
+              <input name="analyzer_realtime_before_open" type="checkbox" />
+              <span>开仓前再次确认</span>
+            </label>
+          </fieldset>
+
+          <fieldset class="settings-group">
+            <legend>入场仓位</legend>
+            <label class="settings-check">
+              <input name="entry_timing_enabled" type="checkbox" />
+              <span>启用入场点评分</span>
+            </label>
+            <label>
+              入场点最低分
+              <input name="entry_timing_min_score" type="number" min="0" max="10" step="0.1" />
+            </label>
+            <label>
+              小仓入场分
+              <input name="entry_timing_small_score" type="number" min="0" max="10" step="0.1" />
+            </label>
+            <label>
+              正常仓入场分
+              <input name="entry_timing_normal_score" type="number" min="0" max="10" step="0.1" />
+            </label>
+            <label>
+              小仓倍率
+              <input name="entry_timing_small_multiplier" type="number" min="0.1" max="1" step="0.05" />
+            </label>
+            <label>
+              小仓杠杆上限
+              <input name="entry_timing_small_leverage_cap" type="number" min="1" max="20" step="1" />
+            </label>
+          </fieldset>
+
+          <fieldset class="settings-group">
+            <legend>风控通知</legend>
+            <label>
+              最大持仓数
+              <input name="max_open_positions" type="number" min="1" step="1" />
+            </label>
+            <label>
+              最大仓位敞口 (%)
+              <input name="max_exposure_pct" type="number" min="1" step="1" />
+            </label>
+            <label>
+              今日盈利停开 (U)
+              <input name="max_daily_profit_usdt" type="number" min="0.01" step="0.01" />
+            </label>
+            <label>
+              今日亏损停开 (U)
+              <input name="max_daily_loss_usdt" type="number" min="0.01" step="0.01" />
+            </label>
+            <label>
+              昨日合约总账户余额 (U)
+              <input name="previous_day_equity_usdt" type="number" min="0" step="0.01" />
+            </label>
+            <label>
+              总资产止盈收益 (U)
+              <input name="equity_take_profit_usdt" type="number" min="0.01" step="0.01" />
+            </label>
+            <label class="settings-check">
+              <input name="max_daily_profit_enabled" type="checkbox" />
+              <span>启用今日盈利停止开单</span>
+            </label>
+            <label class="settings-check">
+              <input name="max_daily_loss_enabled" type="checkbox" />
+              <span>启用今日亏损停止开单</span>
+            </label>
+            <label class="settings-check">
+              <input name="equity_take_profit_enabled" type="checkbox" />
+              <span>启用总资产止盈全平</span>
+            </label>
+            <label class="settings-check">
+              <input name="square_publish_on_open" type="checkbox" />
+              <span>开仓后自动发布到 Binance Square</span>
+            </label>
+          </fieldset>
+
           <button class="button button-primary" type="submit">保存参数</button>
-          <label>
-            今日盈利停开 (U)
-            <input name="live_trading_enabled" type="checkbox" />
-            <span>启动实盘交易</span>
-          </label>
-          <label>
-            置信度阈值 (%)
-            <input name="analyzer_min_confidence_pct" type="number" min="1" max="100" step="0.1" />
-          </label>
-          <label class="settings-check">
-            <input name="analyzer_realtime_before_open" type="checkbox" />
-            <span>启用分析器二次确认</span>
-          </label>
-          <label class="settings-check">
-            <input name="entry_timing_enabled" type="checkbox" />
-            <span>启用入场点评分</span>
-          </label>
-          <label>
-            入场点最低分
-            <input name="entry_timing_min_score" type="number" min="0" max="10" step="0.1" />
-          </label>
-          <label>
-            小仓入场分
-            <input name="entry_timing_small_score" type="number" min="0" max="10" step="0.1" />
-          </label>
-          <label>
-            正常仓入场分
-            <input name="entry_timing_normal_score" type="number" min="0" max="10" step="0.1" />
-          </label>
-          <label>
-            小仓倍率
-            <input name="entry_timing_small_multiplier" type="number" min="0.1" max="1" step="0.05" />
-          </label>
-          <label>
-            小仓杠杆上限
-            <input name="entry_timing_small_leverage_cap" type="number" min="1" max="20" step="1" />
-          </label>
-          <label>
-            今日盈利停开 (U)
-            <input name="max_daily_profit_usdt" type="number" min="0.01" step="0.01" />
-          </label>
-          <label>
-            今日亏损停开 (U)
-            <input name="max_daily_loss_usdt" type="number" min="0.01" step="0.01" />
-          </label>
-          <label class="settings-check">
-            <input name="max_daily_profit_enabled" type="checkbox" />
-            <span>启用今日盈利停止开单</span>
-          </label>
-          <label class="settings-check">
-            <input name="max_daily_loss_enabled" type="checkbox" />
-            <span>启用今日亏损停止开单</span>
-          </label>
-          <label class="settings-check">
-            <input name="square_publish_on_open" type="checkbox" />
-            <span>开仓后自动发布到 Binance Square</span>
-          </label>
         </form>
       </section>
 
@@ -288,6 +331,30 @@
 
       <section class="table-section">
         <div class="section-title">
+          <span>▣</span>
+          <h2>入场类型复盘</h2>
+        </div>
+        <div class="table-wrap">
+          <table class="compact-table">
+            <thead>
+              <tr>
+                <th>入场类型</th>
+                <th>平仓数</th>
+                <th>胜率</th>
+                <th>盈亏</th>
+                <th>平均 ROI</th>
+                <th>盈亏因子</th>
+              </tr>
+            </thead>
+            <tbody id="entryTypeRows">
+              <tr><td colspan="6" class="empty">暂无入场类型复盘</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="table-section">
+        <div class="section-title">
           <span>◈</span>
           <h2>排序候选表</h2>
         </div>
@@ -296,10 +363,12 @@
             <thead>
               <tr>
                 <th>币种</th>
+                <th>模式</th>
                 <th>总分</th>
                 <th>方向</th>
                 <th>分析器</th>
                 <th>置信度</th>
+                <th>下一步</th>
                 <th>未开仓原因</th>
                 <th>决策链</th>
                 <th>实时市价</th>
@@ -320,7 +389,7 @@
               </tr>
             </thead>
             <tbody id="candidateRows">
-              <tr><td colspan="23" class="empty">候选表空</td></tr>
+              <tr><td colspan="25" class="empty">候选表空</td></tr>
             </tbody>
           </table>
         </div>
