@@ -100,6 +100,7 @@ function normalizeSettingsLabels() {
     analyzer_realtime_before_open: "启用分析器二次确认",
     early_breakout_enabled: "启用早期启动池",
     equity_take_profit_enabled: "启用总资产止盈全平",
+    btc_strategy_enabled: "启用BTC独立策略",
   };
   for (const [name, textValue] of Object.entries(toggles)) {
     const input = els.form?.elements?.[name];
@@ -125,9 +126,17 @@ function normalizeSettingsLabels() {
   if (earlyScoreLabel) {
     earlyScoreLabel.title = "早期启动池使用单独评分：24h温和启动、15m突破、4h转强、短线趋势、量能启动；不使用强波动评分。";
   }
+  const strategyRunModeLabel = els.form?.elements?.strategy_run_mode?.closest("label");
+  if (strategyRunModeLabel) {
+    strategyRunModeLabel.title = "全部策略会同时跑妖币和BTC；只跑妖币会跳过BTC独立策略；只跑BTC会跳过强波动池和早期启动池。";
+  }
   const equityTakeProfitLabel = els.form?.elements?.equity_take_profit_enabled?.closest("label");
   if (equityTakeProfitLabel) {
     equityTakeProfitLabel.title = "开启后，当合约总资产 - 昨日合约总账户余额 达到总资产止盈收益阈值时，系统停止新增开仓并提交全部平仓。";
+  }
+  const btcStrategyLabel = els.form?.elements?.btc_strategy_enabled?.closest("label");
+  if (btcStrategyLabel) {
+    btcStrategyLabel.title = "开启后，系统每轮单独分析 BTCUSDT 的15m/1h/4h结构；通过后复用当前模拟盘/实盘执行层下单，不受小币候选池排序影响。";
   }
 }
 
@@ -717,8 +726,12 @@ function renderCandidates(rows) {
       const decisionText = row.decision_summary || reject;
       const riskCls = row.risk_level === "危险" ? "risk-high" : row.risk_level === "注意" ? "risk-watch" : "risk-ok";
       const heatLabel = row.signal_heat_level === "hot" ? "过热" : row.signal_heat_level === "warm" ? "升温" : "";
-      const modeText = row.signal_mode === "early_breakout" ? `早启${heatLabel ? `/${heatLabel}` : ""}` : "强波动";
-      const confidenceThreshold = row.signal_mode === "early_breakout"
+      const modeText = row.signal_mode === "btc_strategy"
+        ? "BTC"
+        : row.signal_mode === "early_breakout" ? `早启${heatLabel ? `/${heatLabel}` : ""}` : "强波动";
+      const confidenceThreshold = row.signal_mode === "btc_strategy"
+        ? 0
+        : row.signal_mode === "early_breakout"
         ? Number(currentState?.config?.early_breakout_min_confidence_pct || 85)
         : Number(currentState?.config?.analyzer_min_confidence_pct || 90);
       const nextAction = candidateNextAction(row, confidenceThreshold);

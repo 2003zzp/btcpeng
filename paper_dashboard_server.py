@@ -62,6 +62,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "short_term_move_pct": 1.2,
     "volume_spike_ratio": 1.5,
     "trade_direction_mode": "both",
+    "strategy_run_mode": "all",
     "signal_score_threshold": 4.0,
     "analyzer_confirmation_enabled": True,
     "analyzer_min_confidence_pct": 90.0,
@@ -102,6 +103,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "equity_take_profit_enabled": False,
     "previous_day_equity_usdt": 0.0,
     "equity_take_profit_usdt": 100.0,
+    "btc_strategy_enabled": False,
+    "btc_margin_usdt": 20.0,
+    "btc_leverage": 3,
+    "btc_min_score": 6.0,
+    "btc_min_rr": 1.5,
+    "btc_take_profit_rr": 1.8,
+    "btc_atr_stop_multiplier": 1.5,
+    "btc_max_funding_rate_pct": 0.05,
+    "btc_min_adx": 18.0,
     "stop_loss_cooldown_enabled": True,
     "stop_loss_cooldown_minutes": 60,
     "take_profit_roi_pct": 90.0,
@@ -173,6 +183,10 @@ class Signal:
     decision_summary: str
     decision_steps: list[str]
     priority: str
+    planned_margin_usdt: float = 0.0
+    planned_leverage: int = 0
+    planned_stop_price: float = 0.0
+    planned_take_profit_price: float = 0.0
 
 
 def utc_now() -> datetime:
@@ -978,22 +992,38 @@ class PaperBot:
         self.event("info", f"每日已实现盈亏 Excel 已生成：{report_path}")
         return report_path
 
+    def refresh_previous_day_equity_baseline(self, baseline_date: str | None = None) -> float:
+        if baseline_date is None:
+            baseline_date = datetime.now().astimezone().date().isoformat()
+        try:
+            self.sync_exchange_state()
+        except Exception as exc:
+            self.event("warn", f"更新昨日合约总账户余额前同步失败，使用本地账户资产：{exc}")
+        equity = self.equity()
+        with self.lock:
+            self.config["previous_day_equity_usdt"] = round(equity, 6)
+            self.state["last_equity_baseline_date"] = baseline_date
+            self.state["last_equity_baseline_at"] = iso_now()
+            self.state["equity_take_profit_triggered"] = False
+            self.state["equity_take_profit_triggered_at"] = ""
+            save_json(self.config_path, self.config)
+            self.event("info", f"已更新昨日合约总账户余额为 {equity:.2f} U，作为 {baseline_date} 的总资产止盈基准")
+            self.persist()
+        return equity
+
     def daily_excel_report_loop(self) -> None:
         while True:
             try:
                 now = datetime.now().astimezone()
                 next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
                 time.sleep(max(1.0, (next_midnight - now).total_seconds()))
-                if not self.config.get("daily_excel_report_enabled", True):
-                    continue
                 report_date = (datetime.now().astimezone().date() - timedelta(days=1)).isoformat()
-                try:
-                    self.sync_exchange_state()
-                except Exception as exc:
-                    self.event("warn", f"生成日报前同步交易记录失败：{exc}")
-                self.export_daily_realized_pnl_excel(report_date)
+                baseline_date = datetime.now().astimezone().date().isoformat()
+                self.refresh_previous_day_equity_baseline(baseline_date)
+                if self.config.get("daily_excel_report_enabled", True):
+                    self.export_daily_realized_pnl_excel(report_date)
             except Exception as exc:
-                self.event("error", f"每日 Excel 报表生成失败：{exc}")
+                self.event("error", f"每日维护任务失败：{exc}")
                 time.sleep(60)
 
     def build_square_open_post(self, signal: Signal, record: dict[str, Any]) -> str:
@@ -1312,6 +1342,15 @@ class PaperBot:
             "equity_take_profit_enabled": str,
             "previous_day_equity_usdt": float,
             "equity_take_profit_usdt": float,
+            "btc_strategy_enabled": str,
+            "btc_margin_usdt": float,
+            "btc_leverage": int,
+            "btc_min_score": float,
+            "btc_min_rr": float,
+            "btc_take_profit_rr": float,
+            "btc_atr_stop_multiplier": float,
+            "btc_max_funding_rate_pct": float,
+            "btc_min_adx": float,
             "entry_quality_enabled": str,
             "entry_quality_min_score": float,
             "entry_quality_long_only": str,
@@ -1330,6 +1369,7 @@ class PaperBot:
             "early_breakout_max_kline_checks": int,
             "max_new_positions_per_scan": int,
             "trade_direction_mode": str,
+            "strategy_run_mode": str,
             "blocked_symbols": str,
             "live_trading_enabled": str,
             "telegram_hourly_status_enabled": str,
@@ -1342,7 +1382,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled", "analyzer_realtime_before_open", "early_breakout_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "btc_strategy_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled", "analyzer_realtime_before_open", "early_breakout_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -1351,9 +1391,13 @@ class PaperBot:
                     value = str(value)
                     if value not in {"both", "long_only", "short_only"}:
                         value = "both"
+                if key == "strategy_run_mode":
+                    value = str(value)
+                    if value not in {"all", "altcoin_only", "btc_only"}:
+                        value = "all"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "scan_interval_sec", "max_open_positions", "max_new_positions_per_scan", "entry_timing_small_leverage_cap", "early_breakout_max_kline_checks", "telegram_hourly_status_interval_minutes"}:
+                if key in {"leverage", "scan_interval_sec", "max_open_positions", "max_new_positions_per_scan", "entry_timing_small_leverage_cap", "early_breakout_max_kline_checks", "telegram_hourly_status_interval_minutes", "btc_leverage"}:
                     value = max(1, int(value))
                 if key == "previous_day_equity_usdt":
                     value = max(0.0, float(value))
@@ -1369,6 +1413,13 @@ class PaperBot:
                     "max_daily_profit_usdt",
                     "max_daily_loss_usdt",
                     "equity_take_profit_usdt",
+                    "btc_margin_usdt",
+                    "btc_min_score",
+                    "btc_min_rr",
+                    "btc_take_profit_rr",
+                    "btc_atr_stop_multiplier",
+                    "btc_max_funding_rate_pct",
+                    "btc_min_adx",
                     "entry_quality_min_score",
                     "entry_timing_min_score",
                     "entry_timing_normal_score",
@@ -2147,6 +2198,18 @@ class PaperBot:
         raise RuntimeError(f"{symbol} 无法设置杠杆：{last_error}")
 
     def position_plan(self, signal: Signal, available: float) -> dict[str, Any]:
+        if signal.signal_mode == "btc_strategy":
+            margin = min(max(0.01, fnum(signal.planned_margin_usdt, self.config.get("btc_margin_usdt", 20.0))), available)
+            target_leverage = max(1, int(fnum(signal.planned_leverage, self.config.get("btc_leverage", 3))))
+            reason = f"btc_strategy, fixed_margin={margin:.2f}U, target_leverage={target_leverage}x"
+            signal.decision_steps.append(f"仓位计划：{reason}")
+            return {
+                "margin_usdt": margin,
+                "target_leverage": target_leverage,
+                "margin_multiplier": 1.0,
+                "tier": "btc_strategy",
+                "reason": reason,
+            }
         base_margin = float(self.config.get("margin_per_trade_usdt", 9.0))
         configured_leverage = max(1, int(self.config.get("leverage", 3)))
         if not self.config.get("entry_timing_enabled", True):
@@ -2286,14 +2349,18 @@ class PaperBot:
             signal.side,
         )
 
-        stop_pct = float(self.config.get("stop_loss_roi_pct", 86.0)) / max(1.0, leverage) / 100.0
-        take_pct = float(self.config.get("take_profit_roi_pct", 90.0)) / max(1.0, leverage) / 100.0
-        if signal.side == "LONG":
-            stop_price = signal.price * (1.0 - stop_pct)
-            take_profit = signal.price * (1.0 + take_pct)
+        if fnum(signal.planned_stop_price) > 0 and fnum(signal.planned_take_profit_price) > 0:
+            stop_price = fnum(signal.planned_stop_price)
+            take_profit = fnum(signal.planned_take_profit_price)
         else:
-            stop_price = signal.price * (1.0 + stop_pct)
-            take_profit = signal.price * (1.0 - take_pct)
+            stop_pct = float(self.config.get("stop_loss_roi_pct", 86.0)) / max(1.0, leverage) / 100.0
+            take_pct = float(self.config.get("take_profit_roi_pct", 90.0)) / max(1.0, leverage) / 100.0
+            if signal.side == "LONG":
+                stop_price = signal.price * (1.0 - stop_pct)
+                take_profit = signal.price * (1.0 + take_pct)
+            else:
+                stop_price = signal.price * (1.0 + stop_pct)
+                take_profit = signal.price * (1.0 - take_pct)
 
         stop_order: dict[str, Any] = {}
         take_order: dict[str, Any] = {}
@@ -2408,6 +2475,68 @@ class PaperBot:
             {"symbol": symbol, "interval": "1m", "limit": 45},
             timeout=timeout,
         )
+
+    def fetch_klines_interval(self, symbol: str, interval: str, limit: int) -> list[list[Any]]:
+        timeout = min(4.0, float(self.config.get("request_timeout_sec", 6)))
+        return http_get_json(
+            self.config["market_base_url"],
+            "/fapi/v1/klines",
+            {"symbol": symbol, "interval": interval, "limit": limit},
+            timeout=timeout,
+        )
+
+    @staticmethod
+    def ema(values: list[float], period: int) -> float:
+        clean = [fnum(item) for item in values if fnum(item) > 0]
+        if not clean:
+            return 0.0
+        k = 2 / (period + 1)
+        result = clean[0]
+        for value in clean[1:]:
+            result = value * k + result * (1 - k)
+        return result
+
+    @staticmethod
+    def atr(klines: list[list[Any]], period: int = 14) -> float:
+        if len(klines) < period + 1:
+            return 0.0
+        trs: list[float] = []
+        prev_close = fnum(klines[0][4])
+        for row in klines[1:]:
+            high = fnum(row[2])
+            low = fnum(row[3])
+            close = fnum(row[4])
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            trs.append(tr)
+            prev_close = close
+        recent = trs[-period:]
+        return sum(recent) / len(recent) if recent else 0.0
+
+    @staticmethod
+    def adx(klines: list[list[Any]], period: int = 14) -> float:
+        if len(klines) < period + 2:
+            return 0.0
+        plus_dm: list[float] = []
+        minus_dm: list[float] = []
+        trs: list[float] = []
+        for idx in range(1, len(klines)):
+            high = fnum(klines[idx][2])
+            low = fnum(klines[idx][3])
+            prev_high = fnum(klines[idx - 1][2])
+            prev_low = fnum(klines[idx - 1][3])
+            prev_close = fnum(klines[idx - 1][4])
+            up_move = high - prev_high
+            down_move = prev_low - low
+            plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+            minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+            trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+        tr_sum = sum(trs[-period:])
+        if tr_sum <= 0:
+            return 0.0
+        plus_di = 100 * sum(plus_dm[-period:]) / tr_sum
+        minus_di = 100 * sum(minus_dm[-period:]) / tr_sum
+        total = plus_di + minus_di
+        return abs(plus_di - minus_di) / total * 100 if total > 0 else 0.0
 
     def fetch_signal_market_stats(self, symbol: str, ticker: dict[str, Any]) -> dict[str, float]:
         timeout = min(2.2, float(self.config.get("request_timeout_sec", 6)))
@@ -2997,6 +3126,10 @@ class PaperBot:
             "entry_quality_score": 0.0,
             "entry_timing_score": 0.0,
             "analyzer_confidence_pct": 0.0,
+            "planned_margin_usdt": 0.0,
+            "planned_leverage": 0.0,
+            "planned_stop_price": 0.0,
+            "planned_take_profit_price": 0.0,
         }
         for key, default in numeric_defaults.items():
             data[key] = fnum(data.get(key), default)
@@ -3232,10 +3365,160 @@ class PaperBot:
             return "weak", f"启动承接不足：OI1h {oi_1h:+.1f}%"
         return "normal", f"正常启动：资金费率 {funding:.3f}% / 多空比 {long_short:.2f} / OI1h {oi_1h:+.1f}%"
 
-    def build_signals(self, tickers: list[dict[str, Any]], open_symbols: set[str]) -> list[Signal]:
-        candidates = self.build_candidate_pool(tickers)
+    def build_btc_strategy_signal(self, ticker_by_symbol: dict[str, dict[str, Any]], open_symbols: set[str]) -> Signal | None:
+        if not self.config.get("btc_strategy_enabled", False):
+            return None
+        symbol = "BTCUSDT"
+        ticker = ticker_by_symbol.get(symbol, {})
+        if symbol in open_symbols:
+            return None
+        try:
+            k15 = self.fetch_klines_interval(symbol, "15m", 80)
+            k1h = self.fetch_klines_interval(symbol, "1h", 120)
+            k4h = self.fetch_klines_interval(symbol, "4h", 120)
+        except Exception as exc:
+            self.event("warn", f"BTC策略K线读取失败：{exc}")
+            return None
+        closes15 = [fnum(row[4]) for row in k15]
+        closes1h = [fnum(row[4]) for row in k1h]
+        closes4h = [fnum(row[4]) for row in k4h]
+        if len(closes15) < 35 or len(closes1h) < 35 or len(closes4h) < 35:
+            return None
+        price = closes15[-1]
+        ema15 = self.ema(closes15, 30)
+        ema1h = self.ema(closes1h, 30)
+        ema4h = self.ema(closes4h, 30)
+        prev_ema15 = self.ema(closes15[:-1], 30)
+        adx1h = self.adx(k1h, 14)
+        atr15 = self.atr(k15, 14)
+        if price <= 0 or atr15 <= 0:
+            return None
+        funding_rate = 0.0
+        try:
+            premium = http_get_json(self.config["market_base_url"], "/fapi/v1/premiumIndex", {"symbol": symbol}, timeout=2.5)
+            funding_rate = fnum(premium.get("lastFundingRate")) * 100
+        except Exception:
+            funding_rate = 0.0
+        max_funding = float(self.config.get("btc_max_funding_rate_pct", 0.05))
+        min_adx = float(self.config.get("btc_min_adx", 18.0))
+        if adx1h < min_adx:
+            return None
+        score = 0.0
+        reasons: list[str] = []
+        side = ""
+        if price > ema15 and closes1h[-1] > ema1h and closes4h[-1] > ema4h and ema1h >= self.ema(closes1h[:-4], 30):
+            side = "LONG"
+            score += 2.0
+            reasons.append("1h/4h多头趋势")
+            if closes15[-2] <= prev_ema15 and price > ema15:
+                score += 1.8
+                reasons.append("15m回踩后重新站上EMA30")
+            elif price > ema15 and abs(price - ema15) / price <= 0.006:
+                score += 1.2
+                reasons.append("15m贴近EMA30顺势")
+            if abs(funding_rate) <= max_funding:
+                score += 1.0
+                reasons.append(f"资金费率不过热 {funding_rate:.3f}%")
+            if adx1h >= min_adx:
+                score += 1.2
+                reasons.append(f"1h ADX {adx1h:.1f} 有趋势")
+        elif price < ema15 and closes1h[-1] < ema1h and closes4h[-1] < ema4h and ema1h <= self.ema(closes1h[:-4], 30):
+            side = "SHORT"
+            score += 2.0
+            reasons.append("1h/4h空头趋势")
+            if closes15[-2] >= prev_ema15 and price < ema15:
+                score += 1.8
+                reasons.append("15m反弹后重新跌破EMA30")
+            elif price < ema15 and abs(price - ema15) / price <= 0.006:
+                score += 1.2
+                reasons.append("15m贴近EMA30顺势")
+            if abs(funding_rate) <= max_funding:
+                score += 1.0
+                reasons.append(f"资金费率不过热 {funding_rate:.3f}%")
+            if adx1h >= min_adx:
+                score += 1.2
+                reasons.append(f"1h ADX {adx1h:.1f} 有趋势")
+        if not side:
+            return None
+        mode_reject = self.direction_mode_reject_reason(side)
+        if mode_reject:
+            return None
+        min_score = float(self.config.get("btc_min_score", 6.0))
+        if score < min_score:
+            return None
+        stop_distance = max(atr15 * float(self.config.get("btc_atr_stop_multiplier", 1.5)), price * 0.003)
+        take_distance = stop_distance * float(self.config.get("btc_take_profit_rr", 1.8))
+        if side == "LONG":
+            stop_price = price - stop_distance
+            take_price = price + take_distance
+        else:
+            stop_price = price + stop_distance
+            take_price = price - take_distance
+        rr = take_distance / stop_distance if stop_distance > 0 else 0.0
+        if rr < float(self.config.get("btc_min_rr", 1.5)):
+            return None
+        change_24h = fnum(ticker.get("priceChangePercent"))
+        quote_volume = fnum(ticker.get("quoteVolume"))
+        steps = [
+            f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{' / '.join(reasons)}",
+            f"趋势结构：15m EMA30 {ema15:.2f} / 1h EMA30 {ema1h:.2f} / 4h EMA30 {ema4h:.2f}",
+            f"风控点位：入场 {price:.2f}，止损 {stop_price:.2f}，止盈 {take_price:.2f}，RR {rr:.2f}",
+        ]
+        return Signal(
+            symbol=symbol,
+            side=side,
+            score=round(score, 2),
+            price=price,
+            quote_volume=quote_volume,
+            change_24h_pct=change_24h,
+            change_4h_pct=pct(closes15[-1], closes15[-17]) if len(closes15) > 17 else 0.0,
+            change_1h_pct=pct(closes15[-1], closes15[-5]) if len(closes15) > 5 else 0.0,
+            short_move_pct=pct(closes15[-1], closes15[-2]) if len(closes15) > 2 else 0.0,
+            volume_ratio=1.0,
+            open_interest_usdt=0.0,
+            open_interest_24h_pct=0.0,
+            open_interest_4h_pct=0.0,
+            open_interest_1h_pct=0.0,
+            funding_rate_pct=funding_rate,
+            long_short_ratio=1.0,
+            volume_4h_ratio=1.0,
+            taker_long_short_ratio=1.0,
+            oi_volume_ratio=0.0,
+            entry_quality_score=10.0,
+            entry_quality_label="BTC策略",
+            entry_quality_reason="BTC独立策略通过趋势、结构、ATR和RR判断",
+            entry_timing_score=round(score, 1),
+            entry_timing_label="BTC",
+            entry_timing_reason=" / ".join(reasons),
+            entry_type="BTC趋势回踩",
+            signal_mode="btc_strategy",
+            signal_heat_level="normal",
+            risk_level="正常",
+            analyzer_direction="BTC策略",
+            analyzer_confidence_pct=100.0,
+            analyzer_reason="BTC策略不使用小币分析器置信度",
+            trigger_reason="BTC策略：" + " / ".join(reasons),
+            reject_reason="",
+            decision_summary="待开仓",
+            decision_steps=steps,
+            priority="高",
+            planned_margin_usdt=float(self.config.get("btc_margin_usdt", 20.0)),
+            planned_leverage=max(1, int(self.config.get("btc_leverage", 3))),
+            planned_stop_price=stop_price,
+            planned_take_profit_price=take_price,
+        )
 
+    def build_signals(self, tickers: list[dict[str, Any]], open_symbols: set[str]) -> list[Signal]:
         signals: list[Signal] = []
+        run_mode = str(self.config.get("strategy_run_mode", "all"))
+        ticker_by_symbol = {str(item.get("symbol", "")): item for item in tickers}
+        btc_signal = self.build_btc_strategy_signal(ticker_by_symbol, open_symbols) if run_mode in {"all", "btc_only"} else None
+        if btc_signal:
+            signals.append(btc_signal)
+        if run_mode == "btc_only":
+            return signals
+
+        candidates = self.build_candidate_pool(tickers)
         for index, candidate in enumerate(candidates):
             item = candidate["item"]
             signal_mode = str(candidate.get("signal_mode", "strong_momentum"))
@@ -3683,7 +3966,7 @@ class PaperBot:
                 self.update_signal_decision(signal, f"{self.exchange_label()} 无此交易对", f"开仓前复核：不在 {self.exchange_label()} 交易对中")
                 self.event("warn", f"{signal.symbol} 不在 {self.exchange_label()} 交易对中，跳过")
                 continue
-            if self.config.get("analyzer_confirmation_enabled", True) and self.config.get("analyzer_realtime_before_open", True):
+            if signal.signal_mode != "btc_strategy" and self.config.get("analyzer_confirmation_enabled", True) and self.config.get("analyzer_realtime_before_open", True):
                 try:
                     realtime_result = self.analyze_symbol_now(signal.symbol)
                     with self.lock:
@@ -3703,7 +3986,7 @@ class PaperBot:
                     self.update_signal_decision(signal, f"开仓前实时确认失败：{exc}", f"开仓前实时确认失败：{exc}")
                     self.event("error", f"{signal.symbol} 开仓前实时确认失败：{exc}")
                     continue
-            if self.config.get("entry_timing_enabled", True):
+            if signal.signal_mode != "btc_strategy" and self.config.get("entry_timing_enabled", True):
                 try:
                     self.enrich_signal_entry_timing(signal)
                 except Exception as exc:
