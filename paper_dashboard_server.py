@@ -3370,20 +3370,93 @@ class PaperBot:
             return None
         symbol = "BTCUSDT"
         ticker = ticker_by_symbol.get(symbol, {})
+        ticker_price = fnum(ticker.get("lastPrice"))
+        change_24h = fnum(ticker.get("priceChangePercent"))
+        quote_volume = fnum(ticker.get("quoteVolume"))
+
+        def make_btc_signal(
+            *,
+            side: str = "LONG",
+            score: float = 0.0,
+            price: float = 0.0,
+            reject: str = "",
+            reasons: list[str] | None = None,
+            steps: list[str] | None = None,
+            funding_rate: float = 0.0,
+            change_4h: float = 0.0,
+            change_1h: float = 0.0,
+            short_move: float = 0.0,
+            entry_type: str = "BTC观察",
+            risk_level: str = "观察",
+            stop_price: float = 0.0,
+            take_price: float = 0.0,
+        ) -> Signal:
+            reason_text = " / ".join(reasons or [])
+            decision_steps = steps or [
+                f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{reason_text or '等待更多条件'}",
+                f"结论：{reject or '待开仓'}",
+            ]
+            return Signal(
+                symbol=symbol,
+                side=side,
+                score=round(score, 2),
+                price=price or ticker_price,
+                quote_volume=quote_volume,
+                change_24h_pct=change_24h,
+                change_4h_pct=change_4h,
+                change_1h_pct=change_1h,
+                short_move_pct=short_move,
+                volume_ratio=1.0,
+                open_interest_usdt=0.0,
+                open_interest_24h_pct=0.0,
+                open_interest_4h_pct=0.0,
+                open_interest_1h_pct=0.0,
+                funding_rate_pct=round(funding_rate, 4),
+                long_short_ratio=1.0,
+                volume_4h_ratio=1.0,
+                taker_long_short_ratio=1.0,
+                oi_volume_ratio=0.0,
+                entry_quality_score=10.0 if not reject else 0.0,
+                entry_quality_label="BTC策略",
+                entry_quality_reason="BTC独立策略通过15m/1h/4h趋势、ADX、ATR和RR判断",
+                entry_timing_score=round(score, 1),
+                entry_timing_label="BTC",
+                entry_timing_reason=reason_text or reject or "BTC策略观察中",
+                entry_type=entry_type,
+                signal_mode="btc_strategy",
+                signal_heat_level="normal",
+                risk_level=risk_level,
+                analyzer_direction="BTC策略",
+                analyzer_confidence_pct=100.0 if not reject else 0.0,
+                analyzer_reason="BTC策略不使用小币分析器置信度",
+                trigger_reason="BTC策略：" + (reason_text or reject or "观察中"),
+                reject_reason=reject,
+                decision_summary=self.decision_summary(reject),
+                decision_steps=decision_steps,
+                priority="高" if not reject else "观察",
+                planned_margin_usdt=float(self.config.get("btc_margin_usdt", 20.0)),
+                planned_leverage=max(1, int(self.config.get("btc_leverage", 3))),
+                planned_stop_price=stop_price,
+                planned_take_profit_price=take_price,
+            )
+
         if symbol in open_symbols:
-            return None
+            return make_btc_signal(reject="BTC已有持仓", steps=["BTC策略：已有BTC持仓，本轮不重复开仓"])
         try:
             k15 = self.fetch_klines_interval(symbol, "15m", 80)
             k1h = self.fetch_klines_interval(symbol, "1h", 120)
             k4h = self.fetch_klines_interval(symbol, "4h", 120)
         except Exception as exc:
             self.event("warn", f"BTC策略K线读取失败：{exc}")
-            return None
+            return make_btc_signal(reject=f"BTC策略K线读取失败：{exc}", steps=[f"BTC策略：读取15m/1h/4h K线失败：{exc}"])
         closes15 = [fnum(row[4]) for row in k15]
         closes1h = [fnum(row[4]) for row in k1h]
         closes4h = [fnum(row[4]) for row in k4h]
         if len(closes15) < 35 or len(closes1h) < 35 or len(closes4h) < 35:
-            return None
+            return make_btc_signal(
+                reject="BTC策略K线不足",
+                steps=[f"BTC策略：K线数量不足，15m {len(closes15)} / 1h {len(closes1h)} / 4h {len(closes4h)}，至少需要35根"],
+            )
         price = closes15[-1]
         ema15 = self.ema(closes15, 30)
         ema1h = self.ema(closes1h, 30)
@@ -3392,7 +3465,7 @@ class PaperBot:
         adx1h = self.adx(k1h, 14)
         atr15 = self.atr(k15, 14)
         if price <= 0 or atr15 <= 0:
-            return None
+            return make_btc_signal(price=price, reject="BTC策略ATR或价格无效", steps=[f"BTC策略：价格 {price:.2f} / ATR15 {atr15:.2f}，暂不交易"])
         funding_rate = 0.0
         try:
             premium = http_get_json(self.config["market_base_url"], "/fapi/v1/premiumIndex", {"symbol": symbol}, timeout=2.5)
@@ -3401,8 +3474,24 @@ class PaperBot:
             funding_rate = 0.0
         max_funding = float(self.config.get("btc_max_funding_rate_pct", 0.05))
         min_adx = float(self.config.get("btc_min_adx", 18.0))
+        change_4h = pct(closes15[-1], closes15[-17]) if len(closes15) > 17 else 0.0
+        change_1h = pct(closes15[-1], closes15[-5]) if len(closes15) > 5 else 0.0
+        short_move = pct(closes15[-1], closes15[-2]) if len(closes15) > 2 else 0.0
+        trend_steps = [
+            f"BTC策略：当前价 {price:.2f}，24h {change_24h:+.2f}% / 4h {change_4h:+.2f}% / 1h {change_1h:+.2f}%",
+            f"趋势结构：15m EMA30 {ema15:.2f} / 1h EMA30 {ema1h:.2f} / 4h EMA30 {ema4h:.2f}",
+            f"强度过滤：1h ADX {adx1h:.1f}，阈值 {min_adx:.1f}；资金费率 {funding_rate:.3f}%，阈值 ±{max_funding:.3f}%",
+        ]
         if adx1h < min_adx:
-            return None
+            return make_btc_signal(
+                price=price,
+                reject=f"BTC 1h ADX {adx1h:.1f} 低于 {min_adx:.1f}，震荡过滤",
+                steps=trend_steps + [f"结论：ADX不足，说明BTC当前趋势强度不够，继续观察"],
+                funding_rate=funding_rate,
+                change_4h=change_4h,
+                change_1h=change_1h,
+                short_move=short_move,
+            )
         score = 0.0
         reasons: list[str] = []
         side = ""
@@ -3439,13 +3528,47 @@ class PaperBot:
                 score += 1.2
                 reasons.append(f"1h ADX {adx1h:.1f} 有趋势")
         if not side:
-            return None
+            fallback_side = "LONG" if price >= ema15 else "SHORT"
+            return make_btc_signal(
+                side=fallback_side,
+                score=score,
+                price=price,
+                reject="BTC趋势结构未满足：15m/1h/4h EMA未共振",
+                reasons=reasons,
+                steps=trend_steps + ["结论：多空趋势没有形成15m、1h、4h同向共振，继续观察"],
+                funding_rate=funding_rate,
+                change_4h=change_4h,
+                change_1h=change_1h,
+                short_move=short_move,
+            )
         mode_reject = self.direction_mode_reject_reason(side)
         if mode_reject:
-            return None
+            return make_btc_signal(
+                side=side,
+                score=score,
+                price=price,
+                reject=mode_reject,
+                reasons=reasons,
+                steps=trend_steps + [f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{' / '.join(reasons)}", f"结论：{mode_reject}"],
+                funding_rate=funding_rate,
+                change_4h=change_4h,
+                change_1h=change_1h,
+                short_move=short_move,
+            )
         min_score = float(self.config.get("btc_min_score", 6.0))
         if score < min_score:
-            return None
+            return make_btc_signal(
+                side=side,
+                score=score,
+                price=price,
+                reject=f"BTC策略分 {score:.1f} 低于 {min_score:.1f}",
+                reasons=reasons,
+                steps=trend_steps + [f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{' / '.join(reasons)}", f"结论：分数不足，继续观察"],
+                funding_rate=funding_rate,
+                change_4h=change_4h,
+                change_1h=change_1h,
+                short_move=short_move,
+            )
         stop_distance = max(atr15 * float(self.config.get("btc_atr_stop_multiplier", 1.5)), price * 0.003)
         take_distance = stop_distance * float(self.config.get("btc_take_profit_rr", 1.8))
         if side == "LONG":
@@ -3456,56 +3579,44 @@ class PaperBot:
             take_price = price - take_distance
         rr = take_distance / stop_distance if stop_distance > 0 else 0.0
         if rr < float(self.config.get("btc_min_rr", 1.5)):
-            return None
-        change_24h = fnum(ticker.get("priceChangePercent"))
-        quote_volume = fnum(ticker.get("quoteVolume"))
+            return make_btc_signal(
+                side=side,
+                score=score,
+                price=price,
+                reject=f"BTC RR {rr:.2f} 低于 {float(self.config.get('btc_min_rr', 1.5)):.2f}",
+                reasons=reasons,
+                steps=trend_steps + [
+                    f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{' / '.join(reasons)}",
+                    f"风控点位：入场 {price:.2f}，止损 {stop_price:.2f}，止盈 {take_price:.2f}，RR {rr:.2f}",
+                    "结论：盈亏比不足，继续观察",
+                ],
+                funding_rate=funding_rate,
+                change_4h=change_4h,
+                change_1h=change_1h,
+                short_move=short_move,
+                stop_price=stop_price,
+                take_price=take_price,
+            )
         steps = [
             f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{' / '.join(reasons)}",
             f"趋势结构：15m EMA30 {ema15:.2f} / 1h EMA30 {ema1h:.2f} / 4h EMA30 {ema4h:.2f}",
             f"风控点位：入场 {price:.2f}，止损 {stop_price:.2f}，止盈 {take_price:.2f}，RR {rr:.2f}",
         ]
-        return Signal(
-            symbol=symbol,
+        return make_btc_signal(
             side=side,
-            score=round(score, 2),
+            score=score,
             price=price,
-            quote_volume=quote_volume,
-            change_24h_pct=change_24h,
-            change_4h_pct=pct(closes15[-1], closes15[-17]) if len(closes15) > 17 else 0.0,
-            change_1h_pct=pct(closes15[-1], closes15[-5]) if len(closes15) > 5 else 0.0,
-            short_move_pct=pct(closes15[-1], closes15[-2]) if len(closes15) > 2 else 0.0,
-            volume_ratio=1.0,
-            open_interest_usdt=0.0,
-            open_interest_24h_pct=0.0,
-            open_interest_4h_pct=0.0,
-            open_interest_1h_pct=0.0,
-            funding_rate_pct=funding_rate,
-            long_short_ratio=1.0,
-            volume_4h_ratio=1.0,
-            taker_long_short_ratio=1.0,
-            oi_volume_ratio=0.0,
-            entry_quality_score=10.0,
-            entry_quality_label="BTC策略",
-            entry_quality_reason="BTC独立策略通过趋势、结构、ATR和RR判断",
-            entry_timing_score=round(score, 1),
-            entry_timing_label="BTC",
-            entry_timing_reason=" / ".join(reasons),
+            reject="",
+            reasons=reasons,
+            steps=steps,
+            funding_rate=funding_rate,
+            change_4h=change_4h,
+            change_1h=change_1h,
+            short_move=short_move,
             entry_type="BTC趋势回踩",
-            signal_mode="btc_strategy",
-            signal_heat_level="normal",
             risk_level="正常",
-            analyzer_direction="BTC策略",
-            analyzer_confidence_pct=100.0,
-            analyzer_reason="BTC策略不使用小币分析器置信度",
-            trigger_reason="BTC策略：" + " / ".join(reasons),
-            reject_reason="",
-            decision_summary="待开仓",
-            decision_steps=steps,
-            priority="高",
-            planned_margin_usdt=float(self.config.get("btc_margin_usdt", 20.0)),
-            planned_leverage=max(1, int(self.config.get("btc_leverage", 3))),
-            planned_stop_price=stop_price,
-            planned_take_profit_price=take_price,
+            stop_price=stop_price,
+            take_price=take_price,
         )
 
     def build_signals(self, tickers: list[dict[str, Any]], open_symbols: set[str]) -> list[Signal]:

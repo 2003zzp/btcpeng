@@ -666,8 +666,13 @@ function candidateNextAction(row, confidenceThreshold) {
   const decisionText = `${reject} ${summary}`;
   const confidence = Number(row.analyzer_confidence_pct || 0);
   const analyzerDirection = row.analyzer_direction || "";
+  const isBtcStrategy = row.signal_mode === "btc_strategy";
 
   if (summary.includes("已提交") || reject.includes("已提交")) return "已提交";
+  if (isBtcStrategy && !reject) return "BTC风控下单";
+  if (isBtcStrategy && reject.includes("已有持仓")) return "BTC已有持仓";
+  if (isBtcStrategy && decisionText.includes("风控")) return "BTC风控拦截";
+  if (isBtcStrategy && reject) return "BTC观察";
   if (reject.includes("等待分析器")) return "等待分析器";
   if (reject.includes("已有持仓")) return "已有持仓";
   if (reject.includes("禁止开仓")) return "禁开跳过";
