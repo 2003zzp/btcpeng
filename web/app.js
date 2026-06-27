@@ -24,6 +24,7 @@ const els = {
   dailyPnlText: document.querySelector("#dailyPnlText"),
   scanDurationText: document.querySelector("#scanDurationText"),
   candidateRows: document.querySelector("#candidateRows"),
+  cooldownRows: document.querySelector("#cooldownRows"),
   entryTypeRows: document.querySelector("#entryTypeRows"),
   positionRows: document.querySelector("#positionRows"),
   historyRows: document.querySelector("#historyRows"),
@@ -318,6 +319,7 @@ function render(payload) {
   }
 
   renderCandidates(state.candidates || []);
+  renderCooldowns(state.stop_loss_cooldowns || []);
   renderEntryTypeStats(metrics.entry_type_stats || []);
   renderPositions(state.positions || []);
   renderHistory(state.trade_history || []);
@@ -726,6 +728,31 @@ function renderEntryTypeStats(rows) {
     .join("");
 }
 
+function renderCooldowns(rows) {
+  if (!els.cooldownRows) return;
+  if (!rows.length) {
+    els.cooldownRows.innerHTML = `<tr><td colspan="7" class="empty">暂无止损冷静期</td></tr>`;
+    return;
+  }
+  els.cooldownRows.innerHTML = rows
+    .map((row) => {
+      const symbol = escapeHtml(row.symbol || "-");
+      const reason = row.close_reason || "止损/亏损平仓";
+      return `
+        <tr>
+          <td><strong>${symbol}</strong></td>
+          <td><span class="score-badge">${Number(row.remaining_minutes || 0)} 分钟</span></td>
+          <td>${formatDate(row.closed_at)}</td>
+          <td class="${signedClass(row.pnl_usdt)}">${money(row.pnl_usdt)}</td>
+          <td class="${signedClass(row.roi_pct)}">${pct(row.roi_pct)}</td>
+          <td><span class="decision-chain" title="${titleText(reason)}">${escapeHtml(reason)}</span></td>
+          <td><button class="mini-action" type="button" data-clear-cooldown="${symbol}">解除</button></td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
 function renderCandidates(rows) {
   if (!els.candidateRows) return;
   const headRow = els.candidateRows.closest("table")?.querySelector("thead tr");
@@ -920,6 +947,22 @@ els.scanBtn.addEventListener("click", async () => {
     const result = await api("/api/scan", { method: "POST" });
     setTimeout(refresh, 400);
     return result;
+  });
+});
+
+els.cooldownRows?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-clear-cooldown]");
+  if (!button) return;
+  const symbol = button.dataset.clearCooldown || "";
+  const ok = window.confirm(`确认解除 ${symbol} 本次止损冷静期？如果后续再次止损，冷静期会重新生效。`);
+  if (!ok) return;
+  await runAction(button, `正在解除 ${symbol} 冷静期...`, `${symbol} 冷静期已解除`, async () => {
+    currentState = await api("/api/clear-cooldown", {
+      method: "POST",
+      body: JSON.stringify({ symbol }),
+    });
+    render(currentState);
+    return currentState;
   });
 });
 

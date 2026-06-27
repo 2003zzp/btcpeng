@@ -486,6 +486,7 @@ class PaperBot:
         state.setdefault("exchange_open_positions", [])
         state.setdefault("reconciled_close_ids", [])
         state.setdefault("pending_open_signals", {})
+        state.setdefault("stop_loss_cooldown_overrides", {})
         state.setdefault("last_hourly_status_report_at", "")
         if "telegram_close_notified_ids" not in state:
             notified_ids: list[str] = []
@@ -4250,12 +4251,98 @@ class PaperBot:
                 latest_stop_ms = closed_ms
         if latest_stop_ms <= 0:
             return ""
+        overrides = self.state.setdefault("stop_loss_cooldown_overrides", {})
+        override_ms = int(fnum(overrides.get(symbol)))
+        if override_ms >= latest_stop_ms:
+            return ""
         elapsed_sec = max(0, (now_ms - latest_stop_ms) / 1000)
         remaining_sec = cooldown_sec - elapsed_sec
         if remaining_sec <= 0:
             return ""
         remaining_min = math.ceil(remaining_sec / 60)
         return f"止损冷静期剩余 {remaining_min} 分钟"
+
+    def latest_stop_loss_trade_by_symbol(self) -> dict[str, dict[str, Any]]:
+        latest: dict[str, dict[str, Any]] = {}
+        for trade in self.state.get("trade_history", []):
+            symbol = str(trade.get("symbol", ""))
+            if not symbol:
+                continue
+            reason = str(trade.get("close_reason", ""))
+            pnl = fnum(trade.get("pnl_usdt"))
+            if "止损" not in reason and pnl >= 0:
+                continue
+            closed_ms = parse_time_ms(trade.get("closed_at"))
+            if closed_ms <= 0:
+                continue
+            current = latest.get(symbol)
+            if not current or closed_ms > int(current.get("closed_ms", 0)):
+                latest[symbol] = {"trade": trade, "closed_ms": closed_ms}
+        return latest
+
+    def active_stop_loss_cooldowns(self) -> list[dict[str, Any]]:
+        if not self.config.get("stop_loss_cooldown_enabled", True):
+            return []
+        cooldown_sec = max(60, int(float(self.config.get("stop_loss_cooldown_minutes", 60)) * 60))
+        now_ms = int(time.time() * 1000)
+        overrides = self.state.setdefault("stop_loss_cooldown_overrides", {})
+        rows: list[dict[str, Any]] = []
+        for symbol, item in self.latest_stop_loss_trade_by_symbol().items():
+            closed_ms = int(item.get("closed_ms", 0))
+            if int(fnum(overrides.get(symbol))) >= closed_ms:
+                continue
+            remaining_sec = cooldown_sec - max(0, (now_ms - closed_ms) / 1000)
+            if remaining_sec <= 0:
+                continue
+            trade = item.get("trade") or {}
+            rows.append({
+                "symbol": symbol,
+                "remaining_minutes": math.ceil(remaining_sec / 60),
+                "remaining_seconds": int(max(0, remaining_sec)),
+                "closed_at": trade.get("closed_at", ""),
+                "close_reason": trade.get("close_reason", ""),
+                "pnl_usdt": fnum(trade.get("pnl_usdt")),
+                "roi_pct": fnum(trade.get("roi_pct")),
+                "trade_id": trade.get("id") or trade.get("entry_order_id") or "",
+            })
+        rows.sort(key=lambda row: int(row.get("remaining_seconds", 0)), reverse=True)
+        return rows
+
+    def prune_stop_loss_cooldown_overrides(self, state: dict[str, Any] | None = None) -> None:
+        target = state if state is not None else self.state
+        overrides = target.setdefault("stop_loss_cooldown_overrides", {})
+        if not isinstance(overrides, dict):
+            target["stop_loss_cooldown_overrides"] = {}
+            return
+        latest = self.latest_stop_loss_trade_by_symbol() if state is None else {}
+        for symbol in list(overrides.keys()):
+            if state is not None:
+                continue
+            latest_ms = int((latest.get(symbol) or {}).get("closed_ms", 0))
+            if latest_ms <= 0 or int(fnum(overrides.get(symbol))) < latest_ms:
+                continue
+            # Keep active overrides; old symbols are harmless and small, trimmed below.
+        if len(overrides) > 200:
+            items = sorted(overrides.items(), key=lambda item: fnum(item[1]), reverse=True)[:200]
+            target["stop_loss_cooldown_overrides"] = dict(items)
+
+    def clear_stop_loss_cooldown(self, symbol: str) -> dict[str, Any]:
+        normalized = normalize_symbol_list([symbol], str(self.config.get("quote_asset", "USDT")))
+        if not normalized:
+            return {"ok": False, "error": "币种不能为空", **self.snapshot()}
+        target_symbol = normalized[0]
+        error = ""
+        with self.lock:
+            latest = self.latest_stop_loss_trade_by_symbol().get(target_symbol)
+            if not latest:
+                error = f"{target_symbol} 当前没有止损冷静期记录"
+            else:
+                self.state.setdefault("stop_loss_cooldown_overrides", {})[target_symbol] = int(latest.get("closed_ms", 0))
+                self.event("risk", f"已手动解除 {target_symbol} 本次止损冷静期")
+                self.persist()
+        if error:
+            return {"ok": False, "error": error, **self.snapshot()}
+        return {"ok": True, **self.snapshot()}
 
     def open_from_signals(self, signals: list[Signal]) -> int:
         open_count = len(self.state.get("positions", []))
@@ -4506,6 +4593,8 @@ class PaperBot:
             positions = self.state.get("positions", [])
             unrealized = sum(fnum(pos.get("unrealized_pnl_usdt")) for pos in positions)
             self.update_risk_state()
+            self.prune_stop_loss_cooldown_overrides()
+            self.state["stop_loss_cooldowns"] = self.active_stop_loss_cooldowns()
             stats = self.trade_stats()
             payload = {
                 "config": self.config,
@@ -4570,6 +4659,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/settings":
                 self.write_json(BOT.update_settings(self.read_json_body()))
+                return
+            if self.path == "/api/clear-cooldown":
+                body = self.read_json_body()
+                self.write_json(BOT.clear_stop_loss_cooldown(str(body.get("symbol", ""))))
                 return
             self.send_error(404)
         except Exception as exc:
