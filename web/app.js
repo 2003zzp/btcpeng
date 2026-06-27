@@ -85,6 +85,8 @@ function normalizeSettingsLabels() {
     leverage: "最高杠杆上限",
     take_profit_roi_pct: "初始止盈 ROI (%)",
     stop_loss_roi_pct: "初始止损 ROI (%)",
+    market_confirm_min_score: "市场确认分阈值",
+    early_breakout_market_confirm_min_score: "启动池确认分阈值",
     early_breakout_min_confidence_pct: "启动池置信度 (%)",
     early_breakout_score_threshold: "启动池系统分阈值",
   };
@@ -129,6 +131,18 @@ function normalizeSettingsLabels() {
   const strategyRunModeLabel = els.form?.elements?.strategy_run_mode?.closest("label");
   if (strategyRunModeLabel) {
     strategyRunModeLabel.title = "全部策略会同时跑妖币和BTC；只跑妖币会跳过BTC独立策略；只跑BTC会跳过强波动池和早期启动池。";
+  }
+  const confirmationModeLabel = els.form?.elements?.confirmation_mode?.closest("label");
+  if (confirmationModeLabel) {
+    confirmationModeLabel.title = "市场确认分使用趋势、动量、量能、OI、资金费率、多空比和主动成交替代黑盒置信度；分析器置信度则切回原来的脚本确认。";
+  }
+  const marketConfirmLabel = els.form?.elements?.market_confirm_min_score?.closest("label");
+  if (marketConfirmLabel) {
+    marketConfirmLabel.title = "妖币强波动池的第三关阈值，满分10分。分数越高越保守，默认6.5。";
+  }
+  const earlyMarketConfirmLabel = els.form?.elements?.early_breakout_market_confirm_min_score?.closest("label");
+  if (earlyMarketConfirmLabel) {
+    earlyMarketConfirmLabel.title = "早期启动池的第三关阈值，满分10分。默认比强波动略低，让启动币更容易进入小仓测试。";
   }
   const equityTakeProfitLabel = els.form?.elements?.equity_take_profit_enabled?.closest("label");
   if (equityTakeProfitLabel) {
@@ -673,12 +687,14 @@ function candidateNextAction(row, confidenceThreshold) {
   if (isBtcStrategy && reject.includes("已有持仓")) return "BTC已有持仓";
   if (isBtcStrategy && decisionText.includes("风控")) return "BTC风控拦截";
   if (isBtcStrategy && reject) return "BTC观察";
+  if (analyzerDirection === "市场确认" && !reject) return "开仓前入场评分";
   if (reject.includes("等待分析器")) return "等待分析器";
   if (reject.includes("已有持仓")) return "已有持仓";
   if (reject.includes("禁止开仓")) return "禁开跳过";
   if (reject.includes("止损冷静期")) return "冷静期";
   if (decisionText.includes("今日") || decisionText.includes("敞口") || decisionText.includes("持仓上限")) return "风控拦截";
   if (decisionText.includes("入场") || decisionText.includes("结构破坏") || decisionText.includes("高位冲刺")) return "入场处理";
+  if (reject.includes("市场确认分")) return "市场确认不足";
   if (reject.includes("方向") || reject.includes("观望") || reject.includes("置信度") || reject.includes("分析器")) return "分析器拒绝";
   if (!reject && analyzerDirection && confidence > confidenceThreshold) return "开仓前入场评分";
   if (reject === "待开仓" && analyzerDirection && confidence > confidenceThreshold) return "开仓前入场评分";
@@ -739,6 +755,13 @@ function renderCandidates(rows) {
         : row.signal_mode === "early_breakout"
         ? Number(currentState?.config?.early_breakout_min_confidence_pct || 85)
         : Number(currentState?.config?.analyzer_min_confidence_pct || 90);
+      const isMarketConfirm = row.analyzer_direction === "市场确认";
+      const confirmValue = Number(row.analyzer_confidence_pct || 0);
+      const confirmThreshold = row.signal_mode === "early_breakout"
+        ? Number(currentState?.config?.early_breakout_market_confirm_min_score || 6.5)
+        : Number(currentState?.config?.market_confirm_min_score || 7);
+      const confirmPassed = isMarketConfirm ? confirmValue >= confirmThreshold * 10 : confirmValue > confidenceThreshold;
+      const confirmText = isMarketConfirm ? `${(confirmValue / 10).toFixed(1)}/10` : `${confirmValue.toFixed(1)}%`;
       const nextAction = candidateNextAction(row, confidenceThreshold);
       return `
         <tr>
@@ -748,7 +771,7 @@ function renderCandidates(rows) {
           <td title="${titleText(row.entry_timing_reason || "-")}"><span class="score-badge">${escapeHtml(row.entry_type || row.entry_timing_label || "-")} ${Number(row.entry_timing_score || 0).toFixed(1)}</span></td>
           <td>${sidePill(row.side)}</td>
           <td>${row.analyzer_direction || "-"}</td>
-          <td class="${Number(row.analyzer_confidence_pct || 0) > confidenceThreshold ? "positive" : "danger"}">${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%</td>
+          <td class="${confirmPassed ? "positive" : "danger"}">${confirmText}</td>
           <td><span class="next-action" title="${titleText(decisionTitle)}">${escapeHtml(nextAction)}</span></td>
           <td>${reject}</td>
           <td><span class="decision-chain" title="${titleText(decisionTitle)}">${escapeHtml(decisionText)}</span></td>

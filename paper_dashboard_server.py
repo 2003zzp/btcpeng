@@ -64,6 +64,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "trade_direction_mode": "both",
     "strategy_run_mode": "all",
     "signal_score_threshold": 4.0,
+    "confirmation_mode": "market_score",
+    "market_confirm_min_score": 7.0,
+    "early_breakout_market_confirm_min_score": 6.5,
     "analyzer_confirmation_enabled": True,
     "analyzer_min_confidence_pct": 90.0,
     "early_breakout_enabled": True,
@@ -1361,6 +1364,9 @@ class PaperBot:
             "entry_timing_small_multiplier": float,
             "entry_timing_small_leverage_cap": int,
             "signal_score_threshold": float,
+            "confirmation_mode": str,
+            "market_confirm_min_score": float,
+            "early_breakout_market_confirm_min_score": float,
             "analyzer_min_confidence_pct": float,
             "analyzer_realtime_before_open": str,
             "early_breakout_enabled": str,
@@ -1395,6 +1401,10 @@ class PaperBot:
                     value = str(value)
                     if value not in {"all", "altcoin_only", "btc_only"}:
                         value = "all"
+                if key == "confirmation_mode":
+                    value = str(value)
+                    if value not in {"market_score", "analyzer"}:
+                        value = "market_score"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
                 if key in {"leverage", "scan_interval_sec", "max_open_positions", "max_new_positions_per_scan", "entry_timing_small_leverage_cap", "early_breakout_max_kline_checks", "telegram_hourly_status_interval_minutes", "btc_leverage"}:
@@ -1406,6 +1416,8 @@ class PaperBot:
                     "take_profit_roi_pct",
                     "stop_loss_roi_pct",
                     "signal_score_threshold",
+                    "market_confirm_min_score",
+                    "early_breakout_market_confirm_min_score",
                     "analyzer_min_confidence_pct",
                     "early_breakout_min_confidence_pct",
                     "early_breakout_score_threshold",
@@ -2627,6 +2639,205 @@ class PaperBot:
             return "正常"
         return "注意"
 
+    def market_confirm_min_score_for_mode(self, signal_mode: str = "") -> float:
+        if signal_mode == "early_breakout":
+            return float(self.config.get("early_breakout_market_confirm_min_score", 6.0))
+        return float(self.config.get("market_confirm_min_score", 7.0))
+
+    def market_confirmation_score(
+        self,
+        side: str,
+        signal_mode: str,
+        change_24h: float,
+        change_4h: float,
+        change_1h: float,
+        short_move: float,
+        volume_ratio: float,
+        trend: str,
+        stats: dict[str, float],
+    ) -> dict[str, Any]:
+        score = 4.0
+        reasons: list[str] = []
+        caps: list[float] = []
+        warnings: list[str] = []
+        is_long = side == "LONG"
+        direction_ok = trend == ("up" if is_long else "down")
+        if direction_ok:
+            score += 0.8
+            reasons.append("短线趋势同向")
+        else:
+            score -= 1.4
+            caps.append(5.8)
+            reasons.append("短线趋势不同向")
+
+        directional_24h = change_24h if is_long else -change_24h
+        directional_4h = change_4h if is_long else -change_4h
+        directional_1h = change_1h if is_long else -change_1h
+        directional_short = short_move if is_long else -short_move
+
+        if directional_4h >= 1.2:
+            score += 0.6
+            reasons.append(f"4h方向延续 {directional_4h:+.1f}%")
+        elif directional_4h < -0.8:
+            score -= 1.0
+            caps.append(5.8)
+            reasons.append(f"4h反向 {directional_4h:+.1f}%")
+
+        if 0.5 <= directional_1h <= 10.0:
+            score += 0.5
+            reasons.append(f"1h动量健康 {directional_1h:+.1f}%")
+        elif directional_1h > 16.0:
+            score -= 0.3
+            warnings.append("1h过热")
+            reasons.append(f"1h强加速 {directional_1h:+.1f}%")
+        elif directional_1h < -0.6:
+            score -= 1.0
+            caps.append(6.0)
+            reasons.append(f"1h转弱 {directional_1h:+.1f}%")
+
+        if 0.4 <= directional_short <= 5.5:
+            score += 0.5
+            reasons.append(f"短线突破 {directional_short:+.1f}%")
+        elif 5.5 < directional_short <= 9.0:
+            score -= 0.2
+            warnings.append("短线过热")
+            reasons.append(f"短线强加速 {directional_short:+.1f}%")
+        elif directional_short < -0.4:
+            score -= 1.2
+            caps.append(5.8)
+            reasons.append(f"短线反向 {directional_short:+.1f}%")
+
+        if 1.2 <= volume_ratio <= 7.5:
+            score += 0.5
+            reasons.append(f"量能确认 {volume_ratio:.1f}x")
+        elif volume_ratio > 7.5:
+            score -= 0.2
+            warnings.append("量能过热")
+            reasons.append(f"量能极强 {volume_ratio:.1f}x")
+        else:
+            score -= 0.7
+            reasons.append(f"量能不足 {volume_ratio:.1f}x")
+
+        funding = fnum(stats.get("funding_rate_pct"))
+        oi_1h = fnum(stats.get("open_interest_1h_pct"))
+        oi_24h = fnum(stats.get("open_interest_24h_pct"))
+        long_short = fnum(stats.get("long_short_ratio"), 1.0)
+        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
+        funding_aligned = funding if is_long else -funding
+        taker_aligned = taker_ratio if is_long else (1.0 / taker_ratio if taker_ratio > 0 else 1.0)
+        crowd_ratio = long_short if is_long else (1.0 / long_short if long_short > 0 else 1.0)
+        funding_crowded = funding_aligned > 0.08
+        crowd_extreme = crowd_ratio > 3.2 or crowd_ratio < 0.55
+        oi_spike = oi_1h > 60
+        momentum_push = directional_short >= 0.4 and directional_1h >= 0.5 and directional_4h >= 1.2
+        taker_strong = taker_aligned >= 1.05
+        taker_weak = taker_aligned < 0.92
+
+        if abs(funding) <= 0.08:
+            score += 0.4
+            reasons.append(f"资金费率可接受 {funding:+.3f}%")
+        elif funding_crowded and taker_strong and momentum_push:
+            score += 0.1
+            warnings.append("资金费率同向拥挤")
+            reasons.append(f"费率拥挤但仍推进 {funding:+.3f}%")
+        elif funding_crowded:
+            score -= 0.4
+            warnings.append("资金费率同向拥挤")
+            reasons.append(f"同向资金费率偏热 {funding:+.3f}%")
+        else:
+            score += 0.2
+            reasons.append(f"逆向资金费率不拥挤 {funding:+.3f}%")
+
+        if 0 <= oi_1h <= 35 or 0 <= oi_24h <= 70:
+            score += 0.7
+            reasons.append(f"OI跟随增加 1h {oi_1h:+.1f}%")
+        elif oi_1h < -8:
+            score -= 1.0
+            caps.append(6.2)
+            reasons.append(f"OI承接下降 {oi_1h:+.1f}%")
+        elif oi_spike and taker_strong and momentum_push:
+            score += 0.2
+            warnings.append("OI急增")
+            reasons.append(f"OI急增但价格推进 {oi_1h:+.1f}%")
+        elif oi_spike:
+            score -= 0.3
+            warnings.append("OI急增")
+            reasons.append(f"OI急增 {oi_1h:+.1f}%")
+
+        if taker_strong:
+            score += 0.9
+            reasons.append(f"主动成交同向 {taker_ratio:.2f}")
+        elif taker_weak:
+            score -= 1.2
+            caps.append(6.0)
+            reasons.append(f"主动成交反向 {taker_ratio:.2f}")
+        else:
+            score -= 0.2
+            caps.append(6.4)
+            reasons.append(f"主动成交不明显 {taker_ratio:.2f}")
+
+        if 0.75 <= crowd_ratio <= 2.3:
+            score += 0.5
+            reasons.append(f"多空拥挤度可接受 {long_short:.2f}")
+        elif 2.3 < crowd_ratio <= 3.2:
+            if taker_strong and momentum_push:
+                score += 0.1
+                reasons.append(f"多空偏挤但仍推进 {long_short:.2f}")
+            else:
+                score -= 0.2
+            warnings.append("多空比偏挤")
+        else:
+            if taker_strong and momentum_push:
+                score -= 0.1
+                warnings.append("多空比极端")
+                reasons.append(f"多空极端但仍推进 {long_short:.2f}")
+            else:
+                score -= 0.8
+                warnings.append("多空比极端")
+                reasons.append(f"多空比极端 {long_short:.2f}")
+
+        if signal_mode == "early_breakout":
+            if 2.0 <= directional_24h <= float(self.config.get("early_breakout_max_24h_change_pct", 18.0)) + 8:
+                score += 0.4
+                reasons.append(f"早启涨幅区间 {directional_24h:+.1f}%")
+            elif directional_24h > 35:
+                score -= 0.8
+                caps.append(6.8)
+                reasons.append(f"早启已偏高 {directional_24h:+.1f}%")
+        else:
+            if directional_24h >= float(self.config.get("min_abs_24h_change_pct", 6.0)):
+                score += 0.3
+                reasons.append(f"24h强波动确认 {directional_24h:+.1f}%")
+
+        exhausted_crowd = (funding_crowded or crowd_extreme) and (taker_weak or directional_short < 0.4 or directional_1h < 0.5)
+        if exhausted_crowd:
+            caps.append(6.2)
+            reasons.append("拥挤后推进不足")
+        if oi_spike and (taker_weak or directional_short < 0.4):
+            caps.append(6.0)
+            reasons.append("OI急增但成交/价格不配合")
+        if funding_crowded and crowd_extreme and not taker_strong:
+            caps.append(6.4)
+            reasons.append("费率和多空同时拥挤但主动成交不足")
+        if len(warnings) >= 3 and not (taker_strong and momentum_push):
+            caps.append(6.8)
+            reasons.append(f"过热项较多：{'/'.join(warnings[:3])}")
+        if caps:
+            cap = min(caps)
+            if score > cap:
+                reasons.append(f"确认分封顶 {cap:.1f}")
+                score = cap
+        score = max(0.0, min(10.0, score))
+        if score >= 7.5:
+            label = "强确认"
+        elif score >= self.market_confirm_min_score_for_mode(signal_mode):
+            label = "通过"
+        elif score >= 5.0:
+            label = "偏弱"
+        else:
+            label = "不足"
+        return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:8])}
+
     def entry_quality(self, side: str, change_24h: float, change_4h: float, change_1h: float, short_move: float, volume_ratio: float, trend: str, stats: dict[str, float], enriched: bool) -> dict[str, Any]:
         score = 5.0
         reasons: list[str] = []
@@ -3704,8 +3915,29 @@ class PaperBot:
             analyzer_direction = "未分析"
             analyzer_confidence = 0.0
             analyzer_reason = ""
+            market_confirm = {"score": 0.0, "label": "未计算", "reason": ""}
             should_update_analyzer = not reject or reject == "已有持仓"
-            if should_update_analyzer and self.config.get("analyzer_confirmation_enabled", True):
+            confirmation_mode = str(self.config.get("confirmation_mode", "market_score"))
+            if should_update_analyzer and not reject and confirmation_mode == "market_score":
+                market_confirm = self.market_confirmation_score(
+                    side,
+                    signal_mode,
+                    change,
+                    change_4h,
+                    change_1h,
+                    short_move,
+                    volume_ratio,
+                    trend,
+                    market_stats,
+                )
+                confirm_score = fnum(market_confirm.get("score"))
+                confirm_min = self.market_confirm_min_score_for_mode(signal_mode)
+                analyzer_direction = "市场确认"
+                analyzer_confidence = confirm_score * 10
+                analyzer_reason = str(market_confirm.get("reason", ""))
+                if confirm_score < confirm_min:
+                    reject = f"市场确认分 {confirm_score:.1f} 低于 {confirm_min:.1f}"
+            elif should_update_analyzer and confirmation_mode == "analyzer" and self.config.get("analyzer_confirmation_enabled", True):
                 original_reject = reject
                 try:
                     analyzer_result = self.analyzer_confirmation(symbol, side, signal_mode)
@@ -3741,6 +3973,11 @@ class PaperBot:
             decision_steps.insert(-1, f"候选模式：{self.signal_mode_label(signal_mode)}，{mode_reason}")
             if signal_mode == "early_breakout":
                 decision_steps.insert(-1, f"启动热度：{heat_level}，{heat_reason or '-'}")
+            if confirmation_mode == "market_score":
+                decision_steps.insert(
+                    -1,
+                    f"市场确认：{market_confirm.get('label')} {fnum(market_confirm.get('score')):.1f}/10，{market_confirm.get('reason') or '-'}",
+                )
             decision_steps.insert(-1, f"入场质量：{quality.get('label')} {fnum(quality.get('score')):.1f}，{quality.get('reason') or '-'}")
             decision_steps.insert(-1, f"入场点：{timing.get('type', '-')} / {timing.get('label')} {fnum(timing.get('score')):.1f}，{timing.get('reason') or '-'}")
             signals.append(
@@ -4077,7 +4314,12 @@ class PaperBot:
                 self.update_signal_decision(signal, f"{self.exchange_label()} 无此交易对", f"开仓前复核：不在 {self.exchange_label()} 交易对中")
                 self.event("warn", f"{signal.symbol} 不在 {self.exchange_label()} 交易对中，跳过")
                 continue
-            if signal.signal_mode != "btc_strategy" and self.config.get("analyzer_confirmation_enabled", True) and self.config.get("analyzer_realtime_before_open", True):
+            if (
+                signal.signal_mode != "btc_strategy"
+                and str(self.config.get("confirmation_mode", "market_score")) == "analyzer"
+                and self.config.get("analyzer_confirmation_enabled", True)
+                and self.config.get("analyzer_realtime_before_open", True)
+            ):
                 try:
                     realtime_result = self.analyze_symbol_now(signal.symbol)
                     with self.lock:
