@@ -2675,6 +2675,8 @@ class PaperBot:
         directional_4h = change_4h if is_long else -change_4h
         directional_1h = change_1h if is_long else -change_1h
         directional_short = short_move if is_long else -short_move
+        one_hour_accel = directional_1h > 16.0
+        short_accel = 5.5 < directional_short <= 9.0
 
         if directional_4h >= 1.2:
             score += 0.6
@@ -2687,9 +2689,7 @@ class PaperBot:
         if 0.5 <= directional_1h <= 10.0:
             score += 0.5
             reasons.append(f"1h动量健康 {directional_1h:+.1f}%")
-        elif directional_1h > 16.0:
-            score -= 0.3
-            warnings.append("1h过热")
+        elif one_hour_accel:
             reasons.append(f"1h强加速 {directional_1h:+.1f}%")
         elif directional_1h < -0.6:
             score -= 1.0
@@ -2699,9 +2699,7 @@ class PaperBot:
         if 0.4 <= directional_short <= 5.5:
             score += 0.5
             reasons.append(f"短线突破 {directional_short:+.1f}%")
-        elif 5.5 < directional_short <= 9.0:
-            score -= 0.2
-            warnings.append("短线过热")
+        elif short_accel:
             reasons.append(f"短线强加速 {directional_short:+.1f}%")
         elif directional_short < -0.4:
             score -= 1.2
@@ -2733,6 +2731,33 @@ class PaperBot:
         momentum_push = directional_short >= 0.4 and directional_1h >= 0.5 and directional_4h >= 1.2
         taker_strong = taker_aligned >= 1.05
         taker_weak = taker_aligned < 0.92
+
+        if one_hour_accel:
+            if taker_strong and momentum_push:
+                score += 0.2
+                reasons.append("1h强加速且主动成交同向")
+            elif taker_weak:
+                score -= 0.8
+                warnings.append("1h加速失速")
+                caps.append(6.0)
+                reasons.append("1h强加速但主动成交反向")
+            else:
+                score -= 0.3
+                warnings.append("1h加速待确认")
+                reasons.append("1h强加速但主动成交不明显")
+        if short_accel:
+            if taker_strong and momentum_push:
+                score += 0.2
+                reasons.append("短线强加速且主动成交同向")
+            elif taker_weak:
+                score -= 0.8
+                warnings.append("短线加速失速")
+                caps.append(6.0)
+                reasons.append("短线强加速但主动成交反向")
+            else:
+                score -= 0.2
+                warnings.append("短线加速待确认")
+                reasons.append("短线强加速但主动成交不明显")
 
         if abs(funding) <= 0.08:
             score += 0.4
