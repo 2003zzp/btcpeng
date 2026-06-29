@@ -87,7 +87,9 @@ function normalizeSettingsLabels() {
     take_profit_roi_pct: "初始止盈 ROI (%)",
     stop_loss_roi_pct: "初始止损 ROI (%)",
     market_confirm_min_score: "市场确认分阈值",
+    short_market_confirm_min_score: "做空确认分阈值",
     early_breakout_market_confirm_min_score: "启动池确认分阈值",
+    market_regime_min_score: "市场环境最低分",
     early_breakout_min_confidence_pct: "启动池置信度 (%)",
     early_breakout_score_threshold: "启动池系统分阈值",
   };
@@ -104,6 +106,7 @@ function normalizeSettingsLabels() {
     early_breakout_enabled: "启用早期启动池",
     equity_take_profit_enabled: "启用总资产止盈全平",
     btc_strategy_enabled: "启用BTC独立策略",
+    market_regime_filter_enabled: "启用市场环境过滤",
   };
   for (const [name, textValue] of Object.entries(toggles)) {
     const input = els.form?.elements?.[name];
@@ -139,11 +142,23 @@ function normalizeSettingsLabels() {
   }
   const marketConfirmLabel = els.form?.elements?.market_confirm_min_score?.closest("label");
   if (marketConfirmLabel) {
-    marketConfirmLabel.title = "妖币强波动池的第三关阈值，满分10分。分数越高越保守，默认6.5。";
+    marketConfirmLabel.title = "妖币强波动池做多的第三关阈值，满分10分。分数越高越保守，默认7.0。";
+  }
+  const shortMarketConfirmLabel = els.form?.elements?.short_market_confirm_min_score?.closest("label");
+  if (shortMarketConfirmLabel) {
+    shortMarketConfirmLabel.title = "妖币强波动池做空的第三关阈值。做空更看重结构破坏，建议比做多略高，例如7.5。";
   }
   const earlyMarketConfirmLabel = els.form?.elements?.early_breakout_market_confirm_min_score?.closest("label");
   if (earlyMarketConfirmLabel) {
     earlyMarketConfirmLabel.title = "早期启动池的第三关阈值，满分10分。默认比强波动略低，让启动币更容易进入小仓测试。";
+  }
+  const marketRegimeLabel = els.form?.elements?.market_regime_filter_enabled?.closest("label");
+  if (marketRegimeLabel) {
+    marketRegimeLabel.title = "开启后，系统会结合BTC/ETH短线方向和全市场涨跌家数判断顺风/逆风；明显逆风时跳过对应方向开仓。";
+  }
+  const marketRegimeMinLabel = els.form?.elements?.market_regime_min_score?.closest("label");
+  if (marketRegimeMinLabel) {
+    marketRegimeMinLabel.title = "市场环境分低于该值时，认为当前方向逆风，系统不新增对应方向仓位。默认4.5。";
   }
   const equityTakeProfitLabel = els.form?.elements?.equity_take_profit_enabled?.closest("label");
   if (equityTakeProfitLabel) {
@@ -763,7 +778,7 @@ function renderCandidates(rows) {
     headRow.insertBefore(th, headRow.children[3] || null);
   }
   if (!rows.length) {
-    els.candidateRows.innerHTML = `<tr><td colspan="25" class="empty">候选表空</td></tr>`;
+    els.candidateRows.innerHTML = `<tr><td colspan="26" class="empty">候选表空</td></tr>`;
     return;
   }
   els.candidateRows.innerHTML = rows
@@ -786,9 +801,13 @@ function renderCandidates(rows) {
       const confirmValue = Number(row.analyzer_confidence_pct || 0);
       const confirmThreshold = row.signal_mode === "early_breakout"
         ? Number(currentState?.config?.early_breakout_market_confirm_min_score || 6.5)
+        : row.side === "SHORT"
+        ? Number(currentState?.config?.short_market_confirm_min_score || 7.5)
         : Number(currentState?.config?.market_confirm_min_score || 7);
       const confirmPassed = isMarketConfirm ? confirmValue >= confirmThreshold * 10 : confirmValue > confidenceThreshold;
       const confirmText = isMarketConfirm ? `${(confirmValue / 10).toFixed(1)}/10` : `${confirmValue.toFixed(1)}%`;
+      const regimeScore = Number(row.market_regime_score || 0);
+      const regimeText = row.market_regime_label ? `${row.market_regime_label} ${regimeScore.toFixed(1)}` : "-";
       const nextAction = candidateNextAction(row, confidenceThreshold);
       return `
         <tr>
@@ -799,6 +818,7 @@ function renderCandidates(rows) {
           <td>${sidePill(row.side)}</td>
           <td>${row.analyzer_direction || "-"}</td>
           <td class="${confirmPassed ? "positive" : "danger"}">${confirmText}</td>
+          <td title="${titleText(row.market_regime_reason || "-")}"><span class="score-badge">${escapeHtml(regimeText)}</span></td>
           <td><span class="next-action" title="${titleText(decisionTitle)}">${escapeHtml(nextAction)}</span></td>
           <td>${reject}</td>
           <td><span class="decision-chain" title="${titleText(decisionTitle)}">${escapeHtml(decisionText)}</span></td>

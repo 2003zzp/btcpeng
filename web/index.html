@@ -235,8 +235,20 @@
               <input name="market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
             </label>
             <label>
+              做空确认分阈值
+              <input name="short_market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
+            </label>
+            <label>
               启动池确认分阈值
               <input name="early_breakout_market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
+            </label>
+            <label>
+              市场环境最低分
+              <input name="market_regime_min_score" type="number" min="0" max="10" step="0.1" />
+            </label>
+            <label class="settings-check">
+              <input name="market_regime_filter_enabled" type="checkbox" />
+              <span>启用市场环境过滤</span>
             </label>
             <label>
               置信度阈值 (%)
@@ -452,6 +464,7 @@
                 <th>方向</th>
                 <th>确认</th>
                 <th>确认分</th>
+                <th>环境</th>
                 <th>下一步</th>
                 <th>未开仓原因</th>
                 <th>决策链</th>
@@ -473,7 +486,7 @@
               </tr>
             </thead>
             <tbody id="candidateRows">
-              <tr><td colspan="25" class="empty">候选表空</td></tr>
+              <tr><td colspan="26" class="empty">候选表空</td></tr>
             </tbody>
           </table>
         </div>
