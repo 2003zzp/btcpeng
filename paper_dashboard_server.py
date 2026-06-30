@@ -298,6 +298,18 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         f.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def decode_http_body(resp: Any) -> str:
+    raw = resp.read()
+    try:
+        charset = resp.headers.get_content_charset() or "utf-8"
+    except Exception:
+        charset = "utf-8"
+    try:
+        return raw.decode(charset)
+    except UnicodeDecodeError:
+        return raw.decode(charset, errors="replace")
+
+
 def deep_update(target: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     for key, value in src.items():
         if isinstance(value, dict) and isinstance(target.get(key), dict):
@@ -346,7 +358,7 @@ def http_get_json(base_url: str, path: str, params: dict[str, Any] | None = None
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                return json.loads(decode_http_body(resp))
         except (TimeoutError, socket.timeout, ssl.SSLError, urllib.error.URLError) as exc:
             last_error = exc
             if attempt >= 2:
@@ -382,7 +394,7 @@ def http_request_json(
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8")
+                raw = decode_http_body(resp)
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
