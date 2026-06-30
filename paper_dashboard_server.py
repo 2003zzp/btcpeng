@@ -284,6 +284,31 @@ def load_json(path: Path, fallback: Any) -> Any:
         return json.load(f)
 
 
+def load_json_lenient(path: Path, fallback: Any) -> Any:
+    if not path.exists():
+        return fallback
+    try:
+        return load_json(path, fallback)
+    except UnicodeDecodeError:
+        try:
+            raw = path.read_bytes()
+            return json.loads(raw.decode("utf-8-sig", errors="replace"))
+        except Exception:
+            corrupt_path = path.with_suffix(path.suffix + ".corrupt")
+            try:
+                path.replace(corrupt_path)
+            except Exception:
+                pass
+            return fallback
+    except json.JSONDecodeError:
+        corrupt_path = path.with_suffix(path.suffix + ".corrupt")
+        try:
+            path.replace(corrupt_path)
+        except Exception:
+            pass
+        return fallback
+
+
 def save_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -597,7 +622,7 @@ class PaperBot:
         return not self.is_live_trading()
 
     def load_signal_review_state(self) -> dict[str, Any]:
-        return load_json(SIGNAL_REVIEW_STATE_PATH, {"signals": {}, "open_orders": {}})
+        return load_json_lenient(SIGNAL_REVIEW_STATE_PATH, {"signals": {}, "open_orders": {}})
 
     def save_signal_review_state(self, review_state: dict[str, Any]) -> None:
         signals = dict(review_state.get("signals", {}))
