@@ -291,11 +291,15 @@ function render(payload) {
   els.runningText.textContent = state.running ? "运行中" : "已停止";
   els.runningText.className = state.running ? "positive" : "danger";
 
-  if (state.running && state.next_scan_at) {
+  if (state.running && state.scan_in_progress) {
+    els.scanText.textContent = "扫描中";
+  } else if (state.running && state.next_scan_at) {
     const remain = Math.max(0, Math.round(state.next_scan_at - Date.now() / 1000));
     els.scanText.textContent = `倒计时 ${remain}s`;
+  } else if (state.running) {
+    els.scanText.textContent = state.last_scan_at ? "等待下轮" : "准备扫描";
   } else {
-    els.scanText.textContent = state.last_scan_at ? "等待启动" : "尚未扫描";
+    els.scanText.textContent = state.last_scan_at ? "已停止" : "尚未扫描";
   }
   els.sourceText.textContent = `行情源：${state.market_source || "-"}`;
   if (state.exchange_status && state.exchange_status !== "unknown") {
