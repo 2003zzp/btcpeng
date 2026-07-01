@@ -1,0 +1,43 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+import paper_dashboard_server as server
+
+
+class EquityTakeProfitRetryTest(unittest.TestCase):
+    def make_bot(self) -> server.PaperBot:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text(
+            '{"equity_take_profit_enabled": true, "previous_day_equity_usdt": 100, "equity_take_profit_usdt": 10}',
+            encoding="utf-8",
+        )
+        bot = server.PaperBot(config_path, state_path)
+        bot.config["equity_take_profit_enabled"] = True
+        bot.config["previous_day_equity_usdt"] = 100.0
+        bot.config["equity_take_profit_usdt"] = 10.0
+        bot.state["exchange_account_mode"] = bot.exchange_mode()
+        bot.state["account_equity_usdt"] = 120.0
+        bot.state["positions"] = [{"symbol": "BTCUSDT", "side": "LONG", "quantity": 0.01}]
+        return bot
+
+    def test_retries_full_close_after_equity_take_profit_was_already_triggered(self):
+        bot = self.make_bot()
+        calls = []
+        bot.exchange_close_position = lambda pos: calls.append(dict(pos))
+        bot.sync_exchange_state = lambda: None
+
+        self.assertTrue(bot.enforce_equity_take_profit())
+        self.assertEqual(len(calls), 1)
+
+        bot.state["positions"] = [{"symbol": "BTCUSDT", "side": "LONG", "quantity": 0.01}]
+        self.assertTrue(bot.enforce_equity_take_profit())
+        self.assertEqual(len(calls), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

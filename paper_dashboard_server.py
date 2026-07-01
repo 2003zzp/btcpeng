@@ -1294,19 +1294,25 @@ class PaperBot:
 
     def enforce_equity_take_profit(self) -> bool:
         reason = self.equity_take_profit_reason()
-        if not reason:
+        with self.lock:
+            already_triggered = bool(self.state.get("equity_take_profit_triggered"))
+            positions_snapshot = list(self.state.get("positions", []))
+        if not reason and not already_triggered:
             return False
         with self.lock:
-            if self.state.get("equity_take_profit_triggered"):
+            if not self.state.get("equity_take_profit_triggered"):
+                self.state["equity_take_profit_triggered"] = True
+                self.state["equity_take_profit_triggered_at"] = iso_now()
+                self.event("risk", f"{reason}，停止新增开仓并提交全部平仓")
+                self.persist()
+            elif positions_snapshot:
+                self.event("risk", f"账户总资产止盈已触发，检测到仍有持仓 {len(positions_snapshot)} 笔，继续尝试全部平仓")
+                self.persist()
+            else:
                 return True
-            self.state["equity_take_profit_triggered"] = True
-            self.state["equity_take_profit_triggered_at"] = iso_now()
-            self.event("risk", f"{reason}，停止新增开仓并提交全部平仓")
-            self.persist()
         closed = 0
         try:
-            with self.lock:
-                positions = list(self.state.get("positions", []))
+            positions = positions_snapshot
             for pos in positions:
                 self.exchange_close_position(pos)
                 closed += 1
