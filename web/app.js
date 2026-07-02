@@ -88,6 +88,7 @@ function normalizeSettingsLabels() {
     stop_loss_roi_pct: "初始止损 ROI (%)",
     market_confirm_min_score: "市场确认分阈值",
     short_market_confirm_min_score: "做空确认分阈值",
+    long_structure_min_score: "做多结构最低分",
     early_breakout_market_confirm_min_score: "启动池确认分阈值",
     market_regime_min_score: "市场环境最低分",
     early_breakout_min_confidence_pct: "启动池置信度 (%)",
@@ -107,6 +108,7 @@ function normalizeSettingsLabels() {
     equity_take_profit_enabled: "启用总资产止盈全平",
     btc_strategy_enabled: "启用BTC独立策略",
     market_regime_filter_enabled: "启用市场环境过滤",
+    long_structure_confirmation_enabled: "启用做多结构确认",
   };
   for (const [name, textValue] of Object.entries(toggles)) {
     const input = els.form?.elements?.[name];
@@ -147,6 +149,14 @@ function normalizeSettingsLabels() {
   const shortMarketConfirmLabel = els.form?.elements?.short_market_confirm_min_score?.closest("label");
   if (shortMarketConfirmLabel) {
     shortMarketConfirmLabel.title = "妖币强波动池做空的第三关阈值。做空更看重结构破坏，建议比做多略高，例如7.5。";
+  }
+  const longStructureLabel = els.form?.elements?.long_structure_confirmation_enabled?.closest("label");
+  if (longStructureLabel) {
+    longStructureLabel.title = "开启后，做多候选还要通过上涨结构确认；只过滤明显跌破结构、放量滞涨、主动买入不足等坏结构，不惩罚妖币常见强势过热。";
+  }
+  const longStructureScoreLabel = els.form?.elements?.long_structure_min_score?.closest("label");
+  if (longStructureScoreLabel) {
+    longStructureScoreLabel.title = "做多结构确认满分按4分理解，默认2.5；分数越低代表上涨结构越可能已经被破坏。";
   }
   const earlyMarketConfirmLabel = els.form?.elements?.early_breakout_market_confirm_min_score?.closest("label");
   if (earlyMarketConfirmLabel) {

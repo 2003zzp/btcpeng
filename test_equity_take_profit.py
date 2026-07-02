@@ -149,5 +149,46 @@ class EquityTakeProfitScanTest(unittest.TestCase):
         self.assertIn("止盈", bot.state["candidates"][0]["reject_reason"])
 
 
+class LongStructureConfirmationTest(unittest.TestCase):
+    def make_bot(self) -> server.PaperBot:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text('{"long_structure_min_score": 2.5}', encoding="utf-8")
+        return server.PaperBot(config_path, state_path)
+
+    def test_broken_long_structure_fails_threshold(self):
+        bot = self.make_bot()
+
+        result = bot.long_structure_confirmation(
+            change_4h=-2.0,
+            change_1h=-1.5,
+            short_move=-1.8,
+            trend="down",
+            volume_ratio=2.0,
+            stats={"taker_long_short_ratio": 0.88, "open_interest_1h_pct": -15.0},
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertLess(result["score"], 2.5)
+
+    def test_healthy_long_structure_passes_threshold(self):
+        bot = self.make_bot()
+
+        result = bot.long_structure_confirmation(
+            change_4h=4.0,
+            change_1h=2.0,
+            short_move=1.5,
+            trend="up",
+            volume_ratio=2.0,
+            stats={"taker_long_short_ratio": 1.12, "open_interest_1h_pct": 5.0},
+        )
+
+        self.assertTrue(result["passed"])
+        self.assertGreaterEqual(result["score"], 2.5)
+
+
 if __name__ == "__main__":
     unittest.main()

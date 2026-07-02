@@ -239,6 +239,10 @@
               <input name="short_market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
             </label>
             <label>
+              做多结构最低分
+              <input name="long_structure_min_score" type="number" min="0" max="4" step="0.1" />
+            </label>
+            <label>
               启动池确认分阈值
               <input name="early_breakout_market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
             </label>
@@ -249,6 +253,10 @@
             <label class="settings-check">
               <input name="market_regime_filter_enabled" type="checkbox" />
               <span>启用市场环境过滤</span>
+            </label>
+            <label class="settings-check">
+              <input name="long_structure_confirmation_enabled" type="checkbox" />
+              <span>启用做多结构确认</span>
             </label>
             <label>
               置信度阈值 (%)

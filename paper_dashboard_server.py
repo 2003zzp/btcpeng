@@ -67,6 +67,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "confirmation_mode": "market_score",
     "market_confirm_min_score": 7.0,
     "short_market_confirm_min_score": 7.5,
+    "long_structure_confirmation_enabled": False,
+    "long_structure_min_score": 2.5,
     "early_breakout_market_confirm_min_score": 6.5,
     "market_regime_filter_enabled": True,
     "market_regime_min_score": 4.5,
@@ -1420,6 +1422,8 @@ class PaperBot:
             "confirmation_mode": str,
             "market_confirm_min_score": float,
             "short_market_confirm_min_score": float,
+            "long_structure_confirmation_enabled": str,
+            "long_structure_min_score": float,
             "early_breakout_market_confirm_min_score": float,
             "market_regime_filter_enabled": str,
             "market_regime_min_score": float,
@@ -1444,7 +1448,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "btc_strategy_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled", "analyzer_realtime_before_open", "early_breakout_enabled", "market_regime_filter_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "btc_strategy_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled", "analyzer_realtime_before_open", "early_breakout_enabled", "market_regime_filter_enabled", "long_structure_confirmation_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -1474,6 +1478,7 @@ class PaperBot:
                     "signal_score_threshold",
                     "market_confirm_min_score",
                     "short_market_confirm_min_score",
+                    "long_structure_min_score",
                     "early_breakout_market_confirm_min_score",
                     "market_regime_min_score",
                     "analyzer_min_confidence_pct",
@@ -2849,6 +2854,62 @@ class PaperBot:
         passed = score >= 4.0
         return {"score": round(max(0.0, min(6.0, score)), 1), "passed": passed, "reason": " / ".join(reasons[:8]) or "未见明确结构破坏"}
 
+    def long_structure_confirmation(
+        self,
+        change_4h: float,
+        change_1h: float,
+        short_move: float,
+        trend: str,
+        volume_ratio: float,
+        stats: dict[str, float],
+    ) -> dict[str, Any]:
+        score = 0.0
+        reasons: list[str] = []
+        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
+        oi_1h = fnum(stats.get("open_interest_1h_pct"))
+        if trend == "up":
+            score += 1.0
+            reasons.append("短线均线向上")
+        else:
+            score -= 1.0
+            reasons.append("短线均线转弱")
+        if short_move >= 0.4:
+            score += 0.8
+            reasons.append(f"15m仍在推进 {short_move:+.1f}%")
+        elif short_move <= -1.2:
+            score -= 1.0
+            reasons.append(f"15m回落过深 {short_move:+.1f}%")
+        if change_1h >= 0.4:
+            score += 0.8
+            reasons.append(f"1h延续 {change_1h:+.1f}%")
+        elif change_1h <= -1.0:
+            score -= 0.8
+            reasons.append(f"1h转弱 {change_1h:+.1f}%")
+        if change_4h >= 0:
+            score += 0.5
+            reasons.append(f"4h结构未破 {change_4h:+.1f}%")
+        elif change_4h <= -1.5:
+            score -= 0.6
+            reasons.append(f"4h结构回落 {change_4h:+.1f}%")
+        if taker_ratio >= 1.03:
+            score += 0.8
+            reasons.append(f"主动买入占优 {taker_ratio:.2f}")
+        elif taker_ratio <= 0.92:
+            score -= 0.8
+            reasons.append(f"主动买入不足 {taker_ratio:.2f}")
+        if oi_1h >= -5 and short_move >= 0:
+            score += 0.3
+            reasons.append(f"OI未明显撤退 {oi_1h:+.1f}%")
+        elif oi_1h < -12:
+            score -= 0.4
+            reasons.append(f"OI快速撤退 {oi_1h:+.1f}%")
+        if volume_ratio >= 1.2 and short_move <= 0:
+            score -= 0.5
+            reasons.append(f"放量但价格未推进 {volume_ratio:.1f}x")
+        threshold = float(self.config.get("long_structure_min_score", 2.5))
+        bounded = round(max(0.0, min(4.0, score)), 1)
+        return {"score": bounded, "passed": bounded >= threshold, "reason": " / ".join(reasons[:8]) or "多头结构数据不足"}
+
     def market_confirmation_score(
         self,
         side: str,
@@ -4148,6 +4209,11 @@ class PaperBot:
                         reject = heat_reason
                     elif heat_level == "weak":
                         reject = heat_reason
+                if not reject and side == "LONG" and self.config.get("long_structure_confirmation_enabled", False):
+                    long_structure = self.long_structure_confirmation(change_4h, change_1h, short_move, trend, volume_ratio, market_stats)
+                    if not long_structure.get("passed"):
+                        reject = f"做多结构确认不足 {fnum(long_structure.get('score')):.1f}/{float(self.config.get('long_structure_min_score', 2.5)):.1f}"
+                    mode_reason = f"{mode_reason}；做多结构：{long_structure.get('reason', '-')}"
                 if not reject and side == "SHORT":
                     short_structure = self.short_structure_confirmation(change_4h, change_1h, short_move, trend, volume_ratio, market_stats)
                     if not short_structure.get("passed"):
