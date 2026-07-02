@@ -59,5 +59,29 @@ class HedgeModeCloseOrderTest(unittest.TestCase):
         self.assertNotIn("reduceOnly", calls[0][2])
 
 
+class ClosedTradeCooldownTest(unittest.TestCase):
+    def test_profitable_close_trade_enters_cooldown(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text('{"stop_loss_cooldown_enabled": true, "stop_loss_cooldown_minutes": 60}', encoding="utf-8")
+        bot = server.PaperBot(config_path, state_path)
+        bot.state["trade_history"] = [
+            {
+                "symbol": "BTCUSDT",
+                "closed_at": server.iso_now(),
+                "close_reason": "止盈平仓",
+                "pnl_usdt": 12.0,
+                "roi_pct": 30.0,
+            }
+        ]
+
+        reason = bot.stop_loss_cooldown_reason("BTCUSDT")
+
+        self.assertIn("冷静期", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

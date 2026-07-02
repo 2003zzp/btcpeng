@@ -712,7 +712,7 @@ function candidateNextAction(row, confidenceThreshold) {
   if (reject.includes("等待分析器")) return "等待分析器";
   if (reject.includes("已有持仓")) return "已有持仓";
   if (reject.includes("禁止开仓")) return "禁开跳过";
-  if (reject.includes("止损冷静期")) return "冷静期";
+  if (reject.includes("冷静期")) return "冷静期";
   if (decisionText.includes("今日") || decisionText.includes("敞口") || decisionText.includes("持仓上限")) return "风控拦截";
   if (decisionText.includes("入场") || decisionText.includes("结构破坏") || decisionText.includes("高位冲刺")) return "入场处理";
   if (reject.includes("市场确认分")) return "市场确认不足";
@@ -750,13 +750,13 @@ function renderEntryTypeStats(rows) {
 function renderCooldowns(rows) {
   if (!els.cooldownRows) return;
   if (!rows.length) {
-    els.cooldownRows.innerHTML = `<tr><td colspan="7" class="empty">暂无止损冷静期</td></tr>`;
+    els.cooldownRows.innerHTML = `<tr><td colspan="7" class="empty">暂无平仓冷静期</td></tr>`;
     return;
   }
   els.cooldownRows.innerHTML = rows
     .map((row) => {
       const symbol = escapeHtml(row.symbol || "-");
-      const reason = row.close_reason || "止损/亏损平仓";
+      const reason = row.close_reason || "最近平仓";
       return `
         <tr>
           <td><strong>${symbol}</strong></td>
@@ -978,7 +978,7 @@ els.cooldownRows?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-clear-cooldown]");
   if (!button) return;
   const symbol = button.dataset.clearCooldown || "";
-  const ok = window.confirm(`确认解除 ${symbol} 本次止损冷静期？如果后续再次止损，冷静期会重新生效。`);
+  const ok = window.confirm(`确认解除 ${symbol} 本次平仓冷静期？如果后续再次平仓，冷静期会重新生效。`);
   if (!ok) return;
   await runAction(button, `正在解除 ${symbol} 冷静期...`, `${symbol} 冷静期已解除`, async () => {
     currentState = await api("/api/clear-cooldown", {

@@ -4488,10 +4488,6 @@ class PaperBot:
         for trade in self.state.get("trade_history", []):
             if str(trade.get("symbol", "")) != symbol:
                 continue
-            reason = str(trade.get("close_reason", ""))
-            pnl = fnum(trade.get("pnl_usdt"))
-            if "止损" not in reason and pnl >= 0:
-                continue
             closed_ms = parse_time_ms(trade.get("closed_at"))
             if closed_ms > latest_stop_ms:
                 latest_stop_ms = closed_ms
@@ -4506,17 +4502,13 @@ class PaperBot:
         if remaining_sec <= 0:
             return ""
         remaining_min = math.ceil(remaining_sec / 60)
-        return f"止损冷静期剩余 {remaining_min} 分钟"
+        return f"平仓冷静期剩余 {remaining_min} 分钟"
 
     def latest_stop_loss_trade_by_symbol(self) -> dict[str, dict[str, Any]]:
         latest: dict[str, dict[str, Any]] = {}
         for trade in self.state.get("trade_history", []):
             symbol = str(trade.get("symbol", ""))
             if not symbol:
-                continue
-            reason = str(trade.get("close_reason", ""))
-            pnl = fnum(trade.get("pnl_usdt"))
-            if "止损" not in reason and pnl >= 0:
                 continue
             closed_ms = parse_time_ms(trade.get("closed_at"))
             if closed_ms <= 0:
@@ -4581,10 +4573,10 @@ class PaperBot:
         with self.lock:
             latest = self.latest_stop_loss_trade_by_symbol().get(target_symbol)
             if not latest:
-                error = f"{target_symbol} 当前没有止损冷静期记录"
+                error = f"{target_symbol} 当前没有平仓冷静期记录"
             else:
                 self.state.setdefault("stop_loss_cooldown_overrides", {})[target_symbol] = int(latest.get("closed_ms", 0))
-                self.event("risk", f"已手动解除 {target_symbol} 本次止损冷静期")
+                self.event("risk", f"已手动解除 {target_symbol} 本次平仓冷静期")
                 self.persist()
         if error:
             return {"ok": False, "error": error, **self.snapshot()}
