@@ -83,5 +83,71 @@ class ClosedTradeCooldownTest(unittest.TestCase):
         self.assertIn("冷静期", reason)
 
 
+class EquityTakeProfitScanTest(unittest.TestCase):
+    def test_scan_still_refreshes_candidates_when_equity_take_profit_is_triggered(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text('{"equity_take_profit_enabled": true}', encoding="utf-8")
+        bot = server.PaperBot(config_path, state_path)
+        bot.state["running"] = True
+        bot.state["equity_take_profit_triggered"] = True
+        bot.fetch_tickers = lambda: [{"symbol": "BTCUSDT", "lastPrice": "100", "priceChangePercent": "10", "quoteVolume": "50000000"}]
+        bot.update_signal_future_returns = lambda price_map: None
+        bot.sync_exchange_state = lambda: None
+        bot.build_signals = lambda tickers, open_symbols: [
+            server.Signal(
+                symbol="BTCUSDT",
+                side="LONG",
+                score=6.0,
+                price=100.0,
+                quote_volume=50000000.0,
+                change_24h_pct=10.0,
+                change_4h_pct=0.0,
+                change_1h_pct=0.0,
+                short_move_pct=0.0,
+                volume_ratio=1.0,
+                open_interest_usdt=0.0,
+                open_interest_24h_pct=0.0,
+                open_interest_4h_pct=0.0,
+                open_interest_1h_pct=0.0,
+                funding_rate_pct=0.0,
+                long_short_ratio=1.0,
+                volume_4h_ratio=1.0,
+                taker_long_short_ratio=1.0,
+                oi_volume_ratio=0.0,
+                entry_quality_score=10.0,
+                entry_quality_label="",
+                entry_quality_reason="",
+                entry_timing_score=5.0,
+                entry_timing_label="",
+                entry_timing_reason="",
+                entry_type="",
+                signal_mode="strong_momentum",
+                signal_heat_level="normal",
+                market_regime_score=10.0,
+                market_regime_label="",
+                market_regime_reason="",
+                risk_level="",
+                analyzer_direction="市场确认",
+                analyzer_confidence_pct=80.0,
+                analyzer_reason="",
+                trigger_reason="test",
+                reject_reason="",
+                decision_summary="待开仓",
+                decision_steps=[],
+                priority="高",
+            )
+        ]
+
+        bot.scan_once()
+
+        self.assertEqual(len(bot.state.get("candidates", [])), 1)
+        self.assertEqual(bot.state["candidates"][0]["symbol"], "BTCUSDT")
+        self.assertIn("止盈", bot.state["candidates"][0]["reject_reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1572,20 +1572,25 @@ class PaperBot:
                     self.event("error", f"{self.exchange_label()} 同步失败：{exc}")
                     self.persist()
                 return
-            if self.enforce_equity_take_profit():
-                return
+            equity_take_profit_active = self.enforce_equity_take_profit()
             with self.lock:
                 for pos in self.state.get("positions", []):
                     if pos.get("symbol") in price_map:
                         pos["last_price"] = price_map[pos["symbol"]]
                 open_symbols = {p["symbol"] for p in self.state.get("positions", [])}
             signals = self.build_signals(tickers, open_symbols)
+            if equity_take_profit_active:
+                equity_tp_reason = self.equity_take_profit_block_reason()
+                if equity_tp_reason:
+                    for signal in signals:
+                        if not signal.reject_reason:
+                            self.update_signal_decision(signal, equity_tp_reason, f"开仓前风控：{equity_tp_reason}")
             with self.lock:
                 self.state["candidates"] = [signal.__dict__ for signal in signals]
                 self.update_pending_open_signals(signals)
                 self.record_signal_review_scan(signals)
                 self.persist()
-            opened = self.open_from_signals(signals)
+            opened = 0 if equity_take_profit_active else self.open_from_signals(signals)
             with self.lock:
                 if opened:
                     self.event("trade", f"本轮 {self.exchange_label()} 开仓 {opened} 笔")
