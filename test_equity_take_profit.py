@@ -39,5 +39,25 @@ class EquityTakeProfitRetryTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+class HedgeModeCloseOrderTest(unittest.TestCase):
+    def test_hedge_mode_close_order_omits_reduce_only(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text("{}", encoding="utf-8")
+        bot = server.PaperBot(config_path, state_path)
+        bot.position_mode_cache = {"mode": "hedge", "synced_at_ms": 9999999999999}
+        calls = []
+        bot.signed_exchange_request = lambda method, path, payload: calls.append((method, path, payload)) or {}
+
+        bot.exchange_close_position({"symbol": "BTCUSDT", "side": "LONG", "quantity": 0.01})
+
+        self.assertEqual(calls[0][1], "/fapi/v1/order")
+        self.assertEqual(calls[0][2]["positionSide"], "LONG")
+        self.assertNotIn("reduceOnly", calls[0][2])
+
+
 if __name__ == "__main__":
     unittest.main()

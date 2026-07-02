@@ -2219,6 +2219,17 @@ class PaperBot:
     def position_side_params(self, side: str, force: bool = False) -> dict[str, str]:
         return {"positionSide": side} if self.position_mode(force=force) == "hedge" else {}
 
+    def market_close_order_params(self, symbol: str, signal_side: str, quantity: Any) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "symbol": symbol,
+            "side": self.close_side(signal_side),
+            "type": "MARKET",
+            "quantity": str(quantity),
+        }
+        if self.position_mode() != "hedge":
+            params["reduceOnly"] = "true"
+        return params
+
     def signed_exchange_request_position_aware(
         self,
         method: str,
@@ -2469,13 +2480,7 @@ class PaperBot:
                 self.signed_exchange_request_position_aware(
                     "POST",
                     "/fapi/v1/order",
-                    {
-                        "symbol": signal.symbol,
-                        "side": self.close_side(signal.side),
-                        "type": "MARKET",
-                        "quantity": qty_text,
-                        "reduceOnly": "true",
-                    },
+                    self.market_close_order_params(signal.symbol, signal.side, qty_text),
                     signal.side,
                 )
                 self.event("risk", f"{signal.symbol} 保护单失败，已提交紧急平仓")
@@ -2522,18 +2527,10 @@ class PaperBot:
 
     def exchange_close_position(self, pos: dict[str, Any]) -> None:
         symbol = pos["symbol"]
-        side = self.close_side(pos["side"])
-        qty_text = str(pos.get("quantity"))
         self.signed_exchange_request_position_aware(
             "POST",
             "/fapi/v1/order",
-            {
-                "symbol": symbol,
-                "side": side,
-                "type": "MARKET",
-                "quantity": qty_text,
-                "reduceOnly": "true",
-            },
+            self.market_close_order_params(symbol, str(pos.get("side", "")), pos.get("quantity")),
             str(pos.get("side", "")),
         )
 
