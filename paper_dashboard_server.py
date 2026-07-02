@@ -122,6 +122,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "btc_min_adx": 18.0,
     "stop_loss_cooldown_enabled": True,
     "stop_loss_cooldown_minutes": 60,
+    "take_profit_cooldown_enabled": True,
     "take_profit_roi_pct": 90.0,
     "stop_loss_roi_pct": 86.0,
     "telegram_enabled": True,
@@ -1390,6 +1391,8 @@ class PaperBot:
             "leverage": int,
             "take_profit_roi_pct": float,
             "stop_loss_roi_pct": float,
+            "take_profit_cooldown_enabled": str,
+            "stop_loss_cooldown_minutes": int,
             "scan_interval_sec": int,
             "max_open_positions": int,
             "max_exposure_pct": float,
@@ -1448,7 +1451,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "btc_strategy_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled", "analyzer_realtime_before_open", "early_breakout_enabled", "market_regime_filter_enabled", "long_structure_confirmation_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "btc_strategy_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled", "analyzer_realtime_before_open", "early_breakout_enabled", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "take_profit_cooldown_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -4559,6 +4562,8 @@ class PaperBot:
         for trade in self.state.get("trade_history", []):
             if str(trade.get("symbol", "")) != symbol:
                 continue
+            if not self.is_cooldown_trade(trade):
+                continue
             closed_ms = parse_time_ms(trade.get("closed_at"))
             if closed_ms > latest_stop_ms:
                 latest_stop_ms = closed_ms
@@ -4575,11 +4580,22 @@ class PaperBot:
         remaining_min = math.ceil(remaining_sec / 60)
         return f"平仓冷静期剩余 {remaining_min} 分钟"
 
+    def is_cooldown_trade(self, trade: dict[str, Any]) -> bool:
+        reason = str(trade.get("close_reason", ""))
+        pnl = fnum(trade.get("pnl_usdt"))
+        if "止损" in reason or pnl < 0:
+            return True
+        if not self.config.get("take_profit_cooldown_enabled", True):
+            return False
+        return "止盈" in reason or pnl > 0
+
     def latest_stop_loss_trade_by_symbol(self) -> dict[str, dict[str, Any]]:
         latest: dict[str, dict[str, Any]] = {}
         for trade in self.state.get("trade_history", []):
             symbol = str(trade.get("symbol", ""))
             if not symbol:
+                continue
+            if not self.is_cooldown_trade(trade):
                 continue
             closed_ms = parse_time_ms(trade.get("closed_at"))
             if closed_ms <= 0:

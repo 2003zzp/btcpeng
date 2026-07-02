@@ -106,6 +106,7 @@ function normalizeSettingsLabels() {
     analyzer_realtime_before_open: "启用分析器二次确认",
     early_breakout_enabled: "启用早期启动池",
     equity_take_profit_enabled: "启用总资产止盈全平",
+    take_profit_cooldown_enabled: "启用止盈冷静期",
     btc_strategy_enabled: "启用BTC独立策略",
     market_regime_filter_enabled: "启用市场环境过滤",
     long_structure_confirmation_enabled: "启用做多结构确认",
@@ -173,6 +174,14 @@ function normalizeSettingsLabels() {
   const equityTakeProfitLabel = els.form?.elements?.equity_take_profit_enabled?.closest("label");
   if (equityTakeProfitLabel) {
     equityTakeProfitLabel.title = "开启后，当合约总资产 - 昨日合约总账户余额 达到总资产止盈收益阈值时，系统停止新增开仓并提交全部平仓。";
+  }
+  const takeProfitCooldownLabel = els.form?.elements?.take_profit_cooldown_enabled?.closest("label");
+  if (takeProfitCooldownLabel) {
+    takeProfitCooldownLabel.title = "关闭后，止盈/盈利平仓不会进入冷静期；止损/亏损平仓仍然一定进入冷静期。";
+  }
+  const cooldownMinutesLabel = els.form?.elements?.stop_loss_cooldown_minutes?.closest("label");
+  if (cooldownMinutesLabel) {
+    cooldownMinutesLabel.title = "同币种平仓后的冷却时长，单位分钟；止损/亏损始终使用这个时间，止盈/盈利在启用止盈冷静期时使用这个时间。默认60分钟。";
   }
   const btcStrategyLabel = els.form?.elements?.btc_strategy_enabled?.closest("label");
   if (btcStrategyLabel) {

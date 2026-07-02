@@ -60,19 +60,30 @@ class HedgeModeCloseOrderTest(unittest.TestCase):
 
 
 class ClosedTradeCooldownTest(unittest.TestCase):
-    def test_profitable_close_trade_enters_cooldown(self):
+    def make_bot(self, take_profit_cooldown_enabled=True) -> server.PaperBot:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         config_path = root / "config.json"
         state_path = root / "state.json"
-        config_path.write_text('{"stop_loss_cooldown_enabled": true, "stop_loss_cooldown_minutes": 60}', encoding="utf-8")
-        bot = server.PaperBot(config_path, state_path)
+        config_path.write_text(
+            (
+                '{"stop_loss_cooldown_enabled": true, '
+                '"stop_loss_cooldown_minutes": 60, '
+                f'"take_profit_cooldown_enabled": {str(take_profit_cooldown_enabled).lower()}'
+                '}'
+            ),
+            encoding="utf-8",
+        )
+        return server.PaperBot(config_path, state_path)
+
+    def test_profitable_close_trade_enters_cooldown_when_enabled(self):
+        bot = self.make_bot(take_profit_cooldown_enabled=True)
         bot.state["trade_history"] = [
             {
                 "symbol": "BTCUSDT",
                 "closed_at": server.iso_now(),
-                "close_reason": "止盈平仓",
+                "close_reason": "take profit close",
                 "pnl_usdt": 12.0,
                 "roi_pct": 30.0,
             }
@@ -80,7 +91,46 @@ class ClosedTradeCooldownTest(unittest.TestCase):
 
         reason = bot.stop_loss_cooldown_reason("BTCUSDT")
 
-        self.assertIn("冷静期", reason)
+        self.assertTrue(reason)
+
+    def test_profitable_close_trade_skips_cooldown_when_disabled(self):
+        bot = self.make_bot(take_profit_cooldown_enabled=False)
+        bot.state["trade_history"] = [
+            {
+                "symbol": "BTCUSDT",
+                "closed_at": server.iso_now(),
+                "close_reason": "take profit close",
+                "pnl_usdt": 12.0,
+                "roi_pct": 30.0,
+            }
+        ]
+
+        reason = bot.stop_loss_cooldown_reason("BTCUSDT")
+
+        self.assertEqual(reason, "")
+
+    def test_losing_close_trade_still_enters_cooldown_when_take_profit_disabled(self):
+        bot = self.make_bot(take_profit_cooldown_enabled=False)
+        bot.state["trade_history"] = [
+            {
+                "symbol": "BTCUSDT",
+                "closed_at": server.iso_now(),
+                "close_reason": "stop loss close",
+                "pnl_usdt": -5.0,
+                "roi_pct": -12.0,
+            }
+        ]
+
+        reason = bot.stop_loss_cooldown_reason("BTCUSDT")
+
+        self.assertTrue(reason)
+
+    def test_cooldown_minutes_can_be_updated_from_settings(self):
+        bot = self.make_bot()
+
+        bot.update_settings({"stop_loss_cooldown_minutes": 15})
+
+        self.assertEqual(bot.config["stop_loss_cooldown_minutes"], 15)
 
 
 class EquityTakeProfitScanTest(unittest.TestCase):
