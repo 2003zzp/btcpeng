@@ -1394,6 +1394,7 @@ class PaperBot:
             "take_profit_cooldown_enabled": str,
             "stop_loss_cooldown_minutes": int,
             "scan_interval_sec": int,
+            "max_candidates_per_scan": int,
             "max_open_positions": int,
             "max_exposure_pct": float,
             "max_daily_profit_enabled": str,
@@ -1470,7 +1471,7 @@ class PaperBot:
                         value = "market_score"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "scan_interval_sec", "max_open_positions", "max_new_positions_per_scan", "entry_timing_small_leverage_cap", "early_breakout_max_kline_checks", "telegram_hourly_status_interval_minutes", "btc_leverage"}:
+                if key in {"leverage", "scan_interval_sec", "max_candidates_per_scan", "max_open_positions", "max_new_positions_per_scan", "entry_timing_small_leverage_cap", "early_breakout_max_kline_checks", "telegram_hourly_status_interval_minutes", "btc_leverage"}:
                     value = max(1, int(value))
                 if key == "previous_day_equity_usdt":
                     value = max(0.0, float(value))

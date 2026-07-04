@@ -86,6 +86,7 @@ function normalizeSettingsLabels() {
     leverage: "最高杠杆上限",
     take_profit_roi_pct: "初始止盈 ROI (%)",
     stop_loss_roi_pct: "初始止损 ROI (%)",
+    max_candidates_per_scan: "候选币数量",
     market_confirm_min_score: "市场确认分阈值",
     short_market_confirm_min_score: "做空确认分阈值",
     long_structure_min_score: "做多结构最低分",
