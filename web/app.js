@@ -25,7 +25,6 @@ const els = {
   scanDurationText: document.querySelector("#scanDurationText"),
   candidateRows: document.querySelector("#candidateRows"),
   cooldownRows: document.querySelector("#cooldownRows"),
-  entryTypeRows: document.querySelector("#entryTypeRows"),
   positionRows: document.querySelector("#positionRows"),
   historyRows: document.querySelector("#historyRows"),
   eventLog: document.querySelector("#eventLog"),
@@ -90,10 +89,7 @@ function normalizeSettingsLabels() {
     market_confirm_min_score: "市场确认分阈值",
     short_market_confirm_min_score: "做空确认分阈值",
     long_structure_min_score: "做多结构最低分",
-    early_breakout_market_confirm_min_score: "启动池确认分阈值",
     market_regime_min_score: "市场环境最低分",
-    early_breakout_min_confidence_pct: "启动池置信度 (%)",
-    early_breakout_score_threshold: "启动池系统分阈值",
   };
   for (const [name, textValue] of Object.entries(labelTextMap)) {
     const input = els.form?.elements?.[name];
@@ -105,10 +101,8 @@ function normalizeSettingsLabels() {
   }
   const toggles = {
     analyzer_realtime_before_open: "启用分析器二次确认",
-    early_breakout_enabled: "启用早期启动池",
     equity_take_profit_enabled: "启用总资产止盈全平",
     take_profit_cooldown_enabled: "启用止盈冷静期",
-    btc_strategy_enabled: "启用BTC独立策略",
     market_regime_filter_enabled: "启用市场环境过滤",
     long_structure_confirmation_enabled: "启用做多结构确认",
   };
@@ -127,19 +121,7 @@ function normalizeSettingsLabels() {
   const realtimeLabel = els.form?.elements?.analyzer_realtime_before_open?.closest("label");
   if (realtimeLabel) {
     realtimeLabel.title = "开启后，候选通过后下单前会再次实时跑分析器；关闭后，只使用候选阶段已经通过的分析器结果，开仓更快。";
-  }
-  const earlyLabel = els.form?.elements?.early_breakout_enabled?.closest("label");
-  if (earlyLabel) {
-    earlyLabel.title = "开启后，系统会额外扫描24h涨幅温和、短线刚放量转强的做多候选，并按小仓试单。";
-  }
-  const earlyScoreLabel = els.form?.elements?.early_breakout_score_threshold?.closest("label");
-  if (earlyScoreLabel) {
-    earlyScoreLabel.title = "早期启动池使用单独评分：24h温和启动、15m突破、4h转强、短线趋势、量能启动；不使用强波动评分。";
-  }
-  const strategyRunModeLabel = els.form?.elements?.strategy_run_mode?.closest("label");
-  if (strategyRunModeLabel) {
-    strategyRunModeLabel.title = "全部策略会同时跑妖币和BTC；只跑妖币会跳过BTC独立策略；只跑BTC会跳过强波动池和早期启动池。";
-  }
+  }
   const confirmationModeLabel = els.form?.elements?.confirmation_mode?.closest("label");
   if (confirmationModeLabel) {
     confirmationModeLabel.title = "市场确认分使用趋势、动量、量能、OI、资金费率、多空比和主动成交替代黑盒置信度；分析器置信度则切回原来的脚本确认。";
@@ -160,10 +142,6 @@ function normalizeSettingsLabels() {
   if (longStructureScoreLabel) {
     longStructureScoreLabel.title = "做多结构确认满分按4分理解，默认2.5；分数越低代表上涨结构越可能已经被破坏。";
   }
-  const earlyMarketConfirmLabel = els.form?.elements?.early_breakout_market_confirm_min_score?.closest("label");
-  if (earlyMarketConfirmLabel) {
-    earlyMarketConfirmLabel.title = "早期启动池的第三关阈值，满分10分。默认比强波动略低，让启动币更容易进入小仓测试。";
-  }
   const marketRegimeLabel = els.form?.elements?.market_regime_filter_enabled?.closest("label");
   if (marketRegimeLabel) {
     marketRegimeLabel.title = "开启后，系统会结合BTC/ETH短线方向和全市场涨跌家数判断顺风/逆风；明显逆风时跳过对应方向开仓。";
@@ -183,10 +161,6 @@ function normalizeSettingsLabels() {
   const cooldownMinutesLabel = els.form?.elements?.stop_loss_cooldown_minutes?.closest("label");
   if (cooldownMinutesLabel) {
     cooldownMinutesLabel.title = "同币种平仓后的冷却时长，单位分钟；止损/亏损始终使用这个时间，止盈/盈利在启用止盈冷静期时使用这个时间。默认60分钟。";
-  }
-  const btcStrategyLabel = els.form?.elements?.btc_strategy_enabled?.closest("label");
-  if (btcStrategyLabel) {
-    btcStrategyLabel.title = "开启后，系统每轮单独分析 BTCUSDT 的15m/1h/4h结构；通过后复用当前模拟盘/实盘执行层下单，不受小币候选池排序影响。";
   }
 }
 
@@ -359,7 +333,6 @@ function render(payload) {
 
   renderCandidates(state.candidates || []);
   renderCooldowns(state.stop_loss_cooldowns || []);
-  renderEntryTypeStats(metrics.entry_type_stats || []);
   renderPositions(state.positions || []);
   renderHistory(state.trade_history || []);
   renderEvents(state.events || []);
@@ -721,50 +694,21 @@ function candidateNextAction(row, confidenceThreshold) {
   const decisionText = `${reject} ${summary}`;
   const confidence = Number(row.analyzer_confidence_pct || 0);
   const analyzerDirection = row.analyzer_direction || "";
-  const isBtcStrategy = row.signal_mode === "btc_strategy";
 
   if (summary.includes("已提交") || reject.includes("已提交")) return "已提交";
-  if (isBtcStrategy && !reject) return "BTC风控下单";
-  if (isBtcStrategy && reject.includes("已有持仓")) return "BTC已有持仓";
-  if (isBtcStrategy && decisionText.includes("风控")) return "BTC风控拦截";
-  if (isBtcStrategy && reject) return "BTC观察";
-  if (analyzerDirection === "市场确认" && !reject) return "开仓前入场评分";
+  if (analyzerDirection === "市场确认" && !reject) return "风控下单";
   if (reject.includes("等待分析器")) return "等待分析器";
   if (reject.includes("已有持仓")) return "已有持仓";
   if (reject.includes("禁止开仓")) return "禁开跳过";
   if (reject.includes("冷静期")) return "冷静期";
   if (decisionText.includes("今日") || decisionText.includes("敞口") || decisionText.includes("持仓上限")) return "风控拦截";
-  if (decisionText.includes("入场") || decisionText.includes("结构破坏") || decisionText.includes("高位冲刺")) return "入场处理";
+  if (decisionText.includes("结构破坏")) return "结构过滤";
   if (reject.includes("市场确认分")) return "市场确认不足";
   if (reject.includes("方向") || reject.includes("观望") || reject.includes("置信度") || reject.includes("分析器")) return "分析器拒绝";
-  if (!reject && analyzerDirection && confidence > confidenceThreshold) return "开仓前入场评分";
-  if (reject === "待开仓" && analyzerDirection && confidence > confidenceThreshold) return "开仓前入场评分";
+  if (!reject && analyzerDirection && confidence > confidenceThreshold) return "风控下单";
+  if (reject === "待开仓" && analyzerDirection && confidence > confidenceThreshold) return "风控下单";
   if (!analyzerDirection || confidence <= 0) return "等待分析器";
   return "继续观察";
-}
-
-function renderEntryTypeStats(rows) {
-  if (!els.entryTypeRows) return;
-  if (!rows.length) {
-    els.entryTypeRows.innerHTML = `<tr><td colspan="6" class="empty">暂无入场类型复盘</td></tr>`;
-    return;
-  }
-  els.entryTypeRows.innerHTML = rows
-    .map((row) => {
-      const profitFactor = Number(row.profit_factor || 0);
-      const profitText = profitFactor >= 999 ? "∞" : profitFactor.toFixed(2);
-      return `
-        <tr>
-          <td><span class="score-badge">${escapeHtml(row.entry_type || "未记录")}</span></td>
-          <td>${Number(row.closed_trades || 0)}</td>
-          <td class="${signedClass(Number(row.win_rate_pct || 0) - 50)}">${pct(row.win_rate_pct)}</td>
-          <td class="${signedClass(row.pnl_usdt)}">${money(row.pnl_usdt)}</td>
-          <td class="${signedClass(row.avg_roi_pct)}">${pct(row.avg_roi_pct)}</td>
-          <td>${profitText}</td>
-        </tr>
-      `;
-    })
-    .join("");
 }
 
 function renderCooldowns(rows) {
@@ -794,15 +738,8 @@ function renderCooldowns(rows) {
 
 function renderCandidates(rows) {
   if (!els.candidateRows) return;
-  const headRow = els.candidateRows.closest("table")?.querySelector("thead tr");
-  if (headRow && !headRow.querySelector("[data-entry-timing-head]")) {
-    const th = document.createElement("th");
-    th.dataset.entryTimingHead = "true";
-    th.textContent = "入场分";
-    headRow.insertBefore(th, headRow.children[3] || null);
-  }
   if (!rows.length) {
-    els.candidateRows.innerHTML = `<tr><td colspan="26" class="empty">候选表空</td></tr>`;
+    els.candidateRows.innerHTML = `<tr><td colspan="25" class="empty">候选表空</td></tr>`;
     return;
   }
   els.candidateRows.innerHTML = rows
@@ -812,20 +749,11 @@ function renderCandidates(rows) {
       const decisionTitle = decisionSteps.length ? decisionSteps.join("\n") : row.decision_summary || reject;
       const decisionText = row.decision_summary || reject;
       const riskCls = row.risk_level === "危险" ? "risk-high" : row.risk_level === "注意" ? "risk-watch" : "risk-ok";
-      const heatLabel = row.signal_heat_level === "hot" ? "过热" : row.signal_heat_level === "warm" ? "升温" : "";
-      const modeText = row.signal_mode === "btc_strategy"
-        ? "BTC"
-        : row.signal_mode === "early_breakout" ? `早启${heatLabel ? `/${heatLabel}` : ""}` : "强波动";
-      const confidenceThreshold = row.signal_mode === "btc_strategy"
-        ? 0
-        : row.signal_mode === "early_breakout"
-        ? Number(currentState?.config?.early_breakout_min_confidence_pct || 85)
-        : Number(currentState?.config?.analyzer_min_confidence_pct || 90);
+      const modeText = "强波动";
+      const confidenceThreshold = Number(currentState?.config?.analyzer_min_confidence_pct || 90);
       const isMarketConfirm = row.analyzer_direction === "市场确认";
       const confirmValue = Number(row.analyzer_confidence_pct || 0);
-      const confirmThreshold = row.signal_mode === "early_breakout"
-        ? Number(currentState?.config?.early_breakout_market_confirm_min_score || 6.5)
-        : row.side === "SHORT"
+      const confirmThreshold = row.side === "SHORT"
         ? Number(currentState?.config?.short_market_confirm_min_score || 7.5)
         : Number(currentState?.config?.market_confirm_min_score || 7);
       const confirmPassed = isMarketConfirm ? confirmValue >= confirmThreshold * 10 : confirmValue > confidenceThreshold;
@@ -838,7 +766,6 @@ function renderCandidates(rows) {
           <td>${row.symbol}</td>
           <td><span class="score-badge">${modeText}</span></td>
           <td><span class="score-badge">${Number(row.score || 0).toFixed(1)}</span></td>
-          <td title="${titleText(row.entry_timing_reason || "-")}"><span class="score-badge">${escapeHtml(row.entry_type || row.entry_timing_label || "-")} ${Number(row.entry_timing_score || 0).toFixed(1)}</span></td>
           <td>${sidePill(row.side)}</td>
           <td>${row.analyzer_direction || "-"}</td>
           <td class="${confirmPassed ? "positive" : "danger"}">${confirmText}</td>

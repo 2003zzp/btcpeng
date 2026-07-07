@@ -168,13 +168,6 @@ class EquityTakeProfitScanTest(unittest.TestCase):
                 volume_4h_ratio=1.0,
                 taker_long_short_ratio=1.0,
                 oi_volume_ratio=0.0,
-                entry_quality_score=10.0,
-                entry_quality_label="",
-                entry_quality_reason="",
-                entry_timing_score=5.0,
-                entry_timing_label="",
-                entry_timing_reason="",
-                entry_type="",
                 signal_mode="strong_momentum",
                 signal_heat_level="normal",
                 market_regime_score=10.0,
@@ -238,6 +231,206 @@ class LongStructureConfirmationTest(unittest.TestCase):
 
         self.assertTrue(result["passed"])
         self.assertGreaterEqual(result["score"], 2.5)
+
+
+class KlineShortMetricsTest(unittest.TestCase):
+    def make_bot(self) -> server.PaperBot:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text('{"max_kline_enriched_candidates": 2}', encoding="utf-8")
+        return server.PaperBot(config_path, state_path)
+
+    def kline(self, close: float, quote_volume: float = 1000.0) -> list[object]:
+        return [0, "0", "0", "0", str(close), "0", 0, str(quote_volume)]
+
+    def test_short_metrics_use_real_15m_and_1h_klines(self):
+        bot = self.make_bot()
+        calls = []
+        one_minute_calls = []
+        bot.fetch_klines = lambda symbol: one_minute_calls.append(symbol) or []
+
+        def fetch_interval(symbol, interval, limit):
+            calls.append((symbol, interval, limit))
+            if interval == "15m":
+                return [self.kline(100.0, 1000.0) for _ in range(39)] + [self.kline(94.0, 4500.0)]
+            if interval == "1h":
+                return [self.kline(110.0 - idx * 0.5, 1000.0) for idx in range(30)] + [
+                    self.kline(95.0, 1000.0),
+                    self.kline(91.0, 1000.0),
+                ]
+            raise AssertionError(interval)
+
+        bot.fetch_klines_interval = fetch_interval
+
+        metrics = bot.kline_short_metrics("4USDT", 100.0, -12.0)
+
+        self.assertIn(("4USDT", "15m", 40), calls)
+        self.assertIn(("4USDT", "1h", 40), calls)
+        self.assertEqual(one_minute_calls, [])
+        self.assertTrue(metrics["enriched"])
+        self.assertAlmostEqual(metrics["short_move"], -6.0, places=2)
+        self.assertAlmostEqual(metrics["change_1h"], server.pct(91.0, 95.0), places=2)
+        self.assertEqual(metrics["trend"], "down")
+
+    def test_strong_candidates_are_not_enriched_in_candidate_pool(self):
+        bot = self.make_bot()
+        bot.kline_short_metrics = lambda symbol, price, change: (_ for _ in ()).throw(AssertionError("candidate pool should not fetch Klines"))
+
+        candidates = bot.build_candidate_pool(
+            [
+                {"symbol": "4USDT", "lastPrice": "91", "priceChangePercent": "-12", "quoteVolume": "50000000"},
+                {"symbol": "BTCUSDT", "lastPrice": "100", "priceChangePercent": "8", "quoteVolume": "40000000"},
+            ]
+        )
+
+        first = next(candidate for candidate in candidates if candidate["item"]["symbol"] == "4USDT")
+        self.assertEqual(first["signal_mode"], "strong_momentum")
+        self.assertNotIn("metrics", first)
+
+    def test_build_signals_enriches_only_after_coarse_score_passes(self):
+        bot = self.make_bot()
+        bot.config["confirmation_mode"] = "market_score"
+        bot.config["market_regime_filter_enabled"] = False
+        calls = []
+
+        def enrich(symbol, price, change):
+            calls.append(symbol)
+            return {
+                "short_move": -5.0,
+                "change_1h": -4.0,
+                "change_4h": -8.0,
+                "volume_ratio": 2.0,
+                "trend": "down",
+                "price": price,
+                "enriched": True,
+            }
+
+        bot.kline_short_metrics = enrich
+        bot.fetch_signal_market_stats = lambda symbol, item: {
+            "open_interest_usdt": 1000000.0,
+            "open_interest_24h_pct": -5.0,
+            "open_interest_4h_pct": -4.0,
+            "open_interest_1h_pct": 3.0,
+            "funding_rate_pct": 0.0,
+            "long_short_ratio": 1.6,
+            "volume_4h_ratio": 2.0,
+            "taker_long_short_ratio": 0.8,
+            "oi_volume_ratio": 0.1,
+        }
+
+        signals = bot.build_signals(
+            [
+                {"symbol": "PASSUSDT", "lastPrice": "91", "priceChangePercent": "-12", "quoteVolume": "50000000"},
+                {"symbol": "FAILUSDT", "lastPrice": "100", "priceChangePercent": "6", "quoteVolume": "50000000"},
+            ],
+            set(),
+        )
+
+        self.assertEqual(calls, ["PASSUSDT"])
+        passed = next(signal for signal in signals if signal.symbol == "PASSUSDT")
+        failed = next(signal for signal in signals if signal.symbol == "FAILUSDT")
+        self.assertEqual(passed.change_1h_pct, -4.0)
+        self.assertEqual(passed.side, "SHORT")
+        self.assertEqual(failed.change_1h_pct, 0.5)
+
+
+class RemovedStrategyControlsTest(unittest.TestCase):
+    def make_bot(self, config: str = "{}") -> server.PaperBot:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text(config, encoding="utf-8")
+        return server.PaperBot(config_path, state_path)
+
+    def make_signal(self) -> server.Signal:
+        return server.Signal(
+            symbol="4USDT",
+            side="SHORT",
+            score=6.0,
+            price=100.0,
+            quote_volume=50000000.0,
+            change_24h_pct=-12.0,
+            change_4h_pct=-5.0,
+            change_1h_pct=-2.0,
+            short_move_pct=-1.5,
+            volume_ratio=2.0,
+            open_interest_usdt=0.0,
+            open_interest_24h_pct=0.0,
+            open_interest_4h_pct=0.0,
+            open_interest_1h_pct=0.0,
+            funding_rate_pct=0.0,
+            long_short_ratio=1.0,
+            volume_4h_ratio=1.0,
+            taker_long_short_ratio=0.8,
+            oi_volume_ratio=0.0,
+            signal_mode="strong_momentum",
+            signal_heat_level="normal",
+            market_regime_score=10.0,
+            market_regime_label="",
+            market_regime_reason="",
+            risk_level="",
+            analyzer_direction="市场确认",
+            analyzer_confidence_pct=80.0,
+            analyzer_reason="",
+            trigger_reason="test",
+            reject_reason="",
+            decision_summary="待开仓",
+            decision_steps=[],
+            priority="高",
+        )
+
+    def test_early_breakout_pool_no_longer_adds_candidates(self):
+        bot = self.make_bot('{"early_breakout_enabled": true, "max_candidates_per_scan": 18}')
+        bot.kline_short_metrics = lambda symbol, price, change: {
+            "short_move": 2.0,
+            "change_1h": 2.0,
+            "change_4h": 4.0,
+            "volume_ratio": 2.0,
+            "trend": "up",
+            "price": price,
+            "enriched": True,
+        }
+
+        candidates = bot.build_candidate_pool(
+            [{"symbol": "TESTUSDT", "lastPrice": "10", "priceChangePercent": "4", "quoteVolume": "50000000"}]
+        )
+
+        self.assertEqual(candidates, [])
+
+    def test_position_plan_uses_fixed_margin_without_entry_timing_sizing(self):
+        bot = self.make_bot(
+            '{"margin_per_trade_usdt": 9, "leverage": 5, "entry_timing_enabled": true, "entry_timing_small_multiplier": 0.1}'
+        )
+
+        plan = bot.position_plan(self.make_signal(), available=20.0)
+
+        self.assertEqual(plan["margin_usdt"], 9.0)
+        self.assertEqual(plan["target_leverage"], 5)
+        self.assertEqual(plan["tier"], "fixed")
+
+    def test_removed_strategy_controls_are_ignored_by_settings_update(self):
+        bot = self.make_bot(
+            '{"btc_strategy_enabled": false, "early_breakout_enabled": false, "entry_timing_enabled": false}'
+        )
+
+        bot.update_settings(
+            {
+                "btc_strategy_enabled": "true",
+                "early_breakout_enabled": "true",
+                "entry_timing_enabled": "true",
+                "entry_timing_small_multiplier": 0.1,
+            }
+        )
+
+        self.assertFalse(bot.config.get("btc_strategy_enabled"))
+        self.assertFalse(bot.config.get("early_breakout_enabled"))
+        self.assertFalse(bot.config.get("entry_timing_enabled"))
+        self.assertNotEqual(bot.config.get("entry_timing_small_multiplier"), 0.1)
 
 
 if __name__ == "__main__":

@@ -831,28 +831,32 @@ main {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  align-items: end;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 14px;
+  align-items: stretch;
 }
 
 .settings-grid .button {
   grid-column: 1 / -1;
   justify-self: end;
   min-width: 190px;
+  margin-top: 2px;
 }
 
 .settings-group {
   min-width: 0;
   margin: 0;
-  padding: 14px;
+  padding: 16px;
   border: 1px solid rgba(91, 156, 255, 0.24);
   border-radius: 8px;
-  background: rgba(5, 17, 34, 0.35);
+  background:
+    linear-gradient(180deg, rgba(9, 30, 58, 0.48), rgba(5, 17, 34, 0.42));
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  align-items: end;
+  gap: 12px 10px;
+  align-content: start;
+  align-items: start;
+  box-shadow: inset 0 0 22px rgba(53, 134, 255, 0.06);
 }
 
 .settings-group legend {
@@ -862,16 +866,30 @@ main {
   font-weight: 900;
 }
 
+.settings-group:nth-of-type(1),
+.settings-group:nth-of-type(2) {
+  grid-column: span 4;
+}
+
+.settings-group:nth-of-type(3) {
+  grid-column: span 4;
+}
+
+.settings-group:nth-of-type(4) {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .settings-wide {
   grid-column: 1 / -1;
 }
 
 .settings-check {
-  min-height: 46px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 14px;
+  padding: 0 12px;
   border: 1px solid rgba(91, 156, 255, 0.34);
   border-radius: 8px;
   background: rgba(5, 17, 34, 0.58);
@@ -911,22 +929,22 @@ label:has(input[name="live_trading_enabled"]) input {
 
 label {
   color: #c1d2ee;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
 }
 
 input,
 select {
   width: 100%;
-  min-height: 46px;
-  margin-top: 9px;
+  min-height: 38px;
+  margin-top: 7px;
   border: 1px solid rgba(91, 156, 255, 0.42);
   border-radius: 8px;
-  padding: 0 16px;
+  padding: 0 13px;
   color: var(--text);
   outline: none;
   background: rgba(5, 17, 34, 0.72);
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 800;
 }
 
@@ -936,8 +954,8 @@ select {
     linear-gradient(45deg, transparent 50%, #54e7ff 50%),
     linear-gradient(135deg, #54e7ff 50%, transparent 50%);
   background-position:
-    calc(100% - 18px) 19px,
-    calc(100% - 12px) 19px;
+    calc(100% - 18px) 16px,
+    calc(100% - 12px) 16px;
   background-repeat: no-repeat;
   background-size: 6px 6px, 6px 6px;
   padding-right: 34px;
@@ -1266,12 +1284,28 @@ footer {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .settings-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .charts-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1100px) {
+  .settings-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .settings-group:nth-of-type(1),
+  .settings-group:nth-of-type(2) {
+    grid-column: span 3;
+  }
+
+  .settings-group:nth-of-type(3),
+  .settings-group:nth-of-type(4) {
+    grid-column: 1 / -1;
+  }
+
+  .settings-group:nth-of-type(4) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -1330,6 +1364,15 @@ footer {
   .compact-strip,
   .settings-grid,
   .charts-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-group,
+  .settings-group:nth-of-type(1),
+  .settings-group:nth-of-type(2),
+  .settings-group:nth-of-type(3),
+  .settings-group:nth-of-type(4) {
+    grid-column: 1 / -1;
     grid-template-columns: 1fr;
   }
 

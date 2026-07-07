@@ -203,22 +203,6 @@
                 <option value="short_only">只做空</option>
               </select>
             </label>
-            <label>
-              策略运行模式
-              <select name="strategy_run_mode">
-                <option value="all">全部策略</option>
-                <option value="altcoin_only">只跑妖币</option>
-                <option value="btc_only">只跑BTC</option>
-              </select>
-            </label>
-            <label>
-              启动池系统分阈值
-              <input name="early_breakout_score_threshold" type="number" min="0" max="10" step="0.1" />
-            </label>
-            <label class="settings-check">
-              <input name="early_breakout_enabled" type="checkbox" />
-              <span>启用早期启动池</span>
-            </label>
             <label class="settings-wide">
               禁止开仓币种
               <input name="blocked_symbols" type="text" placeholder="BTCUSDT, ETHUSDT" />
@@ -247,10 +231,6 @@
               <input name="long_structure_min_score" type="number" min="0" max="4" step="0.1" />
             </label>
             <label>
-              启动池确认分阈值
-              <input name="early_breakout_market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
-            </label>
-            <label>
               市场环境最低分
               <input name="market_regime_min_score" type="number" min="0" max="10" step="0.1" />
             </label>
@@ -266,77 +246,9 @@
               置信度阈值 (%)
               <input name="analyzer_min_confidence_pct" type="number" min="1" max="100" step="0.1" />
             </label>
-            <label>
-              启动池置信度 (%)
-              <input name="early_breakout_min_confidence_pct" type="number" min="1" max="100" step="0.1" />
-            </label>
             <label class="settings-check">
               <input name="analyzer_realtime_before_open" type="checkbox" />
               <span>开仓前再次确认</span>
-            </label>
-          </fieldset>
-
-          <fieldset class="settings-group">
-            <legend>BTC策略</legend>
-            <label class="settings-check">
-              <input name="btc_strategy_enabled" type="checkbox" />
-              <span>启用BTC独立策略</span>
-            </label>
-            <label>
-              BTC保证金 (U)
-              <input name="btc_margin_usdt" type="number" min="0.01" step="0.01" />
-            </label>
-            <label>
-              BTC杠杆
-              <input name="btc_leverage" type="number" min="1" max="20" step="1" />
-            </label>
-            <label>
-              BTC最低分
-              <input name="btc_min_score" type="number" min="0" max="10" step="0.1" />
-            </label>
-            <label>
-              BTC最小RR
-              <input name="btc_min_rr" type="number" min="0.5" step="0.1" />
-            </label>
-            <label>
-              BTC止盈RR
-              <input name="btc_take_profit_rr" type="number" min="0.5" step="0.1" />
-            </label>
-            <label>
-              BTC ATR止损倍数
-              <input name="btc_atr_stop_multiplier" type="number" min="0.5" step="0.1" />
-            </label>
-            <label>
-              BTC最低ADX
-              <input name="btc_min_adx" type="number" min="1" step="0.1" />
-            </label>
-          </fieldset>
-
-          <fieldset class="settings-group">
-            <legend>入场仓位</legend>
-            <label class="settings-check">
-              <input name="entry_timing_enabled" type="checkbox" />
-              <span>启用入场点评分</span>
-            </label>
-            <label>
-              入场点最低分
-              <input name="entry_timing_min_score" type="number" min="0" max="10" step="0.1" />
-            </label>
-            <label>
-              小仓入场分
-              <input name="entry_timing_small_score" type="number" min="0" max="10" step="0.1" />
-            </label>
-            <label>
-              正常仓入场分
-              <input name="entry_timing_normal_score" type="number" min="0" max="10" step="0.1" />
-            </label>
-            <label>
-              小仓倍率
-              <input name="entry_timing_small_multiplier" type="number" min="0.1" max="1" step="0.05" />
-            </label>
-            <label>
-              小仓杠杆上限
-              <input name="entry_timing_small_leverage_cap" type="number" min="1" max="20" step="1" />
             </label>
           </fieldset>
 

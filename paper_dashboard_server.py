@@ -62,25 +62,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "short_term_move_pct": 1.2,
     "volume_spike_ratio": 1.5,
     "trade_direction_mode": "both",
-    "strategy_run_mode": "all",
     "signal_score_threshold": 4.0,
     "confirmation_mode": "market_score",
     "market_confirm_min_score": 7.0,
     "short_market_confirm_min_score": 7.5,
     "long_structure_confirmation_enabled": False,
     "long_structure_min_score": 2.5,
-    "early_breakout_market_confirm_min_score": 6.5,
     "market_regime_filter_enabled": True,
     "market_regime_min_score": 4.5,
     "analyzer_confirmation_enabled": True,
     "analyzer_min_confidence_pct": 90.0,
-    "early_breakout_enabled": True,
-    "early_breakout_min_confidence_pct": 85.0,
-    "early_breakout_score_threshold": 4.0,
-    "early_breakout_max_kline_checks": 10,
-    "early_breakout_min_24h_change_pct": 3.0,
-    "early_breakout_max_24h_change_pct": 18.0,
-    "early_breakout_min_quote_volume_usdt": 10_000_000,
     "analyzer_timeout_sec": 12.0,
     "analyzer_cache_ttl_sec": 60,
     "analyzer_failed_cache_ttl_sec": 120,
@@ -89,16 +80,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pending_open_queue_enabled": True,
     "pending_open_queue_ttl_sec": 180,
     "max_candidates_per_scan": 18,
-    "max_kline_enriched_candidates": 0,
-    "entry_quality_enabled": True,
-    "entry_quality_min_score": 6.0,
-    "entry_quality_long_only": True,
-    "entry_timing_enabled": True,
-    "entry_timing_min_score": 3.0,
-    "entry_timing_normal_score": 7.0,
-    "entry_timing_small_score": 4.5,
-    "entry_timing_small_multiplier": 0.55,
-    "entry_timing_small_leverage_cap": 4,
+    "max_kline_enriched_candidates": 8,
     "max_new_positions_per_scan": 2,
     "margin_per_trade_usdt": 9.0,
     "leverage": 3,
@@ -111,15 +93,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "equity_take_profit_enabled": False,
     "previous_day_equity_usdt": 0.0,
     "equity_take_profit_usdt": 100.0,
-    "btc_strategy_enabled": False,
-    "btc_margin_usdt": 20.0,
-    "btc_leverage": 3,
-    "btc_min_score": 6.0,
-    "btc_min_rr": 1.5,
-    "btc_take_profit_rr": 1.8,
-    "btc_atr_stop_multiplier": 1.5,
-    "btc_max_funding_rate_pct": 0.05,
-    "btc_min_adx": 18.0,
     "stop_loss_cooldown_enabled": True,
     "stop_loss_cooldown_minutes": 60,
     "take_profit_cooldown_enabled": True,
@@ -174,13 +147,6 @@ class Signal:
     volume_4h_ratio: float
     taker_long_short_ratio: float
     oi_volume_ratio: float
-    entry_quality_score: float
-    entry_quality_label: str
-    entry_quality_reason: str
-    entry_timing_score: float
-    entry_timing_label: str
-    entry_timing_reason: str
-    entry_type: str
     signal_mode: str
     signal_heat_level: str
     market_regime_score: float
@@ -195,8 +161,6 @@ class Signal:
     decision_summary: str
     decision_steps: list[str]
     priority: str
-    planned_margin_usdt: float = 0.0
-    planned_leverage: int = 0
     planned_stop_price: float = 0.0
     planned_take_profit_price: float = 0.0
 
@@ -658,13 +622,6 @@ class PaperBot:
             "funding_rate_pct": signal.funding_rate_pct,
             "long_short_ratio": signal.long_short_ratio,
             "taker_long_short_ratio": signal.taker_long_short_ratio,
-            "entry_quality_score": signal.entry_quality_score,
-            "entry_quality_label": signal.entry_quality_label,
-            "entry_quality_reason": signal.entry_quality_reason,
-            "entry_timing_score": signal.entry_timing_score,
-            "entry_timing_label": signal.entry_timing_label,
-            "entry_timing_reason": signal.entry_timing_reason,
-            "entry_type": signal.entry_type,
             "signal_mode": signal.signal_mode,
             "signal_heat_level": signal.signal_heat_level,
             "market_regime_score": signal.market_regime_score,
@@ -1085,7 +1042,6 @@ class PaperBot:
         analyzer_text = "-"
         if signal.analyzer_direction:
             analyzer_text = f"{signal.analyzer_direction} {signal.analyzer_confidence_pct:.1f}%"
-        timing_text = f"{signal.entry_type or signal.entry_timing_label or '-'} {signal.entry_timing_score:.1f}"
         mode_text = self.signal_mode_label(signal.signal_mode)
         tier_label = {
             "excellent": "\u9ad8\u8d28\u91cf\u4fe1\u53f7\uff0c\u6309\u5f3a\u5316\u4ed3\u5904\u7406",
@@ -1110,25 +1066,25 @@ class PaperBot:
             [
                 f"${square_symbol} \u8fd9\u6ce2\u6211\u504f{side_view}\uff0c\u5148\u8bb0\u5f55\u4e00\u7b14{side}\u5355\u3002",
                 f"\u5165\u573a\uff1a{entry}\uff5c\u6b62\u76c8\uff1a{take_profit}\uff5c\u6b62\u635f\uff1a{stop_price}",
-                f"\u4fe1\u53f7\uff1a{mode_text}\uff5c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff5c\u5165\u573a {timing_text}\uff5c\u786e\u8ba4 {analyzer_text}",
+                f"\u4fe1\u53f7\uff1a{mode_text}\uff5c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff5c\u786e\u8ba4 {analyzer_text}",
                 f"\u7406\u7531\uff1a{reason}",
             ],
             [
                 f"${square_symbol} \u8fd9\u91cc\u5f00\u59cb\u6709\u70b9\u610f\u601d\u4e86\uff0c\u6211\u73b0\u5728\u504f{side_view}\u3002",
                 f"\u8fd9\u5355\u770b\u7684\u662f\u77ed\u7ebf\u5ef6\u7eed\uff0c\u5165\u573a {entry}\uff0c\u9632\u5b88 {stop_price}\uff0c\u76ee\u6807\u5148\u770b {take_profit}\u3002",
-                f"{mode_text}\uff0c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff0c\u5165\u573a {timing_text}\uff0c\u786e\u8ba4 {analyzer_text}\u3002",
+                f"{mode_text}\uff0c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff0c\u786e\u8ba4 {analyzer_text}\u3002",
                 f"\u89e6\u53d1\u70b9\uff1a{reason}",
             ],
             [
                 f"${square_symbol} \u5f53\u524d{side_view}\u7ed3\u6784\u6bd4\u8f83\u987a\uff0c\u8bb0\u5f55\u4e00\u7b14{side}\u5355\u3002",
-                f"\u6a21\u5f0f\uff1a{mode_text}\uff5c\u5165\u573a\uff1a{timing_text}\uff5c\u7cfb\u7edf\u5206\uff1a{signal.score:.2f}\uff5c\u786e\u8ba4\uff1a{analyzer_text}",
+                f"\u6a21\u5f0f\uff1a{mode_text}\uff5c\u7cfb\u7edf\u5206\uff1a{signal.score:.2f}\uff5c\u786e\u8ba4\uff1a{analyzer_text}",
                 f"\u70b9\u4f4d\uff1a\u5165\u573a {entry}\uff0c\u6b62\u76c8 {take_profit}\uff0c\u6b62\u635f {stop_price}",
                 f"\u4e3b\u8981\u903b\u8f91\uff1a{reason}",
             ],
             [
                 f"${square_symbol} \u6ce2\u52a8\u8d77\u6765\u4e86\uff0c\u8fd9\u79cd\u7968\u6211\u53ea\u770b\u8282\u594f\uff0c\u4e0d\u604b\u6218\u3002",
                 f"\u65b9\u5411\uff1a{side_view}\uff5c\u5165\u573a\uff1a{entry}\uff5c\u6b62\u76c8\uff1a{take_profit}\uff5c\u6b62\u635f\uff1a{stop_price}",
-                f"\u4fe1\u53f7\u5171\u632f\uff1a{mode_text}\uff0c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff0c\u5165\u573a {timing_text}\uff0c\u786e\u8ba4 {analyzer_text}",
+                f"\u4fe1\u53f7\u5171\u632f\uff1a{mode_text}\uff0c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff0c\u786e\u8ba4 {analyzer_text}",
                 f"\u5982\u679c\u653e\u91cf\u4e0d\u80fd\u5ef6\u7eed\uff0c\u5c31\u6309\u6b62\u635f\u7eaa\u5f8b\u5904\u7406\u3002",
             ],
             [
@@ -1404,42 +1360,18 @@ class PaperBot:
             "equity_take_profit_enabled": str,
             "previous_day_equity_usdt": float,
             "equity_take_profit_usdt": float,
-            "btc_strategy_enabled": str,
-            "btc_margin_usdt": float,
-            "btc_leverage": int,
-            "btc_min_score": float,
-            "btc_min_rr": float,
-            "btc_take_profit_rr": float,
-            "btc_atr_stop_multiplier": float,
-            "btc_max_funding_rate_pct": float,
-            "btc_min_adx": float,
-            "entry_quality_enabled": str,
-            "entry_quality_min_score": float,
-            "entry_quality_long_only": str,
-            "entry_timing_enabled": str,
-            "entry_timing_min_score": float,
-            "entry_timing_normal_score": float,
-            "entry_timing_small_score": float,
-            "entry_timing_small_multiplier": float,
-            "entry_timing_small_leverage_cap": int,
             "signal_score_threshold": float,
             "confirmation_mode": str,
             "market_confirm_min_score": float,
             "short_market_confirm_min_score": float,
             "long_structure_confirmation_enabled": str,
             "long_structure_min_score": float,
-            "early_breakout_market_confirm_min_score": float,
             "market_regime_filter_enabled": str,
             "market_regime_min_score": float,
             "analyzer_min_confidence_pct": float,
             "analyzer_realtime_before_open": str,
-            "early_breakout_enabled": str,
-            "early_breakout_min_confidence_pct": float,
-            "early_breakout_score_threshold": float,
-            "early_breakout_max_kline_checks": int,
             "max_new_positions_per_scan": int,
             "trade_direction_mode": str,
-            "strategy_run_mode": str,
             "blocked_symbols": str,
             "live_trading_enabled": str,
             "telegram_hourly_status_enabled": str,
@@ -1452,7 +1384,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "btc_strategy_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "entry_quality_enabled", "entry_quality_long_only", "entry_timing_enabled", "analyzer_realtime_before_open", "early_breakout_enabled", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "take_profit_cooldown_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "analyzer_realtime_before_open", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "take_profit_cooldown_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -1461,17 +1393,13 @@ class PaperBot:
                     value = str(value)
                     if value not in {"both", "long_only", "short_only"}:
                         value = "both"
-                if key == "strategy_run_mode":
-                    value = str(value)
-                    if value not in {"all", "altcoin_only", "btc_only"}:
-                        value = "all"
                 if key == "confirmation_mode":
                     value = str(value)
                     if value not in {"market_score", "analyzer"}:
                         value = "market_score"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "scan_interval_sec", "max_candidates_per_scan", "max_open_positions", "max_new_positions_per_scan", "entry_timing_small_leverage_cap", "early_breakout_max_kline_checks", "telegram_hourly_status_interval_minutes", "btc_leverage"}:
+                if key in {"leverage", "scan_interval_sec", "max_candidates_per_scan", "max_open_positions", "max_new_positions_per_scan", "telegram_hourly_status_interval_minutes"}:
                     value = max(1, int(value))
                 if key == "previous_day_equity_usdt":
                     value = max(0.0, float(value))
@@ -1483,27 +1411,12 @@ class PaperBot:
                     "market_confirm_min_score",
                     "short_market_confirm_min_score",
                     "long_structure_min_score",
-                    "early_breakout_market_confirm_min_score",
                     "market_regime_min_score",
                     "analyzer_min_confidence_pct",
-                    "early_breakout_min_confidence_pct",
-                    "early_breakout_score_threshold",
                     "max_exposure_pct",
                     "max_daily_profit_usdt",
                     "max_daily_loss_usdt",
                     "equity_take_profit_usdt",
-                    "btc_margin_usdt",
-                    "btc_min_score",
-                    "btc_min_rr",
-                    "btc_take_profit_rr",
-                    "btc_atr_stop_multiplier",
-                    "btc_max_funding_rate_pct",
-                    "btc_min_adx",
-                    "entry_quality_min_score",
-                    "entry_timing_min_score",
-                    "entry_timing_normal_score",
-                    "entry_timing_small_score",
-                    "entry_timing_small_multiplier",
                 }:
                     value = max(0.01, float(value))
                 self.config[key] = value
@@ -1944,10 +1857,6 @@ class PaperBot:
             "signal_review_id",
             "signal_mode",
             "signal_heat_level",
-            "entry_timing_score",
-            "entry_timing_label",
-            "entry_timing_reason",
-            "entry_type",
         }
         for row in exchange_rows:
             keys = self.trade_merge_keys(row)
@@ -2293,127 +2202,18 @@ class PaperBot:
         raise RuntimeError(f"{symbol} 无法设置杠杆：{last_error}")
 
     def position_plan(self, signal: Signal, available: float) -> dict[str, Any]:
-        if signal.signal_mode == "btc_strategy":
-            margin = min(max(0.01, fnum(signal.planned_margin_usdt, self.config.get("btc_margin_usdt", 20.0))), available)
-            target_leverage = max(1, int(fnum(signal.planned_leverage, self.config.get("btc_leverage", 3))))
-            reason = f"btc_strategy, fixed_margin={margin:.2f}U, target_leverage={target_leverage}x"
-            signal.decision_steps.append(f"仓位计划：{reason}")
-            return {
-                "margin_usdt": margin,
-                "target_leverage": target_leverage,
-                "margin_multiplier": 1.0,
-                "tier": "btc_strategy",
-                "reason": reason,
-            }
         base_margin = float(self.config.get("margin_per_trade_usdt", 9.0))
-        configured_leverage = max(1, int(self.config.get("leverage", 3)))
-        if not self.config.get("entry_timing_enabled", True):
-            margin = min(base_margin, available)
-            return {
-                "margin_usdt": margin,
-                "target_leverage": configured_leverage,
-                "margin_multiplier": 1.0,
-                "tier": "fixed",
-                "reason": "entry timing disabled, fixed sizing",
-            }
-
-        timing = fnum(signal.entry_timing_score)
-        timing_label = str(signal.entry_timing_label or "")
-        entry_type = str(signal.entry_type or "")
-        small_score = float(self.config.get("entry_timing_small_score", 4.5))
-        normal_score = float(self.config.get("entry_timing_normal_score", 7.0))
-        small_multiplier = float(self.config.get("entry_timing_small_multiplier", 0.55))
-        small_leverage_cap = max(1, int(self.config.get("entry_timing_small_leverage_cap", 4)))
-
-        if timing >= normal_score:
-            tier = "entry_normal"
-            margin_multiplier = 1.0
-            target_leverage = configured_leverage
-        elif timing >= small_score:
-            tier = "entry_small"
-            margin_multiplier = small_multiplier
-            target_leverage = min(configured_leverage, small_leverage_cap)
-        else:
-            tier = "entry_tiny"
-            margin_multiplier = min(small_multiplier, 0.35)
-            target_leverage = min(configured_leverage, small_leverage_cap, 3)
-
-        if entry_type == "回踩承接" and timing >= normal_score:
-            tier = "entry_pullback"
-            margin_multiplier = 1.15
-            target_leverage = configured_leverage
-        elif entry_type == "突破启动" and timing >= normal_score:
-            tier = "entry_breakout"
-            margin_multiplier = 1.0
-            target_leverage = configured_leverage
-        elif entry_type == "加速追随":
-            tier = f"{tier}_follow"
-            margin_multiplier = min(margin_multiplier, small_multiplier)
-            target_leverage = min(target_leverage, small_leverage_cap)
-        elif entry_type == "高位冲刺":
-            tier = f"{tier}_late_chase"
-            margin_multiplier = min(margin_multiplier, 0.35)
-            target_leverage = min(target_leverage, 3)
-        elif entry_type == "数据不足":
-            tier = f"{tier}_insufficient"
-            margin_multiplier = min(margin_multiplier, small_multiplier)
-            target_leverage = min(target_leverage, small_leverage_cap)
-
-        if signal.signal_mode == "early_breakout":
-            tier = f"{tier}_early"
-            margin_multiplier = min(margin_multiplier, small_multiplier)
-            target_leverage = min(target_leverage, small_leverage_cap, 3)
-            if signal.signal_heat_level == "warm":
-                tier = f"{tier}_warm"
-                margin_multiplier = min(margin_multiplier, 0.45)
-                target_leverage = min(target_leverage, 3)
-            elif signal.signal_heat_level == "hot":
-                tier = f"{tier}_hot"
-                margin_multiplier = min(margin_multiplier, 0.28)
-                target_leverage = min(target_leverage, 2)
-
-        heat_reasons: list[str] = []
-        if signal.signal_mode != "early_breakout":
-            if signal.funding_rate_pct > 0.12:
-                heat_reasons.append("funding_extreme")
-            if signal.open_interest_1h_pct > 90 or signal.open_interest_24h_pct > 150:
-                heat_reasons.append("oi_extreme")
-            if signal.long_short_ratio > 4.5:
-                heat_reasons.append("crowded_extreme")
-            if signal.short_move_pct > 9:
-                heat_reasons.append("fast_15m_extreme")
-        if self.daily_realized_pnl() < 0:
-            heat_reasons.append("daily_loss")
-
-        heat_downshift_count = min(2, len(heat_reasons))
-        if signal.signal_mode != "early_breakout" and len(heat_reasons) == 1 and heat_reasons[0] != "daily_loss":
-            heat_downshift_count = 1
-        for _ in range(heat_downshift_count):
-            if margin_multiplier > 1.0:
-                margin_multiplier = 1.0
-                target_leverage = min(target_leverage, configured_leverage)
-            elif margin_multiplier > small_multiplier:
-                margin_multiplier = small_multiplier
-                target_leverage = min(target_leverage, small_leverage_cap)
-            else:
-                margin_multiplier = min(margin_multiplier, 0.6)
-                target_leverage = min(target_leverage, 3)
-
-        target_leverage = max(1, min(target_leverage, configured_leverage))
-        margin_multiplier = max(0.1, min(margin_multiplier, 1.15))
-        margin = min(base_margin * margin_multiplier, available)
-        reason = f"timing={timing:.1f}({timing_label}/{entry_type}), tier={tier}, multiplier={margin_multiplier:.2f}, target_leverage={target_leverage}x"
-        if heat_reasons:
-            reason += ", heat_downshift=" + ",".join(heat_reasons[:2])
-        signal.decision_steps.append(f"仓位计划：{reason}, margin={margin:.2f}U")
+        target_leverage = max(1, int(self.config.get("leverage", 3)))
+        margin = min(base_margin, available)
+        reason = f"fixed_margin={margin:.2f}U, target_leverage={target_leverage}x"
+        signal.decision_steps.append(f"仓位计划：{reason}")
         return {
             "margin_usdt": margin,
             "target_leverage": target_leverage,
-            "margin_multiplier": margin_multiplier,
-            "tier": tier,
+            "margin_multiplier": 1.0,
+            "tier": "fixed",
             "reason": reason,
         }
-
     def exchange_open_position(self, signal: Signal, symbol_info: dict[str, Any]) -> dict[str, Any] | None:
         sizing = self.position_plan(signal, self.get_available_balance())
         return self.exchange_open_position_with_sizing(signal, symbol_info, sizing)
@@ -2525,10 +2325,6 @@ class PaperBot:
             "analyzer_direction": signal.analyzer_direction,
             "analyzer_confidence_pct": signal.analyzer_confidence_pct,
             "analyzer_reason": signal.analyzer_reason,
-            "entry_timing_score": signal.entry_timing_score,
-            "entry_timing_label": signal.entry_timing_label,
-            "entry_timing_reason": signal.entry_timing_reason,
-            "entry_type": signal.entry_type,
             "signal_mode": signal.signal_mode,
             "signal_heat_level": signal.signal_heat_level,
             "decision_summary": signal.decision_summary,
@@ -2709,8 +2505,6 @@ class PaperBot:
         return "注意"
 
     def market_confirm_min_score_for_mode(self, signal_mode: str = "", side: str = "") -> float:
-        if signal_mode == "early_breakout":
-            return float(self.config.get("early_breakout_market_confirm_min_score", 6.0))
         if side == "SHORT":
             return float(self.config.get("short_market_confirm_min_score", 7.5))
         return float(self.config.get("market_confirm_min_score", 7.0))
@@ -3091,18 +2885,9 @@ class PaperBot:
                 warnings.append("多空比极端")
                 reasons.append(f"多空比极端 {long_short:.2f}")
 
-        if signal_mode == "early_breakout":
-            if 2.0 <= directional_24h <= float(self.config.get("early_breakout_max_24h_change_pct", 18.0)) + 8:
-                score += 0.4
-                reasons.append(f"早启涨幅区间 {directional_24h:+.1f}%")
-            elif directional_24h > 35:
-                score -= 0.8
-                caps.append(6.8)
-                reasons.append(f"早启已偏高 {directional_24h:+.1f}%")
-        else:
-            if directional_24h >= float(self.config.get("min_abs_24h_change_pct", 6.0)):
-                score += 0.3
-                reasons.append(f"24h强波动确认 {directional_24h:+.1f}%")
+        if directional_24h >= float(self.config.get("min_abs_24h_change_pct", 6.0)):
+            score += 0.3
+            reasons.append(f"24h强波动确认 {directional_24h:+.1f}%")
 
         exhausted_crowd = (funding_crowded or crowd_extreme) and (taker_weak or directional_short < 0.4 or directional_1h < 0.5)
         if exhausted_crowd:
@@ -3132,314 +2917,6 @@ class PaperBot:
         else:
             label = "不足"
         return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:8])}
-
-    def entry_quality(self, side: str, change_24h: float, change_4h: float, change_1h: float, short_move: float, volume_ratio: float, trend: str, stats: dict[str, float], enriched: bool) -> dict[str, Any]:
-        score = 5.0
-        reasons: list[str] = []
-        if not self.config.get("entry_quality_enabled", True):
-            return {"score": 10.0, "label": "关闭", "reason": "入场质量过滤未启用"}
-        if self.config.get("entry_quality_long_only", True) and side != "LONG":
-            return {"score": 10.0, "label": "跳过", "reason": "入场质量过滤仅作用于做多"}
-        if not enriched:
-            score -= 2.0
-            reasons.append("未取得真实短线K线")
-        if trend == "up":
-            score += 1.2
-            reasons.append("短线趋势向上")
-        else:
-            score -= 1.6
-            reasons.append("短线趋势不顺")
-        if 0.35 <= short_move <= 4.5:
-            score += 1.4
-            reasons.append(f"15m涨幅健康 {short_move:+.2f}%")
-        elif short_move > 4.5:
-            score -= 1.6
-            reasons.append(f"15m拉升过快 {short_move:+.2f}%")
-        elif short_move < -0.4:
-            score -= 1.4
-            reasons.append(f"15m转弱 {short_move:+.2f}%")
-        if 0.5 <= change_1h <= 12:
-            score += 1.0
-            reasons.append(f"1h仍强 {change_1h:+.2f}%")
-        elif change_1h > 18:
-            score -= 1.4
-            reasons.append(f"1h过热 {change_1h:+.2f}%")
-        elif change_1h < 0:
-            score -= 1.0
-            reasons.append(f"1h转弱 {change_1h:+.2f}%")
-        if change_24h > 60:
-            score -= 1.8
-            reasons.append(f"24h涨幅过大 {change_24h:+.2f}%")
-        elif 7 <= change_24h <= 45:
-            score += 0.8
-            reasons.append(f"24h强势未极端 {change_24h:+.2f}%")
-        if 1.2 <= volume_ratio <= 5.5:
-            score += 1.0
-            reasons.append(f"放量合理 {volume_ratio:.2f}x")
-        elif volume_ratio > 8:
-            score -= 1.0
-            reasons.append(f"短线量能过热 {volume_ratio:.2f}x")
-        funding = fnum(stats.get("funding_rate_pct"))
-        oi_1h = fnum(stats.get("open_interest_1h_pct"))
-        oi_24h = fnum(stats.get("open_interest_24h_pct"))
-        long_short = fnum(stats.get("long_short_ratio"), 1.0)
-        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
-        if funding > 0.08:
-            score -= 1.5
-            reasons.append(f"资金费率过热 {funding:+.3f}%")
-        elif funding > 0.04:
-            score -= 0.6
-            reasons.append(f"资金费率偏热 {funding:+.3f}%")
-        else:
-            score += 0.4
-            reasons.append("资金费率未极端")
-        if 1 <= oi_1h <= 18:
-            score += 0.8
-            reasons.append(f"OI温和增加 {oi_1h:+.2f}%")
-        elif oi_1h > 30 or oi_24h > 55:
-            score -= 1.3
-            reasons.append("OI增加过快")
-        if taker_ratio >= 1.08:
-            score += 0.7
-            reasons.append(f"主动买入偏强 {taker_ratio:.2f}")
-        elif taker_ratio < 0.92:
-            score -= 0.8
-            reasons.append(f"主动买入偏弱 {taker_ratio:.2f}")
-        if long_short > 2.6:
-            score -= 1.0
-            reasons.append(f"多空比拥挤 {long_short:.2f}")
-        elif 1.05 <= long_short <= 2.2:
-            score += 0.4
-            reasons.append(f"多空比可接受 {long_short:.2f}")
-        score = max(0.0, min(10.0, score))
-        if score >= 7.5:
-            label = "优秀"
-        elif score >= float(self.config.get("entry_quality_min_score", 6.0)):
-            label = "合格"
-        elif score >= 4.5:
-            label = "偏弱"
-        else:
-            label = "不合格"
-        return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:7])}
-
-    def entry_timing(
-        self,
-        side: str,
-        price: float,
-        closes: list[float],
-        change_24h: float,
-        short_move: float,
-        volume_ratio: float,
-        trend: str,
-    ) -> dict[str, Any]:
-        if not self.config.get("entry_timing_enabled", True):
-            return {"score": 10.0, "label": "关闭", "type": "关闭", "reason": "入场点评分未启用"}
-        if price <= 0 or len(closes) < 30:
-            return {"score": 5.0, "label": "一般", "type": "数据不足", "reason": "短线K线不足，按一般入场处理"}
-
-        score = 5.0
-        reasons: list[str] = []
-        ema30 = ema(closes[-30:])
-        ema12 = ema(closes[-12:]) if len(closes) >= 12 else ema30
-        recent_high = max(closes[-16:]) if len(closes) >= 16 else max(closes)
-        recent_low = min(closes[-16:]) if len(closes) >= 16 else min(closes)
-
-        if side == "LONG":
-            ema_distance = pct(price, ema30) if ema30 > 0 else 0.0
-            stop_distance = pct(price, recent_low) * -1 if price > 0 else 0.0
-            high_distance = pct(price, recent_high) if recent_high > 0 else 0.0
-            if 0 <= ema_distance <= 4:
-                score += 1.4
-                reasons.append(f"距30mEMA {ema_distance:.2f}%")
-            elif ema_distance > 7:
-                score -= 1.8
-                reasons.append(f"离30mEMA过远 {ema_distance:.2f}%")
-            elif ema_distance < -1:
-                score -= 1.2
-                reasons.append(f"跌破30mEMA {ema_distance:.2f}%")
-
-            if 0 < stop_distance <= 5:
-                score += 1.2
-                reasons.append(f"结构止损距离 {stop_distance:.2f}%")
-            elif stop_distance > 8:
-                score -= 1.5
-                reasons.append(f"结构止损偏远 {stop_distance:.2f}%")
-
-            if -4 <= high_distance <= 0.5:
-                score += 0.8
-                reasons.append(f"接近15m高点 {high_distance:+.2f}%")
-            elif high_distance > 2:
-                score -= 1.0
-                reasons.append(f"突破后位置偏高 {high_distance:+.2f}%")
-
-            if short_move <= 8:
-                score += 0.8
-                reasons.append(f"15m涨幅可控 {short_move:+.2f}%")
-            else:
-                score -= 1.5
-                reasons.append(f"15m拉升过快 {short_move:+.2f}%")
-
-            if price > ema12 > ema30 and trend == "up":
-                score += 1.0
-                reasons.append("短线均线顺势")
-            elif trend != "up":
-                score -= 1.2
-                reasons.append("短线趋势不顺")
-
-            if 1.0 <= volume_ratio <= 4.5:
-                score += 0.8
-                reasons.append(f"量能承接 {volume_ratio:.2f}x")
-            elif volume_ratio > 8:
-                score -= 1.0
-                reasons.append(f"量能冲刺过热 {volume_ratio:.2f}x")
-
-            if change_24h > 90 and short_move > 6:
-                score -= 1.0
-                reasons.append(f"24h极端且短线急拉 {change_24h:+.2f}%")
-        else:
-            ema_distance = pct(ema30, price) if price > 0 else 0.0
-            stop_distance = pct(recent_high, price) if price > 0 else 0.0
-            low_distance = pct(recent_low, price) if price > 0 else 0.0
-            if 0 <= ema_distance <= 4:
-                score += 1.4
-                reasons.append(f"距30mEMA {ema_distance:.2f}%")
-            elif ema_distance > 7:
-                score -= 1.8
-                reasons.append(f"离30mEMA过远 {ema_distance:.2f}%")
-            elif ema_distance < -1:
-                score -= 1.2
-                reasons.append(f"站回30mEMA {ema_distance:.2f}%")
-
-            if 0 < stop_distance <= 5:
-                score += 1.2
-                reasons.append(f"结构止损距离 {stop_distance:.2f}%")
-            elif stop_distance > 8:
-                score -= 1.5
-                reasons.append(f"结构止损偏远 {stop_distance:.2f}%")
-
-            if -4 <= low_distance <= 0.5:
-                score += 0.8
-                reasons.append(f"接近15m低点 {low_distance:+.2f}%")
-            elif low_distance < -2:
-                score -= 1.0
-                reasons.append(f"下破后位置偏低 {low_distance:+.2f}%")
-
-            if short_move >= -8:
-                score += 0.8
-                reasons.append(f"15m跌幅可控 {short_move:+.2f}%")
-            else:
-                score -= 1.5
-                reasons.append(f"15m下跌过快 {short_move:+.2f}%")
-
-            if price < ema12 < ema30 and trend == "down":
-                score += 1.0
-                reasons.append("短线均线顺势")
-            elif trend != "down":
-                score -= 1.2
-                reasons.append("短线趋势不顺")
-
-            if 1.0 <= volume_ratio <= 4.5:
-                score += 0.8
-                reasons.append(f"量能承接 {volume_ratio:.2f}x")
-            elif volume_ratio > 8:
-                score -= 1.0
-                reasons.append(f"量能冲刺过热 {volume_ratio:.2f}x")
-
-        score = max(0.0, min(10.0, score))
-        normal_score = float(self.config.get("entry_timing_normal_score", 7.0))
-        small_score = float(self.config.get("entry_timing_small_score", 4.5))
-        min_score = float(self.config.get("entry_timing_min_score", 3.0))
-        if score >= normal_score:
-            label = "好"
-        elif score >= small_score:
-            label = "一般"
-        elif score >= min_score:
-            label = "偏贵"
-        else:
-            label = "差"
-        entry_type = self.classify_entry_type(side, price, closes, short_move, volume_ratio, trend)
-        return {"score": round(score, 1), "label": label, "type": entry_type, "reason": " / ".join(reasons[:7])}
-
-    def classify_entry_type(
-        self,
-        side: str,
-        price: float,
-        closes: list[float],
-        short_move: float,
-        volume_ratio: float,
-        trend: str,
-    ) -> str:
-        if price <= 0 or len(closes) < 30:
-            return "数据不足"
-        ema30 = ema(closes[-30:])
-        ema12 = ema(closes[-12:]) if len(closes) >= 12 else ema30
-        recent = closes[-16:] if len(closes) >= 16 else closes
-        recent_high = max(recent)
-        recent_low = min(recent)
-        if side == "LONG":
-            ema_distance = pct(price, ema30) if ema30 > 0 else 0.0
-            high_distance = pct(price, recent_high) if recent_high > 0 else 0.0
-            stop_distance = pct(price, recent_low) * -1 if price > 0 else 0.0
-            if price < ema30 or trend != "up":
-                return "结构破坏"
-            if ema_distance > 8 or short_move > 10 or (volume_ratio > 8 and high_distance >= -1):
-                return "高位冲刺"
-            if price > recent_high * 0.998 and 1.2 <= short_move <= 6 and 1.2 <= volume_ratio <= 5:
-                return "突破启动"
-            if 0 <= ema_distance <= 3.5 and 0 < stop_distance <= 5 and -4 <= high_distance <= 0.5:
-                return "回踩承接"
-            if price > ema12 > ema30 and 0 <= ema_distance <= 7 and short_move <= 8:
-                return "加速追随"
-            return "结构破坏" if stop_distance > 9 else "加速追随"
-
-        ema_distance = pct(ema30, price) if price > 0 else 0.0
-        low_distance = pct(recent_low, price) if price > 0 else 0.0
-        stop_distance = pct(recent_high, price) if price > 0 else 0.0
-        if price > ema30 or trend != "down":
-            return "结构破坏"
-        if ema_distance > 8 or short_move < -10 or (volume_ratio > 8 and low_distance <= 1):
-            return "高位冲刺"
-        if price < recent_low * 1.002 and -6 <= short_move <= -1.2 and 1.2 <= volume_ratio <= 5:
-            return "突破启动"
-        if 0 <= ema_distance <= 3.5 and 0 < stop_distance <= 5 and -4 <= low_distance <= 0.5:
-            return "回踩承接"
-        if price < ema12 < ema30 and 0 <= ema_distance <= 7 and short_move >= -8:
-            return "加速追随"
-        return "结构破坏" if stop_distance > 9 else "加速追随"
-
-    def enrich_signal_entry_timing(self, signal: Signal) -> None:
-        klines = self.fetch_klines(signal.symbol)
-        closes = [fnum(k[4]) for k in klines]
-        volumes = [fnum(k[7]) for k in klines]
-        price = closes[-1] if closes else signal.price
-        short_move = signal.short_move_pct
-        change_1h = signal.change_1h_pct
-        change_4h = signal.change_4h_pct
-        volume_ratio = signal.volume_ratio
-        trend = "up" if signal.side == "LONG" else "down"
-        if len(closes) > 16:
-            short_move = pct(closes[-1], closes[-16])
-            change_1h = short_move
-            trend = infer_trend(closes)
-        if len(closes) > 40:
-            change_4h = pct(closes[-1], closes[-40])
-        if len(volumes) > 25:
-            recent = sum(volumes[-5:])
-            base = sum(volumes[-25:-5]) / 20 * 5
-            volume_ratio = recent / base if base > 0 else volume_ratio
-        timing = self.entry_timing(signal.side, price, closes, signal.change_24h_pct, short_move, volume_ratio, trend)
-        signal.price = price or signal.price
-        signal.short_move_pct = short_move
-        signal.change_1h_pct = change_1h
-        signal.change_4h_pct = change_4h
-        signal.volume_ratio = volume_ratio
-        signal.entry_timing_score = fnum(timing.get("score"))
-        signal.entry_timing_label = str(timing.get("label", ""))
-        signal.entry_timing_reason = str(timing.get("reason", ""))
-        signal.entry_type = str(timing.get("type", ""))
-        signal.decision_steps.append(
-            f"开仓前入场类型：{signal.entry_type} / {signal.entry_timing_label} {signal.entry_timing_score:.1f}，{signal.entry_timing_reason or '-'}"
-        )
 
     def analyzer_confirmation(self, symbol: str, system_side: str = "", signal_mode: str = "") -> dict[str, Any]:
         if not self.config.get("analyzer_confirmation_enabled", True):
@@ -3539,8 +3016,6 @@ class PaperBot:
         return ""
 
     def analyzer_min_confidence_for_mode(self, signal_mode: str = "") -> float:
-        if signal_mode == "early_breakout":
-            return float(self.config.get("early_breakout_min_confidence_pct", 85.0))
         return float(self.config.get("analyzer_min_confidence_pct", 90.0))
 
     def analyzer_reject_reason(self, system_side: str, result: dict[str, Any], signal_mode: str = "") -> str:
@@ -3629,12 +3104,8 @@ class PaperBot:
             "volume_4h_ratio": 0.0,
             "taker_long_short_ratio": 1.0,
             "oi_volume_ratio": 0.0,
-            "entry_quality_score": 0.0,
-            "entry_timing_score": 0.0,
             "market_regime_score": 10.0,
             "analyzer_confidence_pct": 0.0,
-            "planned_margin_usdt": 0.0,
-            "planned_leverage": 0.0,
             "planned_stop_price": 0.0,
             "planned_take_profit_price": 0.0,
         }
@@ -3729,8 +3200,6 @@ class PaperBot:
         return result
 
     def signal_mode_label(self, signal_mode: str) -> str:
-        if signal_mode == "early_breakout":
-            return "早期启动"
         return "强波动"
 
     def fallback_short_metrics(self, change: float) -> dict[str, Any]:
@@ -3748,23 +3217,35 @@ class PaperBot:
         metrics = self.fallback_short_metrics(change)
         metrics["price"] = fallback_price
         try:
-            klines = self.fetch_klines(symbol)
-            closes = [fnum(k[4]) for k in klines]
-            volumes = [fnum(k[7]) for k in klines]
-            if not closes:
-                return metrics
-            metrics["price"] = closes[-1] or fallback_price
-            metrics["enriched"] = True
-            if len(closes) > 16:
-                metrics["short_move"] = pct(closes[-1], closes[-16])
-                metrics["change_1h"] = metrics["short_move"]
-                metrics["trend"] = infer_trend(closes)
-            if len(closes) > 40:
-                metrics["change_4h"] = pct(closes[-1], closes[-40])
-            if len(volumes) > 25:
-                recent = sum(volumes[-5:])
-                base = sum(volumes[-25:-5]) / 20 * 5
-                metrics["volume_ratio"] = recent / base if base > 0 else metrics["volume_ratio"]
+            klines15 = self.fetch_klines_interval(symbol, "15m", 40)
+            closes15 = [fnum(k[4]) for k in klines15]
+            volumes15 = [fnum(k[7]) for k in klines15]
+            if closes15:
+                metrics["price"] = closes15[-1] or metrics["price"] or fallback_price
+                metrics["enriched"] = True
+            if len(closes15) > 1:
+                metrics["short_move"] = pct(closes15[-1], closes15[-2])
+            trend15 = infer_trend(closes15)
+            if trend15 != "neutral":
+                metrics["trend"] = trend15
+            if len(volumes15) > 21:
+                base = sum(volumes15[-21:-1]) / 20
+                metrics["volume_ratio"] = volumes15[-1] / base if base > 0 else metrics["volume_ratio"]
+        except Exception:
+            pass
+        try:
+            klines1h = self.fetch_klines_interval(symbol, "1h", 40)
+            closes1h = [fnum(k[4]) for k in klines1h]
+            if closes1h:
+                metrics["price"] = closes1h[-1] or metrics["price"] or fallback_price
+                metrics["enriched"] = True
+            if len(closes1h) > 1:
+                metrics["change_1h"] = pct(closes1h[-1], closes1h[-2])
+            if len(closes1h) > 4:
+                metrics["change_4h"] = pct(closes1h[-1], closes1h[-5])
+            trend1h = infer_trend(closes1h)
+            if trend1h != "neutral":
+                metrics["trend"] = trend1h
         except Exception:
             pass
         return metrics
@@ -3800,348 +3281,24 @@ class PaperBot:
         for item in strong[:max_candidates]:
             pool[str(item.get("symbol", ""))] = {"item": item, "signal_mode": "strong_momentum", "mode_reason": "24h强波动池"}
 
-        if self.config.get("early_breakout_enabled", True) and direction_mode != "short_only":
-            early_min_change = float(self.config.get("early_breakout_min_24h_change_pct", 3.0))
-            early_max_change = float(self.config.get("early_breakout_max_24h_change_pct", 18.0))
-            early_min_volume = float(self.config.get("early_breakout_min_quote_volume_usdt", 10_000_000))
-            early_limit = max(0, int(self.config.get("early_breakout_max_kline_checks", 10)))
-            early_base = [
-                item
-                for item in tickers
-                if str(item.get("symbol", "")) not in pool
-                and fnum(item.get("quoteVolume")) >= early_min_volume
-                and early_min_change <= fnum(item.get("priceChangePercent")) <= early_max_change
-            ]
-            early_base.sort(key=lambda x: (-fnum(x.get("quoteVolume")), -fnum(x.get("priceChangePercent"))))
-            accepted = 0
-            for item in early_base:
-                if accepted >= early_limit:
-                    break
-                symbol = str(item.get("symbol", ""))
-                price = fnum(item.get("lastPrice"))
-                change = fnum(item.get("priceChangePercent"))
-                metrics = self.kline_short_metrics(symbol, price, change)
-                if not self.is_early_breakout_candidate(item, metrics):
-                    continue
-                pool[symbol] = {
-                    "item": item,
-                    "signal_mode": "early_breakout",
-                    "mode_reason": str(metrics.get("early_reason", "早期启动池")),
-                    "metrics": metrics,
-                }
-                accepted += 1
         candidates = list(pool.values())
         candidates.sort(
             key=lambda row: (
-                0 if row.get("signal_mode") == "early_breakout" else 1,
                 -fnum(row["item"].get("quoteVolume")),
                 -abs(fnum(row["item"].get("priceChangePercent"))),
             )
         )
         return candidates[: max_candidates]
 
-    def is_early_breakout_candidate(self, item: dict[str, Any], metrics: dict[str, Any]) -> bool:
-        change = fnum(item.get("priceChangePercent"))
-        short_move = fnum(metrics.get("short_move"))
-        change_4h = fnum(metrics.get("change_4h"))
-        volume_ratio = fnum(metrics.get("volume_ratio"))
-        trend = str(metrics.get("trend", ""))
-        if trend != "up":
-            return False
-        if not (0.8 <= short_move <= 7.5):
-            return False
-        if not (1.0 <= change_4h <= 12.0):
-            return False
-        if not (1.4 <= volume_ratio <= 8.5):
-            return False
-        stage = "加速早启" if short_move > 4.5 or volume_ratio > 5.5 else "早期启动"
-        metrics["early_reason"] = f"{stage}：24h {change:+.1f}% / 15m {short_move:+.1f}% / 量 {volume_ratio:.1f}x"
-        return True
-
-    def early_breakout_heat(self, stats: dict[str, float], short_move: float) -> tuple[str, str]:
-        funding = fnum(stats.get("funding_rate_pct"))
-        long_short = fnum(stats.get("long_short_ratio"))
-        oi_1h = fnum(stats.get("open_interest_1h_pct"))
-        if (funding > 0.12 and long_short > 3.5) or (oi_1h > 70 and short_move > 4.0):
-            return "extreme", f"极端过热：资金费率 {funding:.3f}% / 多空比 {long_short:.2f} / OI1h {oi_1h:+.1f}%"
-        if funding > 0.08 or long_short > 3.5 or oi_1h > 50:
-            return "hot", f"过热启动：资金费率 {funding:.3f}% / 多空比 {long_short:.2f} / OI1h {oi_1h:+.1f}%"
-        if funding > 0.04 or long_short > 2.5 or oi_1h > 25:
-            return "warm", f"升温启动：资金费率 {funding:.3f}% / 多空比 {long_short:.2f} / OI1h {oi_1h:+.1f}%"
-        if oi_1h < -8:
-            return "weak", f"启动承接不足：OI1h {oi_1h:+.1f}%"
-        return "normal", f"正常启动：资金费率 {funding:.3f}% / 多空比 {long_short:.2f} / OI1h {oi_1h:+.1f}%"
-
-    def build_btc_strategy_signal(self, ticker_by_symbol: dict[str, dict[str, Any]], open_symbols: set[str]) -> Signal | None:
-        if not self.config.get("btc_strategy_enabled", False):
-            return None
-        symbol = "BTCUSDT"
-        ticker = ticker_by_symbol.get(symbol, {})
-        ticker_price = fnum(ticker.get("lastPrice"))
-        change_24h = fnum(ticker.get("priceChangePercent"))
-        quote_volume = fnum(ticker.get("quoteVolume"))
-
-        def make_btc_signal(
-            *,
-            side: str = "LONG",
-            score: float = 0.0,
-            price: float = 0.0,
-            reject: str = "",
-            reasons: list[str] | None = None,
-            steps: list[str] | None = None,
-            funding_rate: float = 0.0,
-            change_4h: float = 0.0,
-            change_1h: float = 0.0,
-            short_move: float = 0.0,
-            entry_type: str = "BTC观察",
-            risk_level: str = "观察",
-            stop_price: float = 0.0,
-            take_price: float = 0.0,
-        ) -> Signal:
-            reason_text = " / ".join(reasons or [])
-            decision_steps = steps or [
-                f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{reason_text or '等待更多条件'}",
-                f"结论：{reject or '待开仓'}",
-            ]
-            return Signal(
-                symbol=symbol,
-                side=side,
-                score=round(score, 2),
-                price=price or ticker_price,
-                quote_volume=quote_volume,
-                change_24h_pct=change_24h,
-                change_4h_pct=change_4h,
-                change_1h_pct=change_1h,
-                short_move_pct=short_move,
-                volume_ratio=1.0,
-                open_interest_usdt=0.0,
-                open_interest_24h_pct=0.0,
-                open_interest_4h_pct=0.0,
-                open_interest_1h_pct=0.0,
-                funding_rate_pct=round(funding_rate, 4),
-                long_short_ratio=1.0,
-                volume_4h_ratio=1.0,
-                taker_long_short_ratio=1.0,
-                oi_volume_ratio=0.0,
-                entry_quality_score=10.0 if not reject else 0.0,
-                entry_quality_label="BTC策略",
-                entry_quality_reason="BTC独立策略通过15m/1h/4h趋势、ADX、ATR和RR判断",
-                entry_timing_score=round(score, 1),
-                entry_timing_label="BTC",
-                entry_timing_reason=reason_text or reject or "BTC策略观察中",
-                entry_type=entry_type,
-                signal_mode="btc_strategy",
-                signal_heat_level="normal",
-                market_regime_score=10.0,
-                market_regime_label="BTC独立",
-                market_regime_reason="BTC策略独立判断，不使用小币市场环境过滤",
-                risk_level=risk_level,
-                analyzer_direction="BTC策略",
-                analyzer_confidence_pct=100.0 if not reject else 0.0,
-                analyzer_reason="BTC策略不使用小币分析器置信度",
-                trigger_reason="BTC策略：" + (reason_text or reject or "观察中"),
-                reject_reason=reject,
-                decision_summary=self.decision_summary(reject),
-                decision_steps=decision_steps,
-                priority="高" if not reject else "观察",
-                planned_margin_usdt=float(self.config.get("btc_margin_usdt", 20.0)),
-                planned_leverage=max(1, int(self.config.get("btc_leverage", 3))),
-                planned_stop_price=stop_price,
-                planned_take_profit_price=take_price,
-            )
-
-        if symbol in open_symbols:
-            return make_btc_signal(reject="BTC已有持仓", steps=["BTC策略：已有BTC持仓，本轮不重复开仓"])
-        try:
-            k15 = self.fetch_klines_interval(symbol, "15m", 80)
-            k1h = self.fetch_klines_interval(symbol, "1h", 120)
-            k4h = self.fetch_klines_interval(symbol, "4h", 120)
-        except Exception as exc:
-            self.event("warn", f"BTC策略K线读取失败：{exc}")
-            return make_btc_signal(reject=f"BTC策略K线读取失败：{exc}", steps=[f"BTC策略：读取15m/1h/4h K线失败：{exc}"])
-        closes15 = [fnum(row[4]) for row in k15]
-        closes1h = [fnum(row[4]) for row in k1h]
-        closes4h = [fnum(row[4]) for row in k4h]
-        if len(closes15) < 35 or len(closes1h) < 35 or len(closes4h) < 35:
-            return make_btc_signal(
-                reject="BTC策略K线不足",
-                steps=[f"BTC策略：K线数量不足，15m {len(closes15)} / 1h {len(closes1h)} / 4h {len(closes4h)}，至少需要35根"],
-            )
-        price = closes15[-1]
-        ema15 = self.ema(closes15, 30)
-        ema1h = self.ema(closes1h, 30)
-        ema4h = self.ema(closes4h, 30)
-        prev_ema15 = self.ema(closes15[:-1], 30)
-        adx1h = self.adx(k1h, 14)
-        atr15 = self.atr(k15, 14)
-        if price <= 0 or atr15 <= 0:
-            return make_btc_signal(price=price, reject="BTC策略ATR或价格无效", steps=[f"BTC策略：价格 {price:.2f} / ATR15 {atr15:.2f}，暂不交易"])
-        funding_rate = 0.0
-        try:
-            premium = http_get_json(self.config["market_base_url"], "/fapi/v1/premiumIndex", {"symbol": symbol}, timeout=2.5)
-            funding_rate = fnum(premium.get("lastFundingRate")) * 100
-        except Exception:
-            funding_rate = 0.0
-        max_funding = float(self.config.get("btc_max_funding_rate_pct", 0.05))
-        min_adx = float(self.config.get("btc_min_adx", 18.0))
-        change_4h = pct(closes15[-1], closes15[-17]) if len(closes15) > 17 else 0.0
-        change_1h = pct(closes15[-1], closes15[-5]) if len(closes15) > 5 else 0.0
-        short_move = pct(closes15[-1], closes15[-2]) if len(closes15) > 2 else 0.0
-        trend_steps = [
-            f"BTC策略：当前价 {price:.2f}，24h {change_24h:+.2f}% / 4h {change_4h:+.2f}% / 1h {change_1h:+.2f}%",
-            f"趋势结构：15m EMA30 {ema15:.2f} / 1h EMA30 {ema1h:.2f} / 4h EMA30 {ema4h:.2f}",
-            f"强度过滤：1h ADX {adx1h:.1f}，阈值 {min_adx:.1f}；资金费率 {funding_rate:.3f}%，阈值 ±{max_funding:.3f}%",
-        ]
-        if adx1h < min_adx:
-            return make_btc_signal(
-                price=price,
-                reject=f"BTC 1h ADX {adx1h:.1f} 低于 {min_adx:.1f}，震荡过滤",
-                steps=trend_steps + [f"结论：ADX不足，说明BTC当前趋势强度不够，继续观察"],
-                funding_rate=funding_rate,
-                change_4h=change_4h,
-                change_1h=change_1h,
-                short_move=short_move,
-            )
-        score = 0.0
-        reasons: list[str] = []
-        side = ""
-        if price > ema15 and closes1h[-1] > ema1h and closes4h[-1] > ema4h and ema1h >= self.ema(closes1h[:-4], 30):
-            side = "LONG"
-            score += 2.0
-            reasons.append("1h/4h多头趋势")
-            if closes15[-2] <= prev_ema15 and price > ema15:
-                score += 1.8
-                reasons.append("15m回踩后重新站上EMA30")
-            elif price > ema15 and abs(price - ema15) / price <= 0.006:
-                score += 1.2
-                reasons.append("15m贴近EMA30顺势")
-            if abs(funding_rate) <= max_funding:
-                score += 1.0
-                reasons.append(f"资金费率不过热 {funding_rate:.3f}%")
-            if adx1h >= min_adx:
-                score += 1.2
-                reasons.append(f"1h ADX {adx1h:.1f} 有趋势")
-        elif price < ema15 and closes1h[-1] < ema1h and closes4h[-1] < ema4h and ema1h <= self.ema(closes1h[:-4], 30):
-            side = "SHORT"
-            score += 2.0
-            reasons.append("1h/4h空头趋势")
-            if closes15[-2] >= prev_ema15 and price < ema15:
-                score += 1.8
-                reasons.append("15m反弹后重新跌破EMA30")
-            elif price < ema15 and abs(price - ema15) / price <= 0.006:
-                score += 1.2
-                reasons.append("15m贴近EMA30顺势")
-            if abs(funding_rate) <= max_funding:
-                score += 1.0
-                reasons.append(f"资金费率不过热 {funding_rate:.3f}%")
-            if adx1h >= min_adx:
-                score += 1.2
-                reasons.append(f"1h ADX {adx1h:.1f} 有趋势")
-        if not side:
-            fallback_side = "LONG" if price >= ema15 else "SHORT"
-            return make_btc_signal(
-                side=fallback_side,
-                score=score,
-                price=price,
-                reject="BTC趋势结构未满足：15m/1h/4h EMA未共振",
-                reasons=reasons,
-                steps=trend_steps + ["结论：多空趋势没有形成15m、1h、4h同向共振，继续观察"],
-                funding_rate=funding_rate,
-                change_4h=change_4h,
-                change_1h=change_1h,
-                short_move=short_move,
-            )
-        mode_reject = self.direction_mode_reject_reason(side)
-        if mode_reject:
-            return make_btc_signal(
-                side=side,
-                score=score,
-                price=price,
-                reject=mode_reject,
-                reasons=reasons,
-                steps=trend_steps + [f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{' / '.join(reasons)}", f"结论：{mode_reject}"],
-                funding_rate=funding_rate,
-                change_4h=change_4h,
-                change_1h=change_1h,
-                short_move=short_move,
-            )
-        min_score = float(self.config.get("btc_min_score", 6.0))
-        if score < min_score:
-            return make_btc_signal(
-                side=side,
-                score=score,
-                price=price,
-                reject=f"BTC策略分 {score:.1f} 低于 {min_score:.1f}",
-                reasons=reasons,
-                steps=trend_steps + [f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{' / '.join(reasons)}", f"结论：分数不足，继续观察"],
-                funding_rate=funding_rate,
-                change_4h=change_4h,
-                change_1h=change_1h,
-                short_move=short_move,
-            )
-        stop_distance = max(atr15 * float(self.config.get("btc_atr_stop_multiplier", 1.5)), price * 0.003)
-        take_distance = stop_distance * float(self.config.get("btc_take_profit_rr", 1.8))
-        if side == "LONG":
-            stop_price = price - stop_distance
-            take_price = price + take_distance
-        else:
-            stop_price = price + stop_distance
-            take_price = price - take_distance
-        rr = take_distance / stop_distance if stop_distance > 0 else 0.0
-        if rr < float(self.config.get("btc_min_rr", 1.5)):
-            return make_btc_signal(
-                side=side,
-                score=score,
-                price=price,
-                reject=f"BTC RR {rr:.2f} 低于 {float(self.config.get('btc_min_rr', 1.5)):.2f}",
-                reasons=reasons,
-                steps=trend_steps + [
-                    f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{' / '.join(reasons)}",
-                    f"风控点位：入场 {price:.2f}，止损 {stop_price:.2f}，止盈 {take_price:.2f}，RR {rr:.2f}",
-                    "结论：盈亏比不足，继续观察",
-                ],
-                funding_rate=funding_rate,
-                change_4h=change_4h,
-                change_1h=change_1h,
-                short_move=short_move,
-                stop_price=stop_price,
-                take_price=take_price,
-            )
-        steps = [
-            f"BTC策略：{self.side_cn(side)}，分数 {score:.1f}，{' / '.join(reasons)}",
-            f"趋势结构：15m EMA30 {ema15:.2f} / 1h EMA30 {ema1h:.2f} / 4h EMA30 {ema4h:.2f}",
-            f"风控点位：入场 {price:.2f}，止损 {stop_price:.2f}，止盈 {take_price:.2f}，RR {rr:.2f}",
-        ]
-        return make_btc_signal(
-            side=side,
-            score=score,
-            price=price,
-            reject="",
-            reasons=reasons,
-            steps=steps,
-            funding_rate=funding_rate,
-            change_4h=change_4h,
-            change_1h=change_1h,
-            short_move=short_move,
-            entry_type="BTC趋势回踩",
-            risk_level="正常",
-            stop_price=stop_price,
-            take_price=take_price,
-        )
-
     def build_signals(self, tickers: list[dict[str, Any]], open_symbols: set[str]) -> list[Signal]:
         signals: list[Signal] = []
-        run_mode = str(self.config.get("strategy_run_mode", "all"))
-        ticker_by_symbol = {str(item.get("symbol", "")): item for item in tickers}
-        btc_signal = self.build_btc_strategy_signal(ticker_by_symbol, open_symbols) if run_mode in {"all", "btc_only"} else None
-        if btc_signal:
-            signals.append(btc_signal)
-        if run_mode == "btc_only":
-            return signals
-
         long_regime = self.market_regime_score("LONG", tickers)
         short_regime = self.market_regime_score("SHORT", tickers)
         candidates = self.build_candidate_pool(tickers)
+        enrich_limit = int(self.config.get("max_kline_enriched_candidates", 8))
+        if enrich_limit <= 0:
+            enrich_limit = min(len(candidates), 8)
+        enriched_count = 0
         for index, candidate in enumerate(candidates):
             item = candidate["item"]
             signal_mode = str(candidate.get("signal_mode", "strong_momentum"))
@@ -4160,10 +3317,7 @@ class PaperBot:
 
             long_score, long_reason = self.score_side("LONG", change, short_move, volume_ratio, trend)
             short_score, short_reason = self.score_side("SHORT", change, short_move, volume_ratio, trend)
-            if signal_mode == "early_breakout":
-                side = "LONG"
-                score, reason = self.score_early_breakout(change, short_move, change_4h, volume_ratio, trend)
-            elif long_score >= short_score:
+            if long_score >= short_score:
                 side, score, reason = "LONG", long_score, long_reason
             else:
                 side, score, reason = "SHORT", short_score, short_reason
@@ -4183,6 +3337,29 @@ class PaperBot:
             else:
                 reject = self.direction_mode_reject_reason(side)
 
+            if not reject and enriched_count < enrich_limit:
+                metrics = self.kline_short_metrics(symbol, price, change)
+                enriched_count += 1
+                price = fnum(metrics.get("price")) or price
+                short_move = fnum(metrics.get("short_move"))
+                change_1h = fnum(metrics.get("change_1h"))
+                change_4h = fnum(metrics.get("change_4h"))
+                volume_ratio = fnum(metrics.get("volume_ratio"), 1.0)
+                trend = str(metrics.get("trend", "neutral"))
+                long_score, long_reason = self.score_side("LONG", change, short_move, volume_ratio, trend)
+                short_score, short_reason = self.score_side("SHORT", change, short_move, volume_ratio, trend)
+                if long_score >= short_score:
+                    side, score, reason = "LONG", long_score, long_reason
+                else:
+                    side, score, reason = "SHORT", short_score, short_reason
+                if score < score_threshold:
+                    reject = f"分数 {score:.1f} 低于阈值 {score_threshold:.1f}"
+                elif side == "LONG" and trend == "down":
+                    reject = "短线趋势反向"
+                elif side == "SHORT" and trend == "up":
+                    reject = "短线趋势反向"
+                else:
+                    reject = self.direction_mode_reject_reason(side)
             priority = "高" if score >= 6 else "中" if score >= 4.5 else "低"
             market_stats = {
                 "open_interest_usdt": volume * 0.22,
@@ -4197,22 +3374,13 @@ class PaperBot:
             }
             market_regime = long_regime if side == "LONG" else short_regime
             heat_level = "normal"
-            heat_reason = ""
-            quality = {"score": 10.0, "label": "关闭", "reason": "入场质量第二关已临时关闭，仅使用系统总分和分析器确认"}
-            timing = {"score": 5.0, "label": "待算", "type": "待开仓计算", "reason": "通过系统分和分析器后，开仓前单独拉取该币K线计算入场类型和仓位"}
             if not reject:
                 try:
-                    if signal_mode != "early_breakout" and index >= 6:
+                    if index >= 6:
                         raise RuntimeError("skip slow derivatives enrichment")
                     market_stats = self.fetch_signal_market_stats(symbol, item)
                 except Exception:
                     pass
-                if signal_mode == "early_breakout":
-                    heat_level, heat_reason = self.early_breakout_heat(market_stats, short_move)
-                    if heat_level == "extreme":
-                        reject = heat_reason
-                    elif heat_level == "weak":
-                        reject = heat_reason
                 if not reject and side == "LONG" and self.config.get("long_structure_confirmation_enabled", False):
                     long_structure = self.long_structure_confirmation(change_4h, change_1h, short_move, trend, volume_ratio, market_stats)
                     if not long_structure.get("passed"):
@@ -4229,7 +3397,6 @@ class PaperBot:
                     and fnum(market_regime.get("score")) < float(self.config.get("market_regime_min_score", 4.5))
                 ):
                     reject = f"市场环境逆风 {fnum(market_regime.get('score')):.1f}/10"
-                # 入场质量第二关临时关闭：保留 OI/资金费率等展示数据，但不计算质量分、不拦截开仓。
             analyzer_direction = "未分析"
             analyzer_confidence = 0.0
             analyzer_reason = ""
@@ -4290,15 +3457,11 @@ class PaperBot:
             )
             decision_steps.insert(-1, f"候选模式：{self.signal_mode_label(signal_mode)}，{mode_reason}")
             decision_steps.insert(-1, f"市场环境：{market_regime.get('label')} {fnum(market_regime.get('score')):.1f}/10，{market_regime.get('reason') or '-'}")
-            if signal_mode == "early_breakout":
-                decision_steps.insert(-1, f"启动热度：{heat_level}，{heat_reason or '-'}")
             if confirmation_mode == "market_score":
                 decision_steps.insert(
                     -1,
                     f"市场确认：{market_confirm.get('label')} {fnum(market_confirm.get('score')):.1f}/10，{market_confirm.get('reason') or '-'}",
                 )
-            decision_steps.insert(-1, f"入场质量：{quality.get('label')} {fnum(quality.get('score')):.1f}，{quality.get('reason') or '-'}")
-            decision_steps.insert(-1, f"入场点：{timing.get('type', '-')} / {timing.get('label')} {fnum(timing.get('score')):.1f}，{timing.get('reason') or '-'}")
             signals.append(
                 Signal(
                     symbol=symbol,
@@ -4320,13 +3483,6 @@ class PaperBot:
                     volume_4h_ratio=round(market_stats["volume_4h_ratio"], 2),
                     taker_long_short_ratio=round(market_stats["taker_long_short_ratio"], 3),
                     oi_volume_ratio=round(market_stats["oi_volume_ratio"], 2),
-                    entry_quality_score=fnum(quality.get("score")),
-                    entry_quality_label=str(quality.get("label", "")),
-                    entry_quality_reason=str(quality.get("reason", "")),
-                    entry_timing_score=fnum(timing.get("score")),
-                    entry_timing_label=str(timing.get("label", "")),
-                    entry_timing_reason=str(timing.get("reason", "")),
-                    entry_type=str(timing.get("type", "")),
                     signal_mode=signal_mode,
                     signal_heat_level=heat_level,
                     market_regime_score=fnum(market_regime.get("score")),
@@ -4346,46 +3502,7 @@ class PaperBot:
         return signals
 
     def score_threshold_for_mode(self, signal_mode: str) -> float:
-        if signal_mode == "early_breakout":
-            return float(self.config.get("early_breakout_score_threshold", 4.0))
         return float(self.config.get("signal_score_threshold", 4.0))
-
-    def score_early_breakout(
-        self,
-        change: float,
-        short_move: float,
-        change_4h: float,
-        volume_ratio: float,
-        trend: str,
-    ) -> tuple[float, str]:
-        score = 0.0
-        reasons: list[str] = []
-        early_min_change = float(self.config.get("early_breakout_min_24h_change_pct", 3.0))
-        early_max_change = float(self.config.get("early_breakout_max_24h_change_pct", 18.0))
-        if early_min_change <= change <= early_max_change:
-            score += 1.2
-            reasons.append(f"24h温和启动 {change:+.1f}%")
-        if 0.8 <= short_move <= 4.5:
-            score += 1.8
-            reasons.append(f"15m放量突破 {short_move:+.1f}%")
-        elif 4.5 < short_move <= 7.5:
-            score += 1.1
-            reasons.append(f"15m加速早启 {short_move:+.1f}%")
-        if 1.0 <= change_4h <= 12.0:
-            score += 1.5
-            reasons.append(f"4h转强 {change_4h:+.1f}%")
-        if trend == "up":
-            score += 1.5
-            reasons.append("短线趋势向上")
-        if 1.4 <= volume_ratio <= 5.5:
-            score += 1.3
-            reasons.append(f"量能启动 {volume_ratio:.2f}x")
-        elif 5.5 < volume_ratio <= 8.5:
-            score += 0.8
-            reasons.append(f"量能加速 {volume_ratio:.2f}x")
-        if not reasons:
-            reasons.append("早启条件不足")
-        return score, " / ".join(reasons)
 
     def score_side(self, side: str, change: float, short_move: float, volume_ratio: float, trend: str) -> tuple[float, str]:
         score = 0.0
@@ -4701,12 +3818,6 @@ class PaperBot:
                 break
             if signal.reject_reason or signal.price <= 0:
                 continue
-            quality_applies = False  # 入场质量第二关临时关闭，仅保留第一关总分和第三关分析器确认。
-            if quality_applies and fnum(signal.entry_quality_score) < float(self.config.get("entry_quality_min_score", 6.0)):
-                quality_reason = f"入场质量 {signal.entry_quality_score:.1f} 未达标：{signal.entry_quality_reason}"
-                self.update_signal_decision(signal, quality_reason, f"开仓前复核：{quality_reason}")
-                self.event("risk", f"{signal.symbol} {quality_reason}，跳过开仓")
-                continue
             blocked_reason = self.blocked_symbol_reject_reason(signal.symbol)
             if blocked_reason:
                 self.update_signal_decision(signal, blocked_reason, f"开仓前复核：{blocked_reason}")
@@ -4728,8 +3839,7 @@ class PaperBot:
                 self.event("warn", f"{signal.symbol} 不在 {self.exchange_label()} 交易对中，跳过")
                 continue
             if (
-                signal.signal_mode != "btc_strategy"
-                and str(self.config.get("confirmation_mode", "market_score")) == "analyzer"
+                str(self.config.get("confirmation_mode", "market_score")) == "analyzer"
                 and self.config.get("analyzer_confirmation_enabled", True)
                 and self.config.get("analyzer_realtime_before_open", True)
             ):
@@ -4751,33 +3861,6 @@ class PaperBot:
                 except Exception as exc:
                     self.update_signal_decision(signal, f"开仓前实时确认失败：{exc}", f"开仓前实时确认失败：{exc}")
                     self.event("error", f"{signal.symbol} 开仓前实时确认失败：{exc}")
-                    continue
-            if signal.signal_mode != "btc_strategy" and self.config.get("entry_timing_enabled", True):
-                try:
-                    self.enrich_signal_entry_timing(signal)
-                except Exception as exc:
-                    signal.entry_timing_score = 5.0
-                    signal.entry_timing_label = "待算失败"
-                    signal.entry_type = "数据不足"
-                    signal.entry_timing_reason = f"开仓前K线读取失败，按小仓处理：{exc}"
-                    signal.decision_steps.append(f"开仓前入场类型：数据不足 / 待算失败 5.0，{exc}")
-                    self.event("warn", f"{signal.symbol} 开仓前入场类型计算失败，按小仓处理：{exc}")
-                min_timing = float(self.config.get("entry_timing_min_score", 3.0))
-                if signal.entry_type == "结构破坏":
-                    timing_reason = f"入场类型结构破坏：{signal.entry_timing_reason}"
-                    self.update_signal_decision(signal, timing_reason, f"开仓前复核：{timing_reason}")
-                    self.event("risk", f"{signal.symbol} {timing_reason}，跳过开仓")
-                    continue
-                small_timing = float(self.config.get("entry_timing_small_score", 4.5))
-                if signal.entry_type == "高位冲刺" and fnum(signal.entry_timing_score) < small_timing:
-                    timing_reason = f"高位冲刺且入场分 {signal.entry_timing_score:.1f} 低于 {small_timing:.1f}：{signal.entry_timing_reason}"
-                    self.update_signal_decision(signal, timing_reason, f"开仓前复核：{timing_reason}")
-                    self.event("risk", f"{signal.symbol} {timing_reason}，跳过开仓")
-                    continue
-                if fnum(signal.entry_timing_score) < min_timing:
-                    timing_reason = f"入场点 {signal.entry_timing_label} {signal.entry_timing_score:.1f} 低于 {min_timing:.1f}：{signal.entry_timing_reason}"
-                    self.update_signal_decision(signal, timing_reason, f"开仓前复核：{timing_reason}")
-                    self.event("risk", f"{signal.symbol} {timing_reason}，跳过开仓")
                     continue
             try:
                 record = self.exchange_open_position(signal, symbol_info)
@@ -4868,50 +3951,6 @@ class PaperBot:
             "daily_realized_pnl_usdt": self.daily_realized_pnl(),
         }
 
-    def entry_type_stats(self) -> list[dict[str, Any]]:
-        buckets: dict[str, dict[str, Any]] = {}
-        for trade in self.today_closed_trades():
-            entry_type = str(trade.get("entry_type") or "未记录")
-            bucket = buckets.setdefault(
-                entry_type,
-                {
-                    "entry_type": entry_type,
-                    "closed_trades": 0,
-                    "wins": 0,
-                    "pnl_usdt": 0.0,
-                    "roi_total": 0.0,
-                    "gross_profit": 0.0,
-                    "gross_loss": 0.0,
-                },
-            )
-            pnl = fnum(trade.get("pnl_usdt"))
-            roi = fnum(trade.get("roi_pct"))
-            bucket["closed_trades"] += 1
-            bucket["pnl_usdt"] += pnl
-            bucket["roi_total"] += roi
-            if pnl > 0:
-                bucket["wins"] += 1
-                bucket["gross_profit"] += pnl
-            elif pnl < 0:
-                bucket["gross_loss"] += abs(pnl)
-        rows = []
-        for bucket in buckets.values():
-            closed = max(1, int(bucket["closed_trades"]))
-            gross_loss = fnum(bucket.get("gross_loss"))
-            gross_profit = fnum(bucket.get("gross_profit"))
-            rows.append(
-                {
-                    "entry_type": bucket["entry_type"],
-                    "closed_trades": int(bucket["closed_trades"]),
-                    "win_rate_pct": bucket["wins"] / closed * 100.0,
-                    "pnl_usdt": bucket["pnl_usdt"],
-                    "avg_roi_pct": bucket["roi_total"] / closed,
-                    "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0),
-                }
-            )
-        rows.sort(key=lambda item: (fnum(item.get("pnl_usdt")), int(item.get("closed_trades", 0))), reverse=True)
-        return rows
-
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
             self.refresh_candidate_analyzer_cache()
@@ -4935,7 +3974,6 @@ class PaperBot:
                     "gross_exposure_usdt": self.gross_exposure(),
                     "exposure_pct": self.exposure_pct(),
                     "max_drawdown_pct": fnum(self.state.get("max_drawdown_pct")),
-                    "entry_type_stats": self.entry_type_stats(),
                     **stats,
                 },
                 "server_time": iso_now(),
@@ -5049,3 +4087,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
+
