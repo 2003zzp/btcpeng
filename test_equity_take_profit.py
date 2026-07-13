@@ -232,6 +232,74 @@ class LongStructureConfirmationTest(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertGreaterEqual(result["score"], 2.5)
 
+    def test_short_structure_uses_configured_threshold(self):
+        bot = self.make_bot()
+        bot.config["short_structure_min_score"] = 5.0
+
+        result = bot.short_structure_confirmation(
+            change_4h=-2.0,
+            change_1h=-2.0,
+            short_move=-1.8,
+            trend="down",
+            volume_ratio=2.0,
+            stats={
+                "taker_long_short_ratio": 1.0,
+                "open_interest_1h_pct": -2.0,
+                "long_short_ratio": 1.0,
+            },
+        )
+
+        self.assertLess(result["score"], 5.0)
+        self.assertFalse(result["passed"])
+
+    def test_short_structure_threshold_can_be_updated_from_settings(self):
+        bot = self.make_bot()
+
+        bot.update_settings({"short_structure_min_score": 4.8})
+
+        self.assertEqual(bot.config["short_structure_min_score"], 4.8)
+
+    def test_short_structure_confirmation_toggle_can_be_updated_from_settings(self):
+        bot = self.make_bot()
+
+        bot.update_settings({"short_structure_confirmation_enabled": "false"})
+
+        self.assertFalse(bot.config["short_structure_confirmation_enabled"])
+
+    def test_pre_start_settings_can_be_updated(self):
+        bot = self.make_bot()
+
+        bot.update_settings(
+            {
+                "pre_start_long_enabled": "true",
+                "pre_start_max_candidates": 6,
+                "pre_start_24h_min_pct": 2.0,
+                "pre_start_market_confirm_min_score": 6.8,
+            }
+        )
+
+        self.assertTrue(bot.config["pre_start_long_enabled"])
+        self.assertEqual(bot.config["pre_start_max_candidates"], 6)
+        self.assertEqual(bot.config["pre_start_24h_min_pct"], 2.0)
+        self.assertEqual(bot.config["pre_start_market_confirm_min_score"], 6.8)
+
+    def test_old_rebound_short_settings_can_be_updated(self):
+        bot = self.make_bot()
+
+        bot.update_settings(
+            {
+                "old_rebound_short_enabled": "true",
+                "old_rebound_short_max_candidates": 5,
+                "old_rebound_short_24h_min_pct": 8.0,
+                "old_rebound_short_confirm_min_score": 6.9,
+            }
+        )
+
+        self.assertTrue(bot.config["old_rebound_short_enabled"])
+        self.assertEqual(bot.config["old_rebound_short_max_candidates"], 5)
+        self.assertEqual(bot.config["old_rebound_short_24h_min_pct"], 8.0)
+        self.assertEqual(bot.config["old_rebound_short_confirm_min_score"], 6.9)
+
 
 class KlineShortMetricsTest(unittest.TestCase):
     def make_bot(self) -> server.PaperBot:
@@ -268,12 +336,29 @@ class KlineShortMetricsTest(unittest.TestCase):
         metrics = bot.kline_short_metrics("4USDT", 100.0, -12.0)
 
         self.assertIn(("4USDT", "15m", 40), calls)
-        self.assertIn(("4USDT", "1h", 40), calls)
+        self.assertIn(("4USDT", "1h", 10), calls)
         self.assertEqual(one_minute_calls, [])
         self.assertTrue(metrics["enriched"])
         self.assertAlmostEqual(metrics["short_move"], -6.0, places=2)
         self.assertAlmostEqual(metrics["change_1h"], server.pct(91.0, 95.0), places=2)
         self.assertEqual(metrics["trend"], "down")
+
+    def test_short_metrics_kline_limits_can_be_configured(self):
+        bot = self.make_bot()
+        bot.config["kline_15m_limit"] = 32
+        bot.config["kline_1h_limit"] = 12
+        calls = []
+
+        def fetch_interval(symbol, interval, limit):
+            calls.append((symbol, interval, limit))
+            return [self.kline(100.0, 1000.0) for _ in range(limit)]
+
+        bot.fetch_klines_interval = fetch_interval
+
+        bot.kline_short_metrics("4USDT", 100.0, -12.0)
+
+        self.assertIn(("4USDT", "15m", 32), calls)
+        self.assertIn(("4USDT", "1h", 12), calls)
 
     def test_strong_candidates_are_not_enriched_in_candidate_pool(self):
         bot = self.make_bot()
@@ -289,6 +374,57 @@ class KlineShortMetricsTest(unittest.TestCase):
         first = next(candidate for candidate in candidates if candidate["item"]["symbol"] == "4USDT")
         self.assertEqual(first["signal_mode"], "strong_momentum")
         self.assertNotIn("metrics", first)
+
+    def test_pre_start_long_candidates_are_added_when_enabled(self):
+        bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["pre_start_max_candidates"] = 8
+
+        candidates = bot.build_candidate_pool(
+            [
+                {"symbol": "CALMUSDT", "lastPrice": "10", "priceChangePercent": "5", "quoteVolume": "50000000"},
+                {"symbol": "HOTUSDT", "lastPrice": "10", "priceChangePercent": "16", "quoteVolume": "60000000"},
+            ]
+        )
+
+        pre_start = next(candidate for candidate in candidates if candidate["item"]["symbol"] == "CALMUSDT")
+        self.assertEqual(pre_start["signal_mode"], "pre_start_long")
+        self.assertEqual(pre_start["mode_reason"], "预启动做多池")
+
+    def test_pre_start_long_candidates_are_disabled_by_default(self):
+        bot = self.make_bot()
+
+        candidates = bot.build_candidate_pool(
+            [{"symbol": "CALMUSDT", "lastPrice": "10", "priceChangePercent": "5", "quoteVolume": "50000000"}]
+        )
+
+        self.assertEqual(candidates, [])
+
+    def test_old_rebound_short_candidates_are_added_when_enabled(self):
+        bot = self.make_bot()
+        bot.config["old_rebound_short_enabled"] = True
+        bot.config["old_rebound_short_max_candidates"] = 4
+
+        candidates = bot.build_candidate_pool(
+            [
+                {"symbol": "OLDUSDT", "lastPrice": "10", "priceChangePercent": "18", "quoteVolume": "25000000"},
+                {"symbol": "NEWUSDT", "lastPrice": "10", "priceChangePercent": "55", "quoteVolume": "50000000"},
+            ]
+        )
+
+        old_short = next(candidate for candidate in candidates if candidate["item"]["symbol"] == "OLDUSDT")
+        self.assertEqual(old_short["signal_mode"], "old_rebound_short")
+        self.assertEqual(old_short["mode_reason"], "老币反弹衰竭做空池")
+
+    def test_old_rebound_short_candidates_are_disabled_by_default(self):
+        bot = self.make_bot()
+
+        candidates = bot.build_candidate_pool(
+            [{"symbol": "OLDUSDT", "lastPrice": "10", "priceChangePercent": "18", "quoteVolume": "25000000"}]
+        )
+
+        self.assertTrue(candidates)
+        self.assertNotIn("old_rebound_short", {candidate["signal_mode"] for candidate in candidates})
 
     def test_build_signals_enriches_only_after_coarse_score_passes(self):
         bot = self.make_bot()
@@ -335,6 +471,309 @@ class KlineShortMetricsTest(unittest.TestCase):
         self.assertEqual(passed.change_1h_pct, -4.0)
         self.assertEqual(passed.side, "SHORT")
         self.assertEqual(failed.change_1h_pct, 0.5)
+
+    def test_pre_start_long_enriches_before_score_reject(self):
+        bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["confirmation_mode"] = "market_score"
+        bot.config["market_regime_filter_enabled"] = False
+        calls = []
+
+        def enrich(symbol, price, change):
+            calls.append(symbol)
+            return {
+                "short_move": 2.0,
+                "change_1h": 3.0,
+                "change_4h": 5.0,
+                "volume_ratio": 2.0,
+                "trend": "up",
+                "price": price,
+                "enriched": True,
+            }
+
+        bot.kline_short_metrics = enrich
+        bot.fetch_signal_market_stats = lambda symbol, item: {
+            "open_interest_usdt": 1000000.0,
+            "open_interest_24h_pct": 10.0,
+            "open_interest_4h_pct": 5.0,
+            "open_interest_1h_pct": 3.0,
+            "funding_rate_pct": 0.01,
+            "long_short_ratio": 1.2,
+            "volume_4h_ratio": 2.0,
+            "taker_long_short_ratio": 1.1,
+            "oi_volume_ratio": 0.1,
+        }
+
+        signals = bot.build_signals(
+            [{"symbol": "CALMUSDT", "lastPrice": "10", "priceChangePercent": "5", "quoteVolume": "50000000"}],
+            set(),
+        )
+
+        signal = next(signal for signal in signals if signal.symbol == "CALMUSDT")
+        self.assertEqual(calls, ["CALMUSDT"])
+        self.assertEqual(signal.signal_mode, "pre_start_long")
+        self.assertEqual(signal.side, "LONG")
+        self.assertEqual(signal.reject_reason, "")
+        self.assertEqual(signal.analyzer_direction, "预启动确认")
+
+    def test_pre_start_long_does_not_reject_on_strong_pool_score_after_enrichment(self):
+        bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["confirmation_mode"] = "market_score"
+        bot.config["market_regime_filter_enabled"] = False
+        bot.kline_short_metrics = lambda symbol, price, change: {
+            "short_move": 0.5,
+            "change_1h": 1.0,
+            "change_4h": 1.5,
+            "volume_ratio": 1.6,
+            "trend": "up",
+            "price": price,
+            "enriched": True,
+        }
+        bot.fetch_signal_market_stats = lambda symbol, item: {
+            "open_interest_usdt": 1000000.0,
+            "open_interest_24h_pct": 5.0,
+            "open_interest_4h_pct": 2.0,
+            "open_interest_1h_pct": 1.0,
+            "funding_rate_pct": 0.01,
+            "long_short_ratio": 1.2,
+            "volume_4h_ratio": 1.6,
+            "taker_long_short_ratio": 1.1,
+            "oi_volume_ratio": 0.1,
+        }
+
+        signals = bot.build_signals(
+            [
+                {
+                    "symbol": "EARLYSLOWUSDT",
+                    "lastPrice": "10",
+                    "highPrice": "10.4",
+                    "priceChangePercent": "5",
+                    "quoteVolume": "50000000",
+                }
+            ],
+            set(),
+        )
+
+        signal = next(signal for signal in signals if signal.symbol == "EARLYSLOWUSDT")
+        self.assertEqual(signal.signal_mode, "pre_start_long")
+        self.assertLess(signal.score, float(bot.config["signal_score_threshold"]))
+        self.assertEqual(signal.reject_reason, "")
+        self.assertGreaterEqual(signal.analyzer_confidence_pct, 65.0)
+
+    def test_pre_start_long_rejects_overheated_15m_move(self):
+        bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["confirmation_mode"] = "market_score"
+        bot.config["market_regime_filter_enabled"] = False
+        bot.kline_short_metrics = lambda symbol, price, change: {
+            "short_move": 6.0,
+            "change_1h": 7.0,
+            "change_4h": 8.0,
+            "volume_ratio": 2.0,
+            "trend": "up",
+            "price": price,
+            "enriched": True,
+        }
+        bot.fetch_signal_market_stats = lambda symbol, item: {
+            "open_interest_usdt": 1000000.0,
+            "open_interest_24h_pct": 10.0,
+            "open_interest_4h_pct": 5.0,
+            "open_interest_1h_pct": 3.0,
+            "funding_rate_pct": 0.01,
+            "long_short_ratio": 1.2,
+            "volume_4h_ratio": 2.0,
+            "taker_long_short_ratio": 1.1,
+            "oi_volume_ratio": 0.1,
+        }
+
+        signals = bot.build_signals(
+            [{"symbol": "FASTUSDT", "lastPrice": "10", "priceChangePercent": "5", "quoteVolume": "50000000"}],
+            set(),
+        )
+
+        signal = next(signal for signal in signals if signal.symbol == "FASTUSDT")
+        self.assertIn("预启动15m涨幅", signal.reject_reason)
+
+    def test_pre_start_long_uses_independent_confirmation_score(self):
+        bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["confirmation_mode"] = "market_score"
+        bot.config["market_regime_filter_enabled"] = False
+        bot.kline_short_metrics = lambda symbol, price, change: {
+            "short_move": 1.5,
+            "change_1h": 2.5,
+            "change_4h": 3.0,
+            "volume_ratio": 2.2,
+            "trend": "up",
+            "price": price,
+            "enriched": True,
+        }
+        bot.fetch_signal_market_stats = lambda symbol, item: {
+            "open_interest_usdt": 1000000.0,
+            "open_interest_24h_pct": 8.0,
+            "open_interest_4h_pct": 4.0,
+            "open_interest_1h_pct": 2.0,
+            "funding_rate_pct": 0.01,
+            "long_short_ratio": 1.2,
+            "volume_4h_ratio": 2.0,
+            "taker_long_short_ratio": 1.1,
+            "oi_volume_ratio": 0.1,
+        }
+        bot.market_confirmation_score = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generic market confirmation should be skipped"))
+
+        signals = bot.build_signals(
+            [
+                {
+                    "symbol": "EARLYUSDT",
+                    "lastPrice": "10",
+                    "highPrice": "10.5",
+                    "priceChangePercent": "5",
+                    "quoteVolume": "50000000",
+                }
+            ],
+            set(),
+        )
+
+        signal = next(signal for signal in signals if signal.symbol == "EARLYUSDT")
+        self.assertEqual(signal.reject_reason, "")
+        self.assertEqual(signal.analyzer_direction, "预启动确认")
+        self.assertGreaterEqual(signal.analyzer_confidence_pct, 65.0)
+
+    def test_short_signal_rejects_late_waterfall_after_large_24h_high_drawdown(self):
+        bot = self.make_bot()
+        bot.config["confirmation_mode"] = "market_score"
+        bot.config["market_regime_filter_enabled"] = False
+        bot.config["short_max_24h_high_drawdown_pct"] = 75.0
+        bot.kline_short_metrics = lambda symbol, price, change: {
+            "short_move": -5.0,
+            "change_1h": -4.0,
+            "change_4h": -8.0,
+            "volume_ratio": 2.0,
+            "trend": "down",
+            "price": price,
+            "enriched": True,
+        }
+        bot.fetch_signal_market_stats = lambda symbol, item: {
+            "open_interest_usdt": 1000000.0,
+            "open_interest_24h_pct": -5.0,
+            "open_interest_4h_pct": -4.0,
+            "open_interest_1h_pct": 3.0,
+            "funding_rate_pct": 0.0,
+            "long_short_ratio": 1.6,
+            "volume_4h_ratio": 2.0,
+            "taker_long_short_ratio": 0.8,
+            "oi_volume_ratio": 0.1,
+        }
+
+        signals = bot.build_signals(
+            [
+                {
+                    "symbol": "TACUSDT",
+                    "lastPrice": "20",
+                    "highPrice": "100",
+                    "priceChangePercent": "-80",
+                    "quoteVolume": "50000000",
+                }
+            ],
+            set(),
+        )
+
+        signal = next(signal for signal in signals if signal.symbol == "TACUSDT")
+        self.assertEqual(signal.side, "SHORT")
+        self.assertIn("24h", signal.reject_reason)
+        self.assertIn("80.0%", signal.reject_reason)
+
+    def test_build_signals_skips_short_structure_when_disabled(self):
+        bot = self.make_bot()
+        bot.config["confirmation_mode"] = "market_score"
+        bot.config["market_regime_filter_enabled"] = False
+        bot.config["short_structure_confirmation_enabled"] = False
+        bot.kline_short_metrics = lambda symbol, price, change: {
+            "short_move": -5.0,
+            "change_1h": -4.0,
+            "change_4h": -8.0,
+            "volume_ratio": 2.0,
+            "trend": "down",
+            "price": price,
+            "enriched": True,
+        }
+        bot.fetch_signal_market_stats = lambda symbol, item: {
+            "open_interest_usdt": 1000000.0,
+            "open_interest_24h_pct": -5.0,
+            "open_interest_4h_pct": -4.0,
+            "open_interest_1h_pct": 3.0,
+            "funding_rate_pct": 0.0,
+            "long_short_ratio": 1.6,
+            "volume_4h_ratio": 2.0,
+            "taker_long_short_ratio": 0.8,
+            "oi_volume_ratio": 0.1,
+        }
+        bot.short_structure_confirmation = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("short structure should be skipped"))
+
+        signals = bot.build_signals(
+            [{"symbol": "DROPUSDT", "lastPrice": "91", "highPrice": "130", "priceChangePercent": "-12", "quoteVolume": "50000000"}],
+            set(),
+        )
+
+        signal = next(signal for signal in signals if signal.symbol == "DROPUSDT")
+        self.assertNotIn("结构破坏", signal.reject_reason)
+
+
+    def test_old_rebound_short_forces_kline_and_uses_independent_confirmation(self):
+        bot = self.make_bot()
+        bot.config["old_rebound_short_enabled"] = True
+        bot.config["confirmation_mode"] = "market_score"
+        bot.config["market_regime_filter_enabled"] = False
+        bot.config["short_structure_confirmation_enabled"] = False
+        calls = []
+
+        def enrich(symbol, price, change):
+            calls.append(symbol)
+            return {
+                "short_move": -0.8,
+                "change_1h": -1.2,
+                "change_4h": 3.0,
+                "volume_ratio": 2.0,
+                "trend": "down",
+                "price": price,
+                "enriched": True,
+            }
+
+        bot.kline_short_metrics = enrich
+        bot.fetch_signal_market_stats = lambda symbol, item: {
+            "open_interest_usdt": 1000000.0,
+            "open_interest_24h_pct": 15.0,
+            "open_interest_4h_pct": 6.0,
+            "open_interest_1h_pct": 2.0,
+            "funding_rate_pct": 0.03,
+            "long_short_ratio": 1.8,
+            "volume_4h_ratio": 2.0,
+            "taker_long_short_ratio": 0.88,
+            "oi_volume_ratio": 0.1,
+        }
+        bot.has_symbol_history = lambda symbol, days: True
+        bot.market_confirmation_score = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generic market confirmation should be skipped"))
+
+        signals = bot.build_signals(
+            [
+                {
+                    "symbol": "OLDUSDT",
+                    "lastPrice": "10",
+                    "highPrice": "12",
+                    "priceChangePercent": "18",
+                    "quoteVolume": "25000000",
+                }
+            ],
+            set(),
+        )
+
+        signal = next(signal for signal in signals if signal.symbol == "OLDUSDT")
+        self.assertEqual(calls, ["OLDUSDT"])
+        self.assertEqual(signal.signal_mode, "old_rebound_short")
+        self.assertEqual(signal.side, "SHORT")
+        self.assertEqual(signal.reject_reason, "")
+        self.assertEqual(signal.analyzer_direction, "老币反弹确认")
 
 
 class RemovedStrategyControlsTest(unittest.TestCase):
@@ -412,6 +851,48 @@ class RemovedStrategyControlsTest(unittest.TestCase):
         self.assertEqual(plan["margin_usdt"], 9.0)
         self.assertEqual(plan["target_leverage"], 5)
         self.assertEqual(plan["tier"], "fixed")
+
+    def test_position_plan_uses_pre_start_margin_and_leverage(self):
+        bot = self.make_bot(
+            '{"margin_per_trade_usdt": 9, "leverage": 5, "pre_start_margin_per_trade_usdt": 3, "pre_start_leverage": 2}'
+        )
+        signal = self.make_signal()
+        signal.signal_mode = "pre_start_long"
+
+        plan = bot.position_plan(signal, available=20.0)
+
+        self.assertEqual(plan["margin_usdt"], 3.0)
+        self.assertEqual(plan["target_leverage"], 2)
+        self.assertEqual(plan["tier"], "pre_start_fixed")
+
+    def test_position_plan_uses_old_rebound_short_margin_and_leverage(self):
+        bot = self.make_bot(
+            '{"margin_per_trade_usdt": 9, "leverage": 5, "old_rebound_short_margin_per_trade_usdt": 4, "old_rebound_short_leverage": 2}'
+        )
+        signal = self.make_signal()
+        signal.signal_mode = "old_rebound_short"
+
+        plan = bot.position_plan(signal, available=20.0)
+
+        self.assertEqual(plan["margin_usdt"], 4.0)
+        self.assertEqual(plan["target_leverage"], 2)
+        self.assertEqual(plan["tier"], "old_rebound_short_fixed")
+
+    def test_pre_start_margin_and_leverage_can_be_updated(self):
+        bot = self.make_bot("{}")
+
+        bot.update_settings({"pre_start_margin_per_trade_usdt": 4.5, "pre_start_leverage": 3})
+
+        self.assertEqual(bot.config["pre_start_margin_per_trade_usdt"], 4.5)
+        self.assertEqual(bot.config["pre_start_leverage"], 3)
+
+    def test_old_rebound_short_margin_and_leverage_can_be_updated(self):
+        bot = self.make_bot("{}")
+
+        bot.update_settings({"old_rebound_short_margin_per_trade_usdt": 4.5, "old_rebound_short_leverage": 3})
+
+        self.assertEqual(bot.config["old_rebound_short_margin_per_trade_usdt"], 4.5)
+        self.assertEqual(bot.config["old_rebound_short_leverage"], 3)
 
     def test_removed_strategy_controls_are_ignored_by_settings_update(self):
         bot = self.make_bot(

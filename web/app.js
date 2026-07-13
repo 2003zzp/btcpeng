@@ -83,12 +83,32 @@ function normalizeSettingsLabels() {
   const labelTextMap = {
     margin_per_trade_usdt: "基础开仓保证金 (U)",
     leverage: "最高杠杆上限",
+    pre_start_margin_per_trade_usdt: "预启动保证金 (U)",
+    pre_start_leverage: "预启动杠杆上限",
     take_profit_roi_pct: "初始止盈 ROI (%)",
     stop_loss_roi_pct: "初始止损 ROI (%)",
     max_candidates_per_scan: "候选币数量",
+    pre_start_max_candidates: "预启动候选数",
+    pre_start_24h_min_pct: "预启动24h下限 (%)",
+    pre_start_24h_max_pct: "预启动24h上限 (%)",
+    pre_start_15m_min_pct: "预启动15m下限 (%)",
+    pre_start_15m_max_pct: "预启动15m上限 (%)",
+    pre_start_1h_min_pct: "预启动1h下限 (%)",
+    pre_start_1h_max_pct: "预启动1h上限 (%)",
+    pre_start_volume_ratio_min: "预启动量能下限",
+    pre_start_volume_ratio_max: "预启动量能上限",
+    pre_start_taker_ratio_min: "预启动主动买入下限",
+    pre_start_oi_1h_min_pct: "预启动OI 1h下限 (%)",
+    pre_start_funding_abs_max_pct: "预启动资金费率上限 (%)",
+    pre_start_long_short_max: "预启动多空比上限",
+    pre_start_market_confirm_min_score: "预启动确认分阈值",
     market_confirm_min_score: "市场确认分阈值",
     short_market_confirm_min_score: "做空确认分阈值",
+    short_max_24h_high_drawdown_pct: "做空最大回撤限制 (%)",
+    kline_15m_limit: "15m K线根数",
+    kline_1h_limit: "1h K线根数",
     long_structure_min_score: "做多结构最低分",
+    short_structure_min_score: "做空结构最低分",
     market_regime_min_score: "市场环境最低分",
   };
   for (const [name, textValue] of Object.entries(labelTextMap)) {
@@ -100,17 +120,23 @@ function normalizeSettingsLabels() {
     }
   }
   const toggles = {
+    old_rebound_short_enabled: "启用老币反弹做空池",
     analyzer_realtime_before_open: "启用分析器二次确认",
     equity_take_profit_enabled: "启用总资产止盈全平",
     take_profit_cooldown_enabled: "启用止盈冷静期",
     market_regime_filter_enabled: "启用市场环境过滤",
     long_structure_confirmation_enabled: "启用做多结构确认",
+    short_structure_confirmation_enabled: "启用做空结构确认",
+    pre_start_long_enabled: "启用预启动做多池",
   };
   for (const [name, textValue] of Object.entries(toggles)) {
     const input = els.form?.elements?.[name];
     const label = input?.closest("label");
     if (!label) continue;
     label.classList.add("settings-check");
+    for (const node of [...label.childNodes]) {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) node.textContent = "";
+    }
     let text = label.querySelector("span");
     if (!text) {
       text = document.createElement("span");
@@ -122,6 +148,23 @@ function normalizeSettingsLabels() {
   if (realtimeLabel) {
     realtimeLabel.title = "开启后，候选通过后下单前会再次实时跑分析器；关闭后，只使用候选阶段已经通过的分析器结果，开仓更快。";
   }
+  const preStartLongLabel = els.form?.elements?.pre_start_long_enabled?.closest("label");
+  if (preStartLongLabel) {
+    preStartLongLabel.title = "默认关闭。开启后额外筛选24h温和上涨、15m/1h刚启动且资金面健康的做多候选，适合先观察几天效果。";
+  }
+  const preStartConfirmLabel = els.form?.elements?.pre_start_market_confirm_min_score?.closest("label");
+  if (preStartConfirmLabel) {
+    preStartConfirmLabel.title = "预启动做多池使用的市场确认分阈值，默认6.5。数值越高越保守。";
+  }
+  const preStartMarginLabel = els.form?.elements?.pre_start_margin_per_trade_usdt?.closest("label");
+  if (preStartMarginLabel) {
+    preStartMarginLabel.title = "仅用于预启动做多池的单笔开仓保证金。止盈止损ROI仍沿用全局止盈/止损参数。";
+  }
+  const preStartLeverageLabel = els.form?.elements?.pre_start_leverage?.closest("label");
+  if (preStartLeverageLabel) {
+    preStartLeverageLabel.title = "仅用于预启动做多池的杠杆上限。交易所不支持时仍会自动降档。";
+  }
+
   const confirmationModeLabel = els.form?.elements?.confirmation_mode?.closest("label");
   if (confirmationModeLabel) {
     confirmationModeLabel.title = "市场确认分使用趋势、动量、量能、OI、资金费率、多空比和主动成交替代黑盒置信度；分析器置信度则切回原来的脚本确认。";
@@ -134,13 +177,33 @@ function normalizeSettingsLabels() {
   if (shortMarketConfirmLabel) {
     shortMarketConfirmLabel.title = "妖币强波动池做空的第三关阈值。做空更看重结构破坏，建议比做多略高，例如7.5。";
   }
+  const shortMaxDrawdownLabel = els.form?.elements?.short_max_24h_high_drawdown_pct?.closest("label");
+  if (shortMaxDrawdownLabel) {
+    shortMaxDrawdownLabel.title = "当前价相对24h最高价的最大允许回撤。超过该值时，即使做空结构和确认分达标，也会禁止追空，默认75%。";
+  }
+  const kline15mLimitLabel = els.form?.elements?.kline_15m_limit?.closest("label");
+  if (kline15mLimitLabel) {
+    kline15mLimitLabel.title = "候选通过系统分粗筛后，拉取真实15m K线的根数。默认40根。";
+  }
+  const kline1hLimitLabel = els.form?.elements?.kline_1h_limit?.closest("label");
+  if (kline1hLimitLabel) {
+    kline1hLimitLabel.title = "候选通过系统分粗筛后，拉取真实1h K线的根数。默认10根。";
+  }
   const longStructureLabel = els.form?.elements?.long_structure_confirmation_enabled?.closest("label");
   if (longStructureLabel) {
     longStructureLabel.title = "开启后，做多候选还要通过上涨结构确认；只过滤明显跌破结构、放量滞涨、主动买入不足等坏结构，不惩罚妖币常见强势过热。";
   }
+  const shortStructureLabel = els.form?.elements?.short_structure_confirmation_enabled?.closest("label");
+  if (shortStructureLabel) {
+    shortStructureLabel.title = "默认开启。关闭后，做空候选不再检查做空结构破坏分，但仍会经过做空最大回撤、市场环境、市场确认分和风控。";
+  }
   const longStructureScoreLabel = els.form?.elements?.long_structure_min_score?.closest("label");
   if (longStructureScoreLabel) {
     longStructureScoreLabel.title = "做多结构确认满分按4分理解，默认2.5；分数越低代表上涨结构越可能已经被破坏。";
+  }
+  const shortStructureScoreLabel = els.form?.elements?.short_structure_min_score?.closest("label");
+  if (shortStructureScoreLabel) {
+    shortStructureScoreLabel.title = "做空结构破坏确认最低分，默认4.0。调高会减少追空，调低会放宽做空结构门槛。";
   }
   const marketRegimeLabel = els.form?.elements?.market_regime_filter_enabled?.closest("label");
   if (marketRegimeLabel) {
@@ -736,6 +799,67 @@ function renderCooldowns(rows) {
     .join("");
 }
 
+function candidateModeBadge(row) {
+  const mode = String(row.signal_mode || "strong_momentum");
+  if (mode === "pre_start_long") {
+    return { text: "预启动做多", className: "mode-pre-start" };
+  }
+  if (mode === "old_rebound_short") {
+    return { text: "老币做空", className: "mode-old-short" };
+  }
+  return { text: "强波动", className: "mode-strong" };
+}
+
+function candidateConfirmThreshold(row) {
+  const config = currentState?.config || {};
+  const mode = String(row.signal_mode || "strong_momentum");
+  if (mode === "pre_start_long") {
+    return Number(config.pre_start_market_confirm_min_score || 6.5);
+  }
+  if (mode === "old_rebound_short") {
+    return Number(config.old_rebound_short_confirm_min_score || 6.8);
+  }
+  if (row.side === "SHORT") {
+    return Number(config.short_market_confirm_min_score || 7.5);
+  }
+  return Number(config.market_confirm_min_score || 7);
+}
+
+function candidateConfirmDisplay(row, confidenceThreshold) {
+  const config = currentState?.config || {};
+  const confirmationMode = String(config.confirmation_mode || "market_score");
+  const value = Number(row.analyzer_confidence_pct || 0);
+  if (confirmationMode === "market_score") {
+    const threshold = candidateConfirmThreshold(row);
+    return {
+      text: `${(value / 10).toFixed(1)}/10`,
+      passed: value >= threshold * 10,
+      title: `确认分阈值 ${threshold.toFixed(1)}/10`,
+    };
+  }
+  return {
+    text: `${value.toFixed(1)}%`,
+    passed: value > confidenceThreshold,
+    title: `分析器阈值 ${confidenceThreshold.toFixed(1)}%`,
+  };
+}
+
+function candidatePrimaryScore(row) {
+  const mode = String(row.signal_mode || "strong_momentum");
+  const systemScore = Number(row.score || 0);
+  const confirmScore = Number(row.analyzer_confidence_pct || 0) / 10;
+  if ((mode === "pre_start_long" || mode === "old_rebound_short") && confirmScore > 0) {
+    return {
+      text: confirmScore.toFixed(1),
+      title: `池子确认分 ${confirmScore.toFixed(1)}/10；强波动系统分 ${systemScore.toFixed(1)}`,
+    };
+  }
+  return {
+    text: systemScore.toFixed(1),
+    title: `强波动系统分 ${systemScore.toFixed(1)}`,
+  };
+}
+
 function renderCandidates(rows) {
   if (!els.candidateRows) return;
   if (!rows.length) {
@@ -749,26 +873,21 @@ function renderCandidates(rows) {
       const decisionTitle = decisionSteps.length ? decisionSteps.join("\n") : row.decision_summary || reject;
       const decisionText = row.decision_summary || reject;
       const riskCls = row.risk_level === "危险" ? "risk-high" : row.risk_level === "注意" ? "risk-watch" : "risk-ok";
-      const modeText = "强波动";
+      const modeBadge = candidateModeBadge(row);
       const confidenceThreshold = Number(currentState?.config?.analyzer_min_confidence_pct || 90);
-      const isMarketConfirm = row.analyzer_direction === "市场确认";
-      const confirmValue = Number(row.analyzer_confidence_pct || 0);
-      const confirmThreshold = row.side === "SHORT"
-        ? Number(currentState?.config?.short_market_confirm_min_score || 7.5)
-        : Number(currentState?.config?.market_confirm_min_score || 7);
-      const confirmPassed = isMarketConfirm ? confirmValue >= confirmThreshold * 10 : confirmValue > confidenceThreshold;
-      const confirmText = isMarketConfirm ? `${(confirmValue / 10).toFixed(1)}/10` : `${confirmValue.toFixed(1)}%`;
       const regimeScore = Number(row.market_regime_score || 0);
       const regimeText = row.market_regime_label ? `${row.market_regime_label} ${regimeScore.toFixed(1)}` : "-";
       const nextAction = candidateNextAction(row, confidenceThreshold);
+      const confirmDisplay = candidateConfirmDisplay(row, confidenceThreshold);
+      const primaryScore = candidatePrimaryScore(row);
       return `
         <tr>
           <td>${row.symbol}</td>
-          <td><span class="score-badge">${modeText}</span></td>
-          <td><span class="score-badge">${Number(row.score || 0).toFixed(1)}</span></td>
+          <td><span class="score-badge mode-badge ${modeBadge.className}" title="${titleText(row.signal_mode || "strong_momentum")}">${escapeHtml(modeBadge.text)}</span></td>
+          <td><span class="score-badge" title="${titleText(primaryScore.title)}">${primaryScore.text}</span></td>
           <td>${sidePill(row.side)}</td>
           <td>${row.analyzer_direction || "-"}</td>
-          <td class="${confirmPassed ? "positive" : "danger"}">${confirmText}</td>
+          <td class="${confirmDisplay.passed ? "positive" : "danger"}" title="${titleText(confirmDisplay.title)}">${confirmDisplay.text}</td>
           <td title="${titleText(row.market_regime_reason || "-")}"><span class="score-badge">${escapeHtml(regimeText)}</span></td>
           <td><span class="next-action" title="${titleText(decisionTitle)}">${escapeHtml(nextAction)}</span></td>
           <td>${reject}</td>

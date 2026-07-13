@@ -66,6 +66,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "confirmation_mode": "market_score",
     "market_confirm_min_score": 7.0,
     "short_market_confirm_min_score": 7.5,
+    "short_max_24h_high_drawdown_pct": 75.0,
+    "short_structure_confirmation_enabled": True,
+    "short_structure_min_score": 4.0,
     "long_structure_confirmation_enabled": False,
     "long_structure_min_score": 2.5,
     "market_regime_filter_enabled": True,
@@ -80,7 +83,44 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pending_open_queue_enabled": True,
     "pending_open_queue_ttl_sec": 180,
     "max_candidates_per_scan": 18,
+    "pre_start_long_enabled": False,
+    "pre_start_max_candidates": 8,
+    "pre_start_24h_min_pct": 1.0,
+    "pre_start_24h_max_pct": 12.0,
+    "pre_start_15m_min_pct": 0.4,
+    "pre_start_15m_max_pct": 4.0,
+    "pre_start_1h_min_pct": 0.8,
+    "pre_start_1h_max_pct": 8.0,
+    "pre_start_volume_ratio_min": 1.5,
+    "pre_start_volume_ratio_max": 5.0,
+    "pre_start_taker_ratio_min": 1.05,
+    "pre_start_oi_1h_min_pct": 0.0,
+    "pre_start_funding_abs_max_pct": 0.06,
+    "pre_start_long_short_max": 2.5,
+    "pre_start_market_confirm_min_score": 6.5,
+    "pre_start_margin_per_trade_usdt": 3.0,
+    "pre_start_leverage": 2,
+    "old_rebound_short_enabled": False,
+    "old_rebound_short_max_candidates": 8,
+    "old_rebound_short_24h_min_pct": 8.0,
+    "old_rebound_short_24h_max_pct": 35.0,
+    "old_rebound_short_min_quote_volume_usdt": 5_000_000,
+    "old_rebound_short_max_quote_volume_usdt": 80_000_000,
+    "old_rebound_short_min_history_days": 365,
+    "old_rebound_short_15m_max_pct": 0.3,
+    "old_rebound_short_1h_max_pct": 0.5,
+    "old_rebound_short_volume_ratio_min": 0.8,
+    "old_rebound_short_volume_ratio_max": 6.0,
+    "old_rebound_short_taker_ratio_max": 0.95,
+    "old_rebound_short_long_short_min": 1.2,
+    "old_rebound_short_oi_1h_min_pct": -5.0,
+    "old_rebound_short_funding_abs_max_pct": 0.08,
+    "old_rebound_short_confirm_min_score": 6.8,
+    "old_rebound_short_margin_per_trade_usdt": 3.0,
+    "old_rebound_short_leverage": 2,
     "max_kline_enriched_candidates": 8,
+    "kline_15m_limit": 40,
+    "kline_1h_limit": 10,
     "max_new_positions_per_scan": 2,
     "margin_per_trade_usdt": 9.0,
     "leverage": 3,
@@ -1351,6 +1391,43 @@ class PaperBot:
             "stop_loss_cooldown_minutes": int,
             "scan_interval_sec": int,
             "max_candidates_per_scan": int,
+            "pre_start_long_enabled": str,
+            "pre_start_max_candidates": int,
+            "pre_start_24h_min_pct": float,
+            "pre_start_24h_max_pct": float,
+            "pre_start_15m_min_pct": float,
+            "pre_start_15m_max_pct": float,
+            "pre_start_1h_min_pct": float,
+            "pre_start_1h_max_pct": float,
+            "pre_start_volume_ratio_min": float,
+            "pre_start_volume_ratio_max": float,
+            "pre_start_taker_ratio_min": float,
+            "pre_start_oi_1h_min_pct": float,
+            "pre_start_funding_abs_max_pct": float,
+            "pre_start_long_short_max": float,
+            "pre_start_market_confirm_min_score": float,
+            "pre_start_margin_per_trade_usdt": float,
+            "pre_start_leverage": int,
+            "old_rebound_short_enabled": str,
+            "old_rebound_short_max_candidates": int,
+            "old_rebound_short_24h_min_pct": float,
+            "old_rebound_short_24h_max_pct": float,
+            "old_rebound_short_min_quote_volume_usdt": float,
+            "old_rebound_short_max_quote_volume_usdt": float,
+            "old_rebound_short_min_history_days": int,
+            "old_rebound_short_15m_max_pct": float,
+            "old_rebound_short_1h_max_pct": float,
+            "old_rebound_short_volume_ratio_min": float,
+            "old_rebound_short_volume_ratio_max": float,
+            "old_rebound_short_taker_ratio_max": float,
+            "old_rebound_short_long_short_min": float,
+            "old_rebound_short_oi_1h_min_pct": float,
+            "old_rebound_short_funding_abs_max_pct": float,
+            "old_rebound_short_confirm_min_score": float,
+            "old_rebound_short_margin_per_trade_usdt": float,
+            "old_rebound_short_leverage": int,
+            "kline_15m_limit": int,
+            "kline_1h_limit": int,
             "max_open_positions": int,
             "max_exposure_pct": float,
             "max_daily_profit_enabled": str,
@@ -1364,6 +1441,9 @@ class PaperBot:
             "confirmation_mode": str,
             "market_confirm_min_score": float,
             "short_market_confirm_min_score": float,
+            "short_max_24h_high_drawdown_pct": float,
+            "short_structure_confirmation_enabled": str,
+            "short_structure_min_score": float,
             "long_structure_confirmation_enabled": str,
             "long_structure_min_score": float,
             "market_regime_filter_enabled": str,
@@ -1384,7 +1464,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "analyzer_realtime_before_open", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "take_profit_cooldown_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "analyzer_realtime_before_open", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "old_rebound_short_enabled", "take_profit_cooldown_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -1399,26 +1479,58 @@ class PaperBot:
                         value = "market_score"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "scan_interval_sec", "max_candidates_per_scan", "max_open_positions", "max_new_positions_per_scan", "telegram_hourly_status_interval_minutes"}:
+                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "scan_interval_sec", "max_candidates_per_scan", "pre_start_max_candidates", "old_rebound_short_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan", "telegram_hourly_status_interval_minutes"}:
                     value = max(1, int(value))
                 if key == "previous_day_equity_usdt":
                     value = max(0.0, float(value))
                 if key in {
                     "margin_per_trade_usdt",
+                    "pre_start_margin_per_trade_usdt",
+                    "old_rebound_short_margin_per_trade_usdt",
                     "take_profit_roi_pct",
                     "stop_loss_roi_pct",
                     "signal_score_threshold",
                     "market_confirm_min_score",
                     "short_market_confirm_min_score",
+                    "pre_start_market_confirm_min_score",
+                    "short_max_24h_high_drawdown_pct",
+                    "short_structure_min_score",
                     "long_structure_min_score",
                     "market_regime_min_score",
                     "analyzer_min_confidence_pct",
+                    "pre_start_24h_min_pct",
+                    "pre_start_24h_max_pct",
+                    "pre_start_15m_min_pct",
+                    "pre_start_15m_max_pct",
+                    "pre_start_1h_min_pct",
+                    "pre_start_1h_max_pct",
+                    "pre_start_volume_ratio_min",
+                    "pre_start_volume_ratio_max",
+                    "pre_start_taker_ratio_min",
+                    "pre_start_funding_abs_max_pct",
+                    "pre_start_long_short_max",
+                    "old_rebound_short_24h_min_pct",
+                    "old_rebound_short_24h_max_pct",
+                    "old_rebound_short_min_quote_volume_usdt",
+                    "old_rebound_short_max_quote_volume_usdt",
+                    "old_rebound_short_15m_max_pct",
+                    "old_rebound_short_1h_max_pct",
+                    "old_rebound_short_volume_ratio_min",
+                    "old_rebound_short_volume_ratio_max",
+                    "old_rebound_short_taker_ratio_max",
+                    "old_rebound_short_long_short_min",
+                    "old_rebound_short_funding_abs_max_pct",
+                    "old_rebound_short_confirm_min_score",
                     "max_exposure_pct",
                     "max_daily_profit_usdt",
                     "max_daily_loss_usdt",
                     "equity_take_profit_usdt",
                 }:
                     value = max(0.01, float(value))
+                if key == "pre_start_oi_1h_min_pct":
+                    value = float(value)
+                if key == "old_rebound_short_oi_1h_min_pct":
+                    value = float(value)
                 self.config[key] = value
             save_json(self.config_path, self.config)
             if any(key in patch for key in {"equity_take_profit_enabled", "previous_day_equity_usdt", "equity_take_profit_usdt"}):
@@ -2202,8 +2314,20 @@ class PaperBot:
         raise RuntimeError(f"{symbol} 无法设置杠杆：{last_error}")
 
     def position_plan(self, signal: Signal, available: float) -> dict[str, Any]:
-        base_margin = float(self.config.get("margin_per_trade_usdt", 9.0))
-        target_leverage = max(1, int(self.config.get("leverage", 3)))
+        is_pre_start = signal.signal_mode == "pre_start_long"
+        is_old_rebound_short = signal.signal_mode == "old_rebound_short"
+        if is_pre_start:
+            base_margin = float(self.config.get("pre_start_margin_per_trade_usdt", self.config.get("margin_per_trade_usdt", 9.0)))
+            target_leverage = max(1, int(self.config.get("pre_start_leverage", self.config.get("leverage", 3))))
+            tier = "pre_start_fixed"
+        elif is_old_rebound_short:
+            base_margin = float(self.config.get("old_rebound_short_margin_per_trade_usdt", self.config.get("margin_per_trade_usdt", 9.0)))
+            target_leverage = max(1, int(self.config.get("old_rebound_short_leverage", self.config.get("leverage", 3))))
+            tier = "old_rebound_short_fixed"
+        else:
+            base_margin = float(self.config.get("margin_per_trade_usdt", 9.0))
+            target_leverage = max(1, int(self.config.get("leverage", 3)))
+            tier = "fixed"
         margin = min(base_margin, available)
         reason = f"fixed_margin={margin:.2f}U, target_leverage={target_leverage}x"
         signal.decision_steps.append(f"仓位计划：{reason}")
@@ -2211,7 +2335,7 @@ class PaperBot:
             "margin_usdt": margin,
             "target_leverage": target_leverage,
             "margin_multiplier": 1.0,
-            "tier": "fixed",
+            "tier": tier,
             "reason": reason,
         }
     def exchange_open_position(self, signal: Signal, symbol_info: dict[str, Any]) -> dict[str, Any] | None:
@@ -2505,6 +2629,10 @@ class PaperBot:
         return "注意"
 
     def market_confirm_min_score_for_mode(self, signal_mode: str = "", side: str = "") -> float:
+        if signal_mode == "pre_start_long":
+            return float(self.config.get("pre_start_market_confirm_min_score", 6.5))
+        if signal_mode == "old_rebound_short":
+            return float(self.config.get("old_rebound_short_confirm_min_score", 6.8))
         if side == "SHORT":
             return float(self.config.get("short_market_confirm_min_score", 7.5))
         return float(self.config.get("market_confirm_min_score", 7.0))
@@ -2649,7 +2777,8 @@ class PaperBot:
         if long_short >= 1.4 and taker_ratio <= 0.96:
             score += 0.4
             reasons.append("多头拥挤被动回撤")
-        passed = score >= 4.0
+        threshold = float(self.config.get("short_structure_min_score", 4.0))
+        passed = score >= threshold
         return {"score": round(max(0.0, min(6.0, score)), 1), "passed": passed, "reason": " / ".join(reasons[:8]) or "未见明确结构破坏"}
 
     def long_structure_confirmation(
@@ -2911,6 +3040,152 @@ class PaperBot:
         if score >= 7.5:
             label = "强确认"
         elif score >= self.market_confirm_min_score_for_mode(signal_mode, side):
+            label = "通过"
+        elif score >= 5.0:
+            label = "偏弱"
+        else:
+            label = "不足"
+        return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:8])}
+
+    def pre_start_confirmation_score(
+        self,
+        change_24h: float,
+        change_1h: float,
+        short_move: float,
+        volume_ratio: float,
+        trend: str,
+        stats: dict[str, float],
+        price: float,
+        high_24h: float,
+    ) -> dict[str, Any]:
+        score = 0.0
+        reasons: list[str] = []
+        min_24h = float(self.config.get("pre_start_24h_min_pct", 1.0))
+        max_24h = float(self.config.get("pre_start_24h_max_pct", 12.0))
+        min_15m = float(self.config.get("pre_start_15m_min_pct", 0.4))
+        max_15m = float(self.config.get("pre_start_15m_max_pct", 4.0))
+        min_1h = float(self.config.get("pre_start_1h_min_pct", 0.8))
+        max_1h = float(self.config.get("pre_start_1h_max_pct", 8.0))
+        min_volume = float(self.config.get("pre_start_volume_ratio_min", 1.5))
+        max_volume = float(self.config.get("pre_start_volume_ratio_max", 5.0))
+        min_taker = float(self.config.get("pre_start_taker_ratio_min", 1.05))
+        min_oi = float(self.config.get("pre_start_oi_1h_min_pct", 0.0))
+        max_funding = float(self.config.get("pre_start_funding_abs_max_pct", 0.06))
+        max_long_short = float(self.config.get("pre_start_long_short_max", 2.5))
+
+        if min_24h <= change_24h <= max_24h:
+            score += 1.0
+            reasons.append(f"24h温和启动 {change_24h:+.1f}%")
+        if min_15m <= short_move <= max_15m:
+            score += 1.5
+            reasons.append(f"15m温和推进 {short_move:+.1f}%")
+        if min_1h <= change_1h <= max_1h:
+            score += 1.5
+            reasons.append(f"1h温和推进 {change_1h:+.1f}%")
+        if trend == "up":
+            score += 1.0
+            reasons.append("短线趋势向上")
+        if min_volume <= volume_ratio <= max_volume:
+            score += 1.2
+            reasons.append(f"量能刚放大 {volume_ratio:.1f}x")
+
+        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
+        oi_1h = fnum(stats.get("open_interest_1h_pct"))
+        funding = abs(fnum(stats.get("funding_rate_pct")))
+        long_short = fnum(stats.get("long_short_ratio"), 1.0)
+        if taker_ratio >= min_taker:
+            score += 1.2
+            reasons.append(f"主动买入转强 {taker_ratio:.2f}")
+        if oi_1h >= min_oi:
+            score += 0.8
+            reasons.append(f"OI跟随 {oi_1h:+.1f}%")
+        if funding <= max_funding:
+            score += 0.8
+            reasons.append(f"资金费率未过热 {funding:.3f}%")
+        if 0.75 <= long_short <= max_long_short:
+            score += 0.7
+            reasons.append(f"多空比未拥挤 {long_short:.2f}")
+        if high_24h > 0 and price > 0:
+            distance_from_high = max(0.0, -pct(price, high_24h))
+            if distance_from_high >= 1.0:
+                score += 0.3
+                reasons.append(f"距离24h高点 {distance_from_high:.1f}%")
+
+        score = max(0.0, min(10.0, score))
+        threshold = float(self.config.get("pre_start_market_confirm_min_score", 6.5))
+        if score >= 8.0:
+            label = "强确认"
+        elif score >= threshold:
+            label = "通过"
+        elif score >= 5.0:
+            label = "偏弱"
+        else:
+            label = "不足"
+        return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:8])}
+
+    def old_rebound_short_confirmation_score(
+        self,
+        change_24h: float,
+        change_1h: float,
+        short_move: float,
+        volume_ratio: float,
+        trend: str,
+        stats: dict[str, float],
+    ) -> dict[str, Any]:
+        score = 0.0
+        reasons: list[str] = []
+        min_24h = float(self.config.get("old_rebound_short_24h_min_pct", 8.0))
+        max_24h = float(self.config.get("old_rebound_short_24h_max_pct", 35.0))
+        max_15m = float(self.config.get("old_rebound_short_15m_max_pct", 0.3))
+        max_1h = float(self.config.get("old_rebound_short_1h_max_pct", 0.5))
+        min_volume = float(self.config.get("old_rebound_short_volume_ratio_min", 0.8))
+        max_volume = float(self.config.get("old_rebound_short_volume_ratio_max", 6.0))
+        max_taker = float(self.config.get("old_rebound_short_taker_ratio_max", 0.95))
+        min_oi = float(self.config.get("old_rebound_short_oi_1h_min_pct", -5.0))
+        max_funding = float(self.config.get("old_rebound_short_funding_abs_max_pct", 0.08))
+        min_long_short = float(self.config.get("old_rebound_short_long_short_min", 1.2))
+
+        if min_24h <= change_24h <= max_24h:
+            score += 1.0
+            reasons.append(f"老币24h反弹 {change_24h:+.1f}%")
+        if short_move <= max_15m:
+            score += 1.3
+            reasons.append(f"15m开始转弱 {short_move:+.1f}%")
+        if change_1h <= max_1h:
+            score += 1.2
+            reasons.append(f"1h反弹衰竭 {change_1h:+.1f}%")
+        if trend == "down":
+            score += 1.0
+            reasons.append("短线趋势转下")
+        elif trend != "up":
+            score += 0.4
+            reasons.append("短线不再上推")
+        if min_volume <= volume_ratio <= max_volume:
+            score += 0.6
+            reasons.append(f"量能可交易 {volume_ratio:.1f}x")
+
+        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
+        oi_1h = fnum(stats.get("open_interest_1h_pct"))
+        funding = abs(fnum(stats.get("funding_rate_pct")))
+        long_short = fnum(stats.get("long_short_ratio"), 1.0)
+        if taker_ratio <= max_taker:
+            score += 1.3
+            reasons.append(f"主动卖出占优 {taker_ratio:.2f}")
+        if oi_1h >= min_oi:
+            score += 0.7
+            reasons.append(f"OI未快速撤退 {oi_1h:+.1f}%")
+        if funding <= max_funding:
+            score += 0.6
+            reasons.append(f"费率可接受 {funding:.3f}%")
+        if long_short >= min_long_short:
+            score += 1.0
+            reasons.append(f"多头拥挤 {long_short:.2f}")
+
+        score = max(0.0, min(10.0, score))
+        threshold = float(self.config.get("old_rebound_short_confirm_min_score", 6.8))
+        if score >= 8.0:
+            label = "强确认"
+        elif score >= threshold:
             label = "通过"
         elif score >= 5.0:
             label = "偏弱"
@@ -3200,6 +3475,8 @@ class PaperBot:
         return result
 
     def signal_mode_label(self, signal_mode: str) -> str:
+        if signal_mode == "pre_start_long":
+            return "预启动做多"
         return "强波动"
 
     def fallback_short_metrics(self, change: float) -> dict[str, Any]:
@@ -3213,11 +3490,102 @@ class PaperBot:
             "enriched": False,
         }
 
+    def pre_start_kline_reject_reason(self, short_move: float, change_1h: float, volume_ratio: float, trend: str) -> str:
+        min_15m = float(self.config.get("pre_start_15m_min_pct", 0.4))
+        max_15m = float(self.config.get("pre_start_15m_max_pct", 4.0))
+        min_1h = float(self.config.get("pre_start_1h_min_pct", 0.8))
+        max_1h = float(self.config.get("pre_start_1h_max_pct", 8.0))
+        min_volume = float(self.config.get("pre_start_volume_ratio_min", 1.5))
+        max_volume = float(self.config.get("pre_start_volume_ratio_max", 5.0))
+        if trend != "up":
+            return "预启动趋势未向上"
+        if short_move < min_15m:
+            return f"预启动15m涨幅 {short_move:.1f}% 低于 {min_15m:.1f}%"
+        if short_move > max_15m:
+            return f"预启动15m涨幅 {short_move:.1f}% 高于 {max_15m:.1f}%"
+        if change_1h < min_1h:
+            return f"预启动1h涨幅 {change_1h:.1f}% 低于 {min_1h:.1f}%"
+        if change_1h > max_1h:
+            return f"预启动1h涨幅 {change_1h:.1f}% 高于 {max_1h:.1f}%"
+        if volume_ratio < min_volume:
+            return f"预启动量能 {volume_ratio:.1f}x 低于 {min_volume:.1f}x"
+        if volume_ratio > max_volume:
+            return f"预启动量能 {volume_ratio:.1f}x 高于 {max_volume:.1f}x"
+        return ""
+
+    def pre_start_market_stats_reject_reason(self, stats: dict[str, float]) -> str:
+        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
+        oi_1h = fnum(stats.get("open_interest_1h_pct"))
+        funding = abs(fnum(stats.get("funding_rate_pct")))
+        long_short = fnum(stats.get("long_short_ratio"), 1.0)
+        min_taker = float(self.config.get("pre_start_taker_ratio_min", 1.05))
+        min_oi = float(self.config.get("pre_start_oi_1h_min_pct", 0.0))
+        max_funding = float(self.config.get("pre_start_funding_abs_max_pct", 0.06))
+        max_long_short = float(self.config.get("pre_start_long_short_max", 2.5))
+        if taker_ratio < min_taker:
+            return f"预启动主动买入不足 {taker_ratio:.2f}/{min_taker:.2f}"
+        if oi_1h < min_oi:
+            return f"预启动OI未跟随 {oi_1h:+.1f}%/{min_oi:+.1f}%"
+        if funding > max_funding:
+            return f"预启动资金费率过热 {funding:.3f}%/{max_funding:.3f}%"
+        if long_short > max_long_short:
+            return f"预启动多空比过热 {long_short:.2f}/{max_long_short:.2f}"
+        return ""
+
+    def has_symbol_history(self, symbol: str, min_days: int) -> bool:
+        if min_days <= 0:
+            return True
+        try:
+            klines = self.fetch_klines_interval(symbol, "1d", min(1000, max(1, min_days)))
+            return len(klines) >= min_days
+        except Exception:
+            return False
+
+    def old_rebound_short_kline_reject_reason(self, symbol: str, short_move: float, change_1h: float, volume_ratio: float, trend: str) -> str:
+        min_days = int(self.config.get("old_rebound_short_min_history_days", 365))
+        max_15m = float(self.config.get("old_rebound_short_15m_max_pct", 0.3))
+        max_1h = float(self.config.get("old_rebound_short_1h_max_pct", 0.5))
+        min_volume = float(self.config.get("old_rebound_short_volume_ratio_min", 0.8))
+        max_volume = float(self.config.get("old_rebound_short_volume_ratio_max", 6.0))
+        if not self.has_symbol_history(symbol, min_days):
+            return f"老币反弹历史不足 {min_days} 天"
+        if trend == "up" and short_move > 0 and change_1h > 0:
+            return "老币反弹仍在短线推升"
+        if short_move > max_15m:
+            return f"老币反弹15m未转弱 {short_move:.1f}%/{max_15m:.1f}%"
+        if change_1h > max_1h:
+            return f"老币反弹1h未转弱 {change_1h:.1f}%/{max_1h:.1f}%"
+        if volume_ratio < min_volume:
+            return f"老币反弹量能不足 {volume_ratio:.1f}x/{min_volume:.1f}x"
+        if volume_ratio > max_volume:
+            return f"老币反弹量能过热 {volume_ratio:.1f}x/{max_volume:.1f}x"
+        return ""
+
+    def old_rebound_short_market_stats_reject_reason(self, stats: dict[str, float]) -> str:
+        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
+        oi_1h = fnum(stats.get("open_interest_1h_pct"))
+        funding = abs(fnum(stats.get("funding_rate_pct")))
+        long_short = fnum(stats.get("long_short_ratio"), 1.0)
+        max_taker = float(self.config.get("old_rebound_short_taker_ratio_max", 0.95))
+        min_oi = float(self.config.get("old_rebound_short_oi_1h_min_pct", -5.0))
+        max_funding = float(self.config.get("old_rebound_short_funding_abs_max_pct", 0.08))
+        min_long_short = float(self.config.get("old_rebound_short_long_short_min", 1.2))
+        if taker_ratio > max_taker:
+            return f"老币反弹主动卖出不足 {taker_ratio:.2f}/{max_taker:.2f}"
+        if oi_1h < min_oi:
+            return f"老币反弹OI撤退过快 {oi_1h:+.1f}%/{min_oi:+.1f}%"
+        if funding > max_funding:
+            return f"老币反弹资金费率过热 {funding:.3f}%/{max_funding:.3f}%"
+        if long_short < min_long_short:
+            return f"老币反弹多头拥挤不足 {long_short:.2f}/{min_long_short:.2f}"
+        return ""
+
     def kline_short_metrics(self, symbol: str, fallback_price: float, change: float) -> dict[str, Any]:
         metrics = self.fallback_short_metrics(change)
         metrics["price"] = fallback_price
         try:
-            klines15 = self.fetch_klines_interval(symbol, "15m", 40)
+            limit_15m = max(2, int(self.config.get("kline_15m_limit", 40)))
+            klines15 = self.fetch_klines_interval(symbol, "15m", limit_15m)
             closes15 = [fnum(k[4]) for k in klines15]
             volumes15 = [fnum(k[7]) for k in klines15]
             if closes15:
@@ -3234,7 +3602,8 @@ class PaperBot:
         except Exception:
             pass
         try:
-            klines1h = self.fetch_klines_interval(symbol, "1h", 40)
+            limit_1h = max(5, int(self.config.get("kline_1h_limit", 10)))
+            klines1h = self.fetch_klines_interval(symbol, "1h", limit_1h)
             closes1h = [fnum(k[4]) for k in klines1h]
             if closes1h:
                 metrics["price"] = closes1h[-1] or metrics["price"] or fallback_price
@@ -3255,6 +3624,8 @@ class PaperBot:
         min_volume = float(self.config.get("min_quote_volume_usdt", 0))
         min_abs_change = float(self.config.get("min_abs_24h_change_pct", 0))
         max_candidates = int(self.config.get("max_candidates_per_scan", 18))
+        pre_start_limit = int(self.config.get("pre_start_max_candidates", 8))
+        old_rebound_limit = int(self.config.get("old_rebound_short_max_candidates", 8))
         direction_mode = str(self.config.get("trade_direction_mode", "both"))
 
         def change_allowed(change: float) -> bool:
@@ -3265,9 +3636,31 @@ class PaperBot:
             return abs(change) >= min_abs_change
 
         pool: dict[str, dict[str, Any]] = {}
+        if self.config.get("old_rebound_short_enabled", False) and direction_mode != "long_only" and old_rebound_limit > 0:
+            old_min_change = float(self.config.get("old_rebound_short_24h_min_pct", 8.0))
+            old_max_change = float(self.config.get("old_rebound_short_24h_max_pct", 35.0))
+            old_min_volume = float(self.config.get("old_rebound_short_min_quote_volume_usdt", 5_000_000))
+            old_max_volume = float(self.config.get("old_rebound_short_max_quote_volume_usdt", 80_000_000))
+            old_rebound = []
+            for item in tickers:
+                change = fnum(item.get("priceChangePercent"))
+                volume = fnum(item.get("quoteVolume"))
+                if old_min_change <= change <= old_max_change and old_min_volume <= volume <= old_max_volume:
+                    old_rebound.append(item)
+            old_rebound.sort(
+                key=lambda x: (
+                    -fnum(x.get("priceChangePercent")),
+                    fnum(x.get("quoteVolume")),
+                )
+            )
+            for item in old_rebound[:old_rebound_limit]:
+                pool[str(item.get("symbol", ""))] = {"item": item, "signal_mode": "old_rebound_short", "mode_reason": "老币反弹衰竭做空池"}
+
         strong = []
         for item in tickers:
             symbol = str(item.get("symbol", ""))
+            if symbol in pool:
+                continue
             change = fnum(item.get("priceChangePercent"))
             volume = fnum(item.get("quoteVolume"))
             if symbol in watchlist or (volume >= min_volume and change_allowed(change)):
@@ -3281,14 +3674,41 @@ class PaperBot:
         for item in strong[:max_candidates]:
             pool[str(item.get("symbol", ""))] = {"item": item, "signal_mode": "strong_momentum", "mode_reason": "24h强波动池"}
 
+        if self.config.get("pre_start_long_enabled", False) and direction_mode != "short_only" and pre_start_limit > 0:
+            min_24h = float(self.config.get("pre_start_24h_min_pct", 1.0))
+            max_24h = float(self.config.get("pre_start_24h_max_pct", 12.0))
+            pre_start = []
+            for item in tickers:
+                symbol = str(item.get("symbol", ""))
+                if symbol in pool:
+                    continue
+                change = fnum(item.get("priceChangePercent"))
+                volume = fnum(item.get("quoteVolume"))
+                if volume >= min_volume and min_24h <= change <= max_24h:
+                    pre_start.append(item)
+            pre_start.sort(
+                key=lambda x: (
+                    -fnum(x.get("quoteVolume")),
+                    fnum(x.get("priceChangePercent")),
+                )
+            )
+            for item in pre_start[:pre_start_limit]:
+                pool[str(item.get("symbol", ""))] = {"item": item, "signal_mode": "pre_start_long", "mode_reason": "预启动做多池"}
+
         candidates = list(pool.values())
         candidates.sort(
             key=lambda row: (
+                0 if row.get("signal_mode") == "pre_start_long" else 1 if row.get("signal_mode") == "old_rebound_short" else 2,
                 -fnum(row["item"].get("quoteVolume")),
                 -abs(fnum(row["item"].get("priceChangePercent"))),
             )
         )
-        return candidates[: max_candidates]
+        extra_limit = 0
+        if self.config.get("pre_start_long_enabled", False):
+            extra_limit += pre_start_limit
+        if self.config.get("old_rebound_short_enabled", False):
+            extra_limit += old_rebound_limit
+        return candidates[: max_candidates + extra_limit]
 
     def build_signals(self, tickers: list[dict[str, Any]], open_symbols: set[str]) -> list[Signal]:
         signals: list[Signal] = []
@@ -3302,6 +3722,8 @@ class PaperBot:
         for index, candidate in enumerate(candidates):
             item = candidate["item"]
             signal_mode = str(candidate.get("signal_mode", "strong_momentum"))
+            is_pre_start_long = signal_mode == "pre_start_long"
+            is_old_rebound_short = signal_mode == "old_rebound_short"
             mode_reason = str(candidate.get("mode_reason", self.signal_mode_label(signal_mode)))
             symbol = item["symbol"]
             price = fnum(item.get("lastPrice"))
@@ -3317,7 +3739,11 @@ class PaperBot:
 
             long_score, long_reason = self.score_side("LONG", change, short_move, volume_ratio, trend)
             short_score, short_reason = self.score_side("SHORT", change, short_move, volume_ratio, trend)
-            if long_score >= short_score:
+            if is_pre_start_long:
+                side, score, reason = "LONG", long_score, long_reason
+            elif is_old_rebound_short:
+                side, score, reason = "SHORT", short_score, short_reason
+            elif long_score >= short_score:
                 side, score, reason = "LONG", long_score, long_reason
             else:
                 side, score, reason = "SHORT", short_score, short_reason
@@ -3328,16 +3754,16 @@ class PaperBot:
                 reject = "已有持仓"
             elif self.blocked_symbol_reject_reason(symbol):
                 reject = self.blocked_symbol_reject_reason(symbol)
-            elif score < score_threshold:
+            elif score < score_threshold and not (is_pre_start_long or is_old_rebound_short):
                 reject = f"分数 {score:.1f} 低于阈值 {score_threshold:.1f}"
             elif side == "LONG" and trend == "down":
                 reject = "短线趋势反向"
-            elif side == "SHORT" and trend == "up":
+            elif side == "SHORT" and trend == "up" and not is_old_rebound_short:
                 reject = "短线趋势反向"
             else:
                 reject = self.direction_mode_reject_reason(side)
 
-            if not reject and enriched_count < enrich_limit:
+            if not reject and (enriched_count < enrich_limit or is_pre_start_long or is_old_rebound_short):
                 metrics = self.kline_short_metrics(symbol, price, change)
                 enriched_count += 1
                 price = fnum(metrics.get("price")) or price
@@ -3348,18 +3774,26 @@ class PaperBot:
                 trend = str(metrics.get("trend", "neutral"))
                 long_score, long_reason = self.score_side("LONG", change, short_move, volume_ratio, trend)
                 short_score, short_reason = self.score_side("SHORT", change, short_move, volume_ratio, trend)
-                if long_score >= short_score:
+                if is_pre_start_long:
+                    side, score, reason = "LONG", long_score, long_reason
+                elif is_old_rebound_short:
+                    side, score, reason = "SHORT", short_score, short_reason
+                elif long_score >= short_score:
                     side, score, reason = "LONG", long_score, long_reason
                 else:
                     side, score, reason = "SHORT", short_score, short_reason
-                if score < score_threshold:
+                if score < score_threshold and not (is_pre_start_long or is_old_rebound_short):
                     reject = f"分数 {score:.1f} 低于阈值 {score_threshold:.1f}"
                 elif side == "LONG" and trend == "down":
                     reject = "短线趋势反向"
-                elif side == "SHORT" and trend == "up":
+                elif side == "SHORT" and trend == "up" and not is_old_rebound_short:
                     reject = "短线趋势反向"
                 else:
                     reject = self.direction_mode_reject_reason(side)
+                if not reject and is_pre_start_long:
+                    reject = self.pre_start_kline_reject_reason(short_move, change_1h, volume_ratio, trend)
+                if not reject and is_old_rebound_short:
+                    reject = self.old_rebound_short_kline_reject_reason(symbol, short_move, change_1h, volume_ratio, trend)
             priority = "高" if score >= 6 else "中" if score >= 4.5 else "低"
             market_stats = {
                 "open_interest_usdt": volume * 0.22,
@@ -3376,21 +3810,32 @@ class PaperBot:
             heat_level = "normal"
             if not reject:
                 try:
-                    if index >= 6:
+                    if index >= 6 and not (is_pre_start_long or is_old_rebound_short):
                         raise RuntimeError("skip slow derivatives enrichment")
                     market_stats = self.fetch_signal_market_stats(symbol, item)
                 except Exception:
                     pass
+                if not reject and is_pre_start_long:
+                    reject = self.pre_start_market_stats_reject_reason(market_stats)
+                if not reject and is_old_rebound_short:
+                    reject = self.old_rebound_short_market_stats_reject_reason(market_stats)
                 if not reject and side == "LONG" and self.config.get("long_structure_confirmation_enabled", False):
                     long_structure = self.long_structure_confirmation(change_4h, change_1h, short_move, trend, volume_ratio, market_stats)
                     if not long_structure.get("passed"):
                         reject = f"做多结构确认不足 {fnum(long_structure.get('score')):.1f}/{float(self.config.get('long_structure_min_score', 2.5)):.1f}"
                     mode_reason = f"{mode_reason}；做多结构：{long_structure.get('reason', '-')}"
-                if not reject and side == "SHORT":
+                if not reject and side == "SHORT" and self.config.get("short_structure_confirmation_enabled", True):
                     short_structure = self.short_structure_confirmation(change_4h, change_1h, short_move, trend, volume_ratio, market_stats)
                     if not short_structure.get("passed"):
-                        reject = f"做空结构破坏不足 {fnum(short_structure.get('score')):.1f}/4.0"
+                        reject = f"做空结构破坏不足 {fnum(short_structure.get('score')):.1f}/{float(self.config.get('short_structure_min_score', 4.0)):.1f}"
                     mode_reason = f"{mode_reason}；做空结构：{short_structure.get('reason', '-')}"
+                if not reject and side == "SHORT":
+                    high_24h = fnum(item.get("highPrice"))
+                    max_drawdown = float(self.config.get("short_max_24h_high_drawdown_pct", 75.0))
+                    if high_24h > 0 and max_drawdown > 0:
+                        drawdown_from_high = max(0.0, -pct(price, high_24h))
+                        if drawdown_from_high >= max_drawdown:
+                            reject = f"24h高点回撤 {drawdown_from_high:.1f}% 超过 {max_drawdown:.1f}%，禁止追空"
                 if (
                     not reject
                     and self.config.get("market_regime_filter_enabled", True)
@@ -3404,24 +3849,47 @@ class PaperBot:
             should_update_analyzer = not reject or reject == "已有持仓"
             confirmation_mode = str(self.config.get("confirmation_mode", "market_score"))
             if should_update_analyzer and not reject and confirmation_mode == "market_score":
-                market_confirm = self.market_confirmation_score(
-                    side,
-                    signal_mode,
-                    change,
-                    change_4h,
-                    change_1h,
-                    short_move,
-                    volume_ratio,
-                    trend,
-                    market_stats,
-                )
+                if is_pre_start_long:
+                    market_confirm = self.pre_start_confirmation_score(
+                        change,
+                        change_1h,
+                        short_move,
+                        volume_ratio,
+                        trend,
+                        market_stats,
+                        price,
+                        fnum(item.get("highPrice")),
+                    )
+                elif is_old_rebound_short:
+                    market_confirm = self.old_rebound_short_confirmation_score(
+                        change,
+                        change_1h,
+                        short_move,
+                        volume_ratio,
+                        trend,
+                        market_stats,
+                    )
+                else:
+                    market_confirm = self.market_confirmation_score(
+                        side,
+                        signal_mode,
+                        change,
+                        change_4h,
+                        change_1h,
+                        short_move,
+                        volume_ratio,
+                        trend,
+                        market_stats,
+                    )
                 confirm_score = fnum(market_confirm.get("score"))
                 confirm_min = self.market_confirm_min_score_for_mode(signal_mode, side)
-                analyzer_direction = "市场确认"
+                analyzer_direction = "预启动确认" if is_pre_start_long else "市场确认"
                 analyzer_confidence = confirm_score * 10
+                if is_old_rebound_short:
+                    analyzer_direction = "老币反弹确认"
                 analyzer_reason = str(market_confirm.get("reason", ""))
                 if confirm_score < confirm_min:
-                    reject = f"市场确认分 {confirm_score:.1f} 低于 {confirm_min:.1f}"
+                    reject = f"{analyzer_direction}分 {confirm_score:.1f} 低于 {confirm_min:.1f}"
             elif should_update_analyzer and confirmation_mode == "analyzer" and self.config.get("analyzer_confirmation_enabled", True):
                 original_reject = reject
                 try:
@@ -4087,8 +4555,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-
-

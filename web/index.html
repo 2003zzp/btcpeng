@@ -172,6 +172,22 @@
               <input name="leverage" type="number" min="1" max="20" step="1" />
             </label>
             <label>
+              预启动保证金 (U)
+              <input name="pre_start_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
+            </label>
+            <label>
+              预启动杠杆 (1-20X)
+              <input name="pre_start_leverage" type="number" min="1" max="20" step="1" />
+            </label>
+            <label>
+              老币反弹保证金 (U)
+              <input name="old_rebound_short_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
+            </label>
+            <label>
+              老币反弹杠杆 (1-20X)
+              <input name="old_rebound_short_leverage" type="number" min="1" max="20" step="1" />
+            </label>
+            <label>
               止盈 ROI (%)
               <input name="take_profit_roi_pct" type="number" min="1" step="1" />
             </label>
@@ -194,6 +210,131 @@
             <label>
               候选币数量
               <input name="max_candidates_per_scan" type="number" min="1" step="1" />
+            </label>
+            <label class="settings-check">
+              <input name="pre_start_long_enabled" type="checkbox" />
+              <span>启用预启动做多池</span>
+            </label>
+            <label>
+              预启动候选数
+              <input name="pre_start_max_candidates" type="number" min="1" max="30" step="1" />
+            </label>
+            <label>
+              预启动24h下限 (%)
+              <input name="pre_start_24h_min_pct" type="number" min="0" max="100" step="0.1" />
+            </label>
+            <label>
+              预启动24h上限 (%)
+              <input name="pre_start_24h_max_pct" type="number" min="0" max="100" step="0.1" />
+            </label>
+            <label>
+              预启动15m下限 (%)
+              <input name="pre_start_15m_min_pct" type="number" min="0" max="50" step="0.1" />
+            </label>
+            <label>
+              预启动15m上限 (%)
+              <input name="pre_start_15m_max_pct" type="number" min="0" max="50" step="0.1" />
+            </label>
+            <label>
+              预启动1h下限 (%)
+              <input name="pre_start_1h_min_pct" type="number" min="0" max="100" step="0.1" />
+            </label>
+            <label>
+              预启动1h上限 (%)
+              <input name="pre_start_1h_max_pct" type="number" min="0" max="100" step="0.1" />
+            </label>
+            <label>
+              预启动量能下限
+              <input name="pre_start_volume_ratio_min" type="number" min="0.1" max="50" step="0.1" />
+            </label>
+            <label>
+              预启动量能上限
+              <input name="pre_start_volume_ratio_max" type="number" min="0.1" max="50" step="0.1" />
+            </label>
+            <label>
+              预启动主动买入下限
+              <input name="pre_start_taker_ratio_min" type="number" min="0.1" max="10" step="0.01" />
+            </label>
+            <label>
+              预启动OI 1h下限 (%)
+              <input name="pre_start_oi_1h_min_pct" type="number" min="-100" max="200" step="0.1" />
+            </label>
+            <label>
+              预启动资金费率上限 (%)
+              <input name="pre_start_funding_abs_max_pct" type="number" min="0" max="1" step="0.001" />
+            </label>
+            <label>
+              预启动多空比上限
+              <input name="pre_start_long_short_max" type="number" min="0.1" max="20" step="0.1" />
+            </label>
+            <label>
+              预启动确认分阈值
+              <input name="pre_start_market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
+            </label>
+            <label>
+              交易方向
+              <input name="old_rebound_short_enabled" type="checkbox" />
+              <span>启用老币反弹做空池</span>
+            </label>
+            <label>
+              老币反弹候选数
+              <input name="old_rebound_short_max_candidates" type="number" min="1" max="30" step="1" />
+            </label>
+            <label>
+              老币反弹24h下限 (%)
+              <input name="old_rebound_short_24h_min_pct" type="number" min="0" max="200" step="0.1" />
+            </label>
+            <label>
+              老币反弹24h上限 (%)
+              <input name="old_rebound_short_24h_max_pct" type="number" min="0" max="300" step="0.1" />
+            </label>
+            <label>
+              老币最少历史天数
+              <input name="old_rebound_short_min_history_days" type="number" min="0" max="1500" step="1" />
+            </label>
+            <label>
+              老币最小成交额 (U)
+              <input name="old_rebound_short_min_quote_volume_usdt" type="number" min="0" step="100000" />
+            </label>
+            <label>
+              老币最大成交额 (U)
+              <input name="old_rebound_short_max_quote_volume_usdt" type="number" min="0" step="100000" />
+            </label>
+            <label>
+              老币15m转弱上限 (%)
+              <input name="old_rebound_short_15m_max_pct" type="number" min="-50" max="50" step="0.1" />
+            </label>
+            <label>
+              老币1h转弱上限 (%)
+              <input name="old_rebound_short_1h_max_pct" type="number" min="-100" max="100" step="0.1" />
+            </label>
+            <label>
+              老币量能下限
+              <input name="old_rebound_short_volume_ratio_min" type="number" min="0.1" max="50" step="0.1" />
+            </label>
+            <label>
+              老币量能上限
+              <input name="old_rebound_short_volume_ratio_max" type="number" min="0.1" max="50" step="0.1" />
+            </label>
+            <label>
+              老币主动买卖比上限
+              <input name="old_rebound_short_taker_ratio_max" type="number" min="0.1" max="10" step="0.01" />
+            </label>
+            <label>
+              老币多空比下限
+              <input name="old_rebound_short_long_short_min" type="number" min="0.1" max="20" step="0.1" />
+            </label>
+            <label>
+              老币OI 1h下限 (%)
+              <input name="old_rebound_short_oi_1h_min_pct" type="number" min="-100" max="200" step="0.1" />
+            </label>
+            <label>
+              老币资金费率上限 (%)
+              <input name="old_rebound_short_funding_abs_max_pct" type="number" min="0" max="1" step="0.001" />
+            </label>
+            <label>
+              老币反弹确认分阈值
+              <input name="old_rebound_short_confirm_min_score" type="number" min="0" max="10" step="0.1" />
             </label>
             <label>
               交易方向
@@ -227,8 +368,24 @@
               <input name="short_market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
             </label>
             <label>
+              做空最大回撤限制 (%)
+              <input name="short_max_24h_high_drawdown_pct" type="number" min="1" max="99" step="0.1" />
+            </label>
+            <label>
+              15m K线根数
+              <input name="kline_15m_limit" type="number" min="2" max="200" step="1" />
+            </label>
+            <label>
+              1h K线根数
+              <input name="kline_1h_limit" type="number" min="5" max="200" step="1" />
+            </label>
+            <label>
               做多结构最低分
               <input name="long_structure_min_score" type="number" min="0" max="4" step="0.1" />
+            </label>
+            <label>
+              做空结构最低分
+              <input name="short_structure_min_score" type="number" min="0" max="6" step="0.1" />
             </label>
             <label>
               市场环境最低分
@@ -241,6 +398,10 @@
             <label class="settings-check">
               <input name="long_structure_confirmation_enabled" type="checkbox" />
               <span>启用做多结构确认</span>
+            </label>
+            <label class="settings-check">
+              <input name="short_structure_confirmation_enabled" type="checkbox" />
+              <span>启用做空结构确认</span>
             </label>
             <label>
               置信度阈值 (%)
