@@ -12,6 +12,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import hmac
+import http.client
 import json
 import math
 import mimetypes
@@ -45,6 +46,16 @@ FAST_CONFIRM_SOURCE = "fast_signal_confirmer_v2"
 SQUARE_POST_SKILL_DIR = Path(os.environ.get("BINANCE_SQUARE_SKILL_DIR", r"C:\Users\Administrator\.codex\skills\square-post"))
 REPORTS_DIR = ROOT / "reports"
 DAILY_PNL_REPORT_PATH = REPORTS_DIR / "daily_realized_pnl.xlsx"
+RETRYABLE_HTTP_EXCEPTIONS = (
+    TimeoutError,
+    socket.timeout,
+    ssl.SSLError,
+    urllib.error.URLError,
+    http.client.IncompleteRead,
+    http.client.RemoteDisconnected,
+    ConnectionResetError,
+    ConnectionAbortedError,
+)
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -52,6 +63,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "execution_mode": "binance_futures_testnet",
     "live_trading_enabled": False,
     "scan_interval_sec": 20,
+    "max_scan_runtime_sec": 180,
     "market_base_url": "https://fapi.binance.com",
     "request_timeout_sec": 10,
     "quote_asset": "USDT",
@@ -391,7 +403,7 @@ def http_get_json(base_url: str, path: str, params: dict[str, Any] | None = None
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(decode_http_body(resp))
-        except (TimeoutError, socket.timeout, ssl.SSLError, urllib.error.URLError) as exc:
+        except RETRYABLE_HTTP_EXCEPTIONS as exc:
             last_error = exc
             if attempt >= 2:
                 break
@@ -431,7 +443,7 @@ def http_request_json(
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"{error_label} HTTP {exc.code}: {body}") from exc
-        except (TimeoutError, socket.timeout, ssl.SSLError, urllib.error.URLError) as exc:
+        except RETRYABLE_HTTP_EXCEPTIONS as exc:
             last_error = exc
             if attempt >= 2:
                 break
@@ -523,6 +535,7 @@ class PaperBot:
         state.setdefault("last_scan_at", None)
         state.setdefault("last_scan_finished_at", None)
         state.setdefault("last_scan_duration_sec", 0.0)
+        state.setdefault("scan_stage", "idle")
         state.setdefault("scan_count", 0)
         state["mode"] = self.exchange_mode()
         state.setdefault("market_source", "unknown")
@@ -1390,6 +1403,7 @@ class PaperBot:
             "take_profit_cooldown_enabled": str,
             "stop_loss_cooldown_minutes": int,
             "scan_interval_sec": int,
+            "max_scan_runtime_sec": int,
             "max_candidates_per_scan": int,
             "pre_start_long_enabled": str,
             "pre_start_max_candidates": int,
@@ -1479,7 +1493,7 @@ class PaperBot:
                         value = "market_score"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "scan_interval_sec", "max_candidates_per_scan", "pre_start_max_candidates", "old_rebound_short_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan", "telegram_hourly_status_interval_minutes"}:
+                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "pre_start_max_candidates", "old_rebound_short_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan", "telegram_hourly_status_interval_minutes"}:
                     value = max(1, int(value))
                 if key == "previous_day_equity_usdt":
                     value = max(0.0, float(value))
@@ -1571,19 +1585,38 @@ class PaperBot:
                 self.persist()
             self.stop_event.wait(interval)
 
+    def update_scan_stage(self, stage: str) -> None:
+        with self.lock:
+            self.state["scan_stage"] = stage
+
     def scan_once(self) -> None:
         started = time.monotonic()
+        def set_scan_stage(stage: str) -> None:
+            self.update_scan_stage(stage)
+
         with self.lock:
             if self.state.get("scan_in_progress"):
-                self.event("warn", "已有扫描正在进行，已跳过重复触发")
-                self.persist()
-                return
+                max_runtime = max(60, int(self.config.get("max_scan_runtime_sec", 180)))
+                last_scan_ms = parse_time_ms(self.state.get("last_scan_at"))
+                elapsed_sec = (int(time.time() * 1000) - last_scan_ms) / 1000 if last_scan_ms > 0 else 0
+                if last_scan_ms > 0 and elapsed_sec > max_runtime:
+                    self.event("error", f"上一轮扫描超过 {max_runtime} 秒未结束，已自动释放扫描状态")
+                    self.state["scan_in_progress"] = False
+                    self.state["scan_stage"] = "timeout"
+                    self.state["last_scan_finished_at"] = iso_now()
+                    self.state["last_scan_duration_sec"] = round(elapsed_sec, 2)
+                else:
+                    self.event("warn", "已有扫描正在进行，已跳过重复触发")
+                    self.persist()
+                    return
             self.state["scan_in_progress"] = True
+            self.state["scan_stage"] = "starting"
             self.state["scan_count"] = int(self.state.get("scan_count", 0)) + 1
             self.state["last_scan_at"] = iso_now()
             self.state["last_error"] = ""
         try:
             try:
+                set_scan_stage("fetch_tickers")
                 tickers = self.fetch_tickers()
                 with self.lock:
                     self.state["market_source"] = "binance_public"
@@ -1596,8 +1629,10 @@ class PaperBot:
                 return
 
             price_map = {item["symbol"]: fnum(item.get("lastPrice")) for item in tickers}
+            set_scan_stage("update_future_returns")
             self.update_signal_future_returns(price_map)
             try:
+                set_scan_stage("sync_exchange")
                 self.sync_exchange_state()
             except Exception as exc:
                 with self.lock:
@@ -1612,6 +1647,7 @@ class PaperBot:
                     if pos.get("symbol") in price_map:
                         pos["last_price"] = price_map[pos["symbol"]]
                 open_symbols = {p["symbol"] for p in self.state.get("positions", [])}
+            set_scan_stage("build_signals")
             signals = self.build_signals(tickers, open_symbols)
             if equity_take_profit_active:
                 equity_tp_reason = self.equity_take_profit_block_reason()
@@ -1624,6 +1660,7 @@ class PaperBot:
                 self.update_pending_open_signals(signals)
                 self.record_signal_review_scan(signals)
                 self.persist()
+            set_scan_stage("open_positions")
             opened = 0 if equity_take_profit_active else self.open_from_signals(signals)
             with self.lock:
                 if opened:
@@ -1636,6 +1673,7 @@ class PaperBot:
             with self.lock:
                 self.update_risk_state()
                 self.state["scan_in_progress"] = False
+                self.state["scan_stage"] = "idle"
                 self.state["last_scan_finished_at"] = iso_now()
                 self.state["last_scan_duration_sec"] = round(time.monotonic() - started, 2)
                 pending_signals = self.collect_pending_open_signals()
@@ -1671,7 +1709,7 @@ class PaperBot:
 
         def send(force_time_sync: bool = False) -> Any:
             payload = dict(params or {})
-            payload.setdefault("recvWindow", max(30000, int(futures.get("recv_window", 5000))))
+            payload.setdefault("recvWindow", max(60000, int(futures.get("recv_window", 5000))))
             payload["timestamp"] = int(time.time() * 1000) + self.exchange_time_offset_ms(force=force_time_sync)
             query = urllib.parse.urlencode(payload, doseq=True)
             signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -1691,7 +1729,16 @@ class PaperBot:
             return send()
         except RuntimeError as exc:
             if '"code":-1021' in str(exc) or "outside of the recvWindow" in str(exc):
-                return send(force_time_sync=True)
+                self.exchange_time_offsets.pop(self.exchange_mode(), None)
+                time.sleep(0.3)
+                try:
+                    return send(force_time_sync=True)
+                except RuntimeError as retry_exc:
+                    if '"code":-1021' in str(retry_exc) or "outside of the recvWindow" in str(retry_exc):
+                        self.exchange_time_offsets.pop(self.exchange_mode(), None)
+                        time.sleep(0.8)
+                        return send(force_time_sync=True)
+                    raise
             raise
 
     def unsigned_exchange_request(self, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -3621,6 +3668,7 @@ class PaperBot:
 
     def build_candidate_pool(self, tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         watchlist = {str(item).upper() for item in self.config.get("manual_watchlist", [])}
+        blocked = set(normalize_symbol_list(self.config.get("blocked_symbols", []), str(self.config.get("quote_asset", "USDT"))))
         min_volume = float(self.config.get("min_quote_volume_usdt", 0))
         min_abs_change = float(self.config.get("min_abs_24h_change_pct", 0))
         max_candidates = int(self.config.get("max_candidates_per_scan", 18))
@@ -3635,6 +3683,13 @@ class PaperBot:
                 return change <= -min_abs_change
             return abs(change) >= min_abs_change
 
+        def is_blocked_candidate(item: dict[str, Any]) -> bool:
+            return str(item.get("symbol", "")).upper() in blocked
+
+        def is_cooldown_candidate(item: dict[str, Any]) -> bool:
+            symbol = str(item.get("symbol", "")).upper()
+            return bool(symbol and self.stop_loss_cooldown_reason(symbol))
+
         pool: dict[str, dict[str, Any]] = {}
         if self.config.get("old_rebound_short_enabled", False) and direction_mode != "long_only" and old_rebound_limit > 0:
             old_min_change = float(self.config.get("old_rebound_short_24h_min_pct", 8.0))
@@ -3643,6 +3698,8 @@ class PaperBot:
             old_max_volume = float(self.config.get("old_rebound_short_max_quote_volume_usdt", 80_000_000))
             old_rebound = []
             for item in tickers:
+                if is_blocked_candidate(item) or is_cooldown_candidate(item):
+                    continue
                 change = fnum(item.get("priceChangePercent"))
                 volume = fnum(item.get("quoteVolume"))
                 if old_min_change <= change <= old_max_change and old_min_volume <= volume <= old_max_volume:
@@ -3659,7 +3716,7 @@ class PaperBot:
         strong = []
         for item in tickers:
             symbol = str(item.get("symbol", ""))
-            if symbol in pool:
+            if symbol in pool or is_blocked_candidate(item) or is_cooldown_candidate(item):
                 continue
             change = fnum(item.get("priceChangePercent"))
             volume = fnum(item.get("quoteVolume"))
@@ -3680,7 +3737,7 @@ class PaperBot:
             pre_start = []
             for item in tickers:
                 symbol = str(item.get("symbol", ""))
-                if symbol in pool:
+                if symbol in pool or is_blocked_candidate(item) or is_cooldown_candidate(item):
                     continue
                 change = fnum(item.get("priceChangePercent"))
                 volume = fnum(item.get("quoteVolume"))

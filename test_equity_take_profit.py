@@ -314,6 +314,27 @@ class KlineShortMetricsTest(unittest.TestCase):
     def kline(self, close: float, quote_volume: float = 1000.0) -> list[object]:
         return [0, "0", "0", "0", str(close), "0", 0, str(quote_volume)]
 
+    def test_stale_scan_in_progress_is_released_on_next_scan(self):
+        bot = self.make_bot()
+        bot.config["max_scan_runtime_sec"] = 60
+        bot.state["scan_in_progress"] = True
+        bot.state["last_scan_at"] = (server.utc_now() - server.timedelta(minutes=5)).isoformat(timespec="seconds")
+        bot.fetch_tickers = lambda: [{"symbol": "FREEUSDT", "lastPrice": "10", "priceChangePercent": "-12", "quoteVolume": "50000000"}]
+        bot.update_signal_future_returns = lambda price_map: None
+        bot.sync_exchange_state = lambda: None
+        bot.enforce_equity_take_profit = lambda: False
+        bot.build_signals = lambda tickers, open_symbols: []
+        bot.update_pending_open_signals = lambda signals: None
+        bot.record_signal_review_scan = lambda signals: None
+        bot.open_from_signals = lambda signals: 0
+        bot.update_risk_state = lambda: None
+
+        bot.scan_once()
+
+        self.assertFalse(bot.state["scan_in_progress"])
+        self.assertEqual(bot.state["scan_stage"], "idle")
+        self.assertIsNotNone(bot.state["last_scan_finished_at"])
+
     def test_short_metrics_use_real_15m_and_1h_klines(self):
         bot = self.make_bot()
         calls = []
@@ -425,6 +446,53 @@ class KlineShortMetricsTest(unittest.TestCase):
 
         self.assertTrue(candidates)
         self.assertNotIn("old_rebound_short", {candidate["signal_mode"] for candidate in candidates})
+
+    def test_blocked_symbols_are_filtered_before_candidate_pool(self):
+        bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["old_rebound_short_enabled"] = True
+        bot.config["blocked_symbols"] = ["BTCUSDT", "CALMUSDT", "OLDUSDT"]
+
+        candidates = bot.build_candidate_pool(
+            [
+                {"symbol": "BTCUSDT", "lastPrice": "100", "priceChangePercent": "12", "quoteVolume": "90000000"},
+                {"symbol": "CALMUSDT", "lastPrice": "10", "priceChangePercent": "5", "quoteVolume": "50000000"},
+                {"symbol": "OLDUSDT", "lastPrice": "10", "priceChangePercent": "18", "quoteVolume": "25000000"},
+                {"symbol": "FREEUSDT", "lastPrice": "10", "priceChangePercent": "-12", "quoteVolume": "50000000"},
+            ]
+        )
+
+        symbols = {candidate["item"]["symbol"] for candidate in candidates}
+        self.assertNotIn("BTCUSDT", symbols)
+        self.assertNotIn("CALMUSDT", symbols)
+        self.assertNotIn("OLDUSDT", symbols)
+        self.assertIn("FREEUSDT", symbols)
+
+    def test_cooldown_symbols_are_filtered_before_candidate_pool(self):
+        bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["old_rebound_short_enabled"] = True
+        bot.config["stop_loss_cooldown_minutes"] = 60
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "closed_at": server.iso_now(), "close_reason": "止盈平仓", "pnl_usdt": 5.0},
+            {"symbol": "CALMUSDT", "closed_at": server.iso_now(), "close_reason": "止盈平仓", "pnl_usdt": 4.0},
+            {"symbol": "OLDUSDT", "closed_at": server.iso_now(), "close_reason": "止损平仓", "pnl_usdt": -2.0},
+        ]
+
+        candidates = bot.build_candidate_pool(
+            [
+                {"symbol": "BTCUSDT", "lastPrice": "100", "priceChangePercent": "12", "quoteVolume": "90000000"},
+                {"symbol": "CALMUSDT", "lastPrice": "10", "priceChangePercent": "5", "quoteVolume": "50000000"},
+                {"symbol": "OLDUSDT", "lastPrice": "10", "priceChangePercent": "18", "quoteVolume": "25000000"},
+                {"symbol": "FREEUSDT", "lastPrice": "10", "priceChangePercent": "-12", "quoteVolume": "50000000"},
+            ]
+        )
+
+        symbols = {candidate["item"]["symbol"] for candidate in candidates}
+        self.assertNotIn("BTCUSDT", symbols)
+        self.assertNotIn("CALMUSDT", symbols)
+        self.assertNotIn("OLDUSDT", symbols)
+        self.assertIn("FREEUSDT", symbols)
 
     def test_build_signals_enriches_only_after_coarse_score_passes(self):
         bot = self.make_bot()

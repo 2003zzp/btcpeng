@@ -1,4 +1,4 @@
-const els = {
+﻿const els = {
   startBtn: document.querySelector("#startBtn"),
   stopBtn: document.querySelector("#stopBtn"),
   closeAllBtn: document.querySelector("#closeAllBtn"),
@@ -147,7 +147,9 @@ function normalizeSettingsLabels() {
   const realtimeLabel = els.form?.elements?.analyzer_realtime_before_open?.closest("label");
   if (realtimeLabel) {
     realtimeLabel.title = "开启后，候选通过后下单前会再次实时跑分析器；关闭后，只使用候选阶段已经通过的分析器结果，开仓更快。";
-  }
+  }
+
+
   const preStartLongLabel = els.form?.elements?.pre_start_long_enabled?.closest("label");
   if (preStartLongLabel) {
     preStartLongLabel.title = "默认关闭。开启后额外筛选24h温和上涨、15m/1h刚启动且资金面健康的做多候选，适合先观察几天效果。";
@@ -339,6 +341,20 @@ async function refresh() {
   }
 }
 
+function scanStageLabel(stage) {
+  const labels = {
+    starting: "启动",
+    fetch_tickers: "读取行情",
+    update_future_returns: "回填复盘",
+    sync_exchange: "同步实盘",
+    build_signals: "生成信号",
+    open_positions: "执行开仓",
+    timeout: "上一轮超时",
+    idle: "空闲",
+  };
+  return labels[String(stage || "idle")] || String(stage || "-");
+}
+
 function render(payload) {
   const { state, metrics, config } = payload;
   const modeLabel = accountModeLabel(config);
@@ -349,7 +365,7 @@ function render(payload) {
   els.runningText.className = state.running ? "positive" : "danger";
 
   if (state.running && state.scan_in_progress) {
-    els.scanText.textContent = "扫描中";
+    els.scanText.textContent = `扫描中：${scanStageLabel(state.scan_stage)}`;
   } else if (state.running && state.next_scan_at) {
     const remain = Math.max(0, Math.round(state.next_scan_at - Date.now() / 1000));
     els.scanText.textContent = `倒计时 ${remain}s`;
