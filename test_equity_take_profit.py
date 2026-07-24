@@ -301,6 +301,91 @@ class LongStructureConfirmationTest(unittest.TestCase):
         self.assertEqual(bot.config["old_rebound_short_confirm_min_score"], 6.9)
 
 
+class DirectionalVolumeConfirmationTest(unittest.TestCase):
+    def make_bot(self) -> server.PaperBot:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text("{}", encoding="utf-8")
+        return server.PaperBot(config_path, state_path)
+
+    def base_stats(self, taker_ratio: float, volume_1h_ratio: float = 1.2) -> dict[str, float]:
+        return {
+            "funding_rate_pct": 0.0,
+            "open_interest_1h_pct": 8.0,
+            "open_interest_24h_pct": 20.0,
+            "long_short_ratio": 1.2,
+            "taker_long_short_ratio": taker_ratio,
+            "volume_1h_ratio": volume_1h_ratio,
+        }
+
+    def test_market_confirmation_rejects_long_volume_when_taker_is_selling(self):
+        bot = self.make_bot()
+
+        result = bot.market_confirmation_score(
+            "LONG",
+            "strong_momentum",
+            change_24h=8.0,
+            change_4h=2.0,
+            change_1h=2.0,
+            short_move=1.0,
+            volume_ratio=2.0,
+            trend="up",
+            stats=self.base_stats(taker_ratio=0.88),
+        )
+
+        self.assertLess(result["score"], 6.0)
+
+    def test_market_confirmation_rewards_long_volume_when_taker_and_1h_volume_align(self):
+        bot = self.make_bot()
+
+        result = bot.market_confirmation_score(
+            "LONG",
+            "strong_momentum",
+            change_24h=8.0,
+            change_4h=2.0,
+            change_1h=2.0,
+            short_move=1.0,
+            volume_ratio=2.0,
+            trend="up",
+            stats=self.base_stats(taker_ratio=1.12, volume_1h_ratio=1.2),
+        )
+
+        self.assertGreaterEqual(result["score"], 7.0)
+
+    def test_short_structure_only_rewards_volume_when_taker_is_selling(self):
+        bot = self.make_bot()
+
+        selling = bot.short_structure_confirmation(
+            change_4h=-2.0,
+            change_1h=-2.0,
+            short_move=-1.8,
+            trend="down",
+            volume_ratio=2.0,
+            stats={
+                "taker_long_short_ratio": 0.88,
+                "open_interest_1h_pct": 5.0,
+                "long_short_ratio": 1.6,
+            },
+        )
+        buying = bot.short_structure_confirmation(
+            change_4h=-2.0,
+            change_1h=-2.0,
+            short_move=-1.8,
+            trend="down",
+            volume_ratio=2.0,
+            stats={
+                "taker_long_short_ratio": 1.12,
+                "open_interest_1h_pct": 5.0,
+                "long_short_ratio": 1.6,
+            },
+        )
+
+        self.assertGreater(selling["score"] - buying["score"], 2.0)
+
+
 class KlineShortMetricsTest(unittest.TestCase):
     def make_bot(self) -> server.PaperBot:
         tmp = tempfile.TemporaryDirectory()
@@ -380,6 +465,23 @@ class KlineShortMetricsTest(unittest.TestCase):
 
         self.assertIn(("4USDT", "15m", 32), calls)
         self.assertIn(("4USDT", "1h", 12), calls)
+
+    def test_short_metrics_calculate_1h_volume_ratio_from_real_klines(self):
+        bot = self.make_bot()
+        bot.config["kline_1h_limit"] = 12
+
+        def fetch_interval(symbol, interval, limit):
+            if interval == "15m":
+                return [self.kline(100.0, 1000.0) for _ in range(limit)]
+            if interval == "1h":
+                return [self.kline(100.0 + idx, 1000.0) for idx in range(11)] + [self.kline(112.0, 2400.0)]
+            raise AssertionError(interval)
+
+        bot.fetch_klines_interval = fetch_interval
+
+        metrics = bot.kline_short_metrics("VOLUSDT", 100.0, 8.0)
+
+        self.assertAlmostEqual(metrics["volume_1h_ratio"], 2.4, places=2)
 
     def test_strong_candidates_are_not_enriched_in_candidate_pool(self):
         bot = self.make_bot()

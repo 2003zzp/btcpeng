@@ -2598,6 +2598,7 @@ class PaperBot:
             "funding_rate_pct": 0.0,
             "long_short_ratio": 1.0,
             "volume_4h_ratio": 1.0,
+            "volume_1h_ratio": 1.0,
             "taker_long_short_ratio": 1.0,
             "oi_volume_ratio": 0.0,
         }
@@ -2812,7 +2813,7 @@ class PaperBot:
         elif taker_ratio >= 1.08:
             score -= 1.0
             reasons.append(f"主动买入反抽 {taker_ratio:.2f}")
-        if volume_ratio >= 1.5:
+        if volume_ratio >= 1.5 and short_move < 0 and taker_ratio <= 0.96:
             score += 0.5
             reasons.append(f"放量下跌 {volume_ratio:.1f}x")
         if oi_1h >= 0:
@@ -2945,17 +2946,6 @@ class PaperBot:
             caps.append(5.8)
             reasons.append(f"短线反向 {directional_short:+.1f}%")
 
-        if 1.2 <= volume_ratio <= 7.5:
-            score += 0.5
-            reasons.append(f"量能确认 {volume_ratio:.1f}x")
-        elif volume_ratio > 7.5:
-            score -= 0.2
-            warnings.append("量能过热")
-            reasons.append(f"量能极强 {volume_ratio:.1f}x")
-        else:
-            score -= 0.7
-            reasons.append(f"量能不足 {volume_ratio:.1f}x")
-
         funding = fnum(stats.get("funding_rate_pct"))
         oi_1h = fnum(stats.get("open_interest_1h_pct"))
         oi_24h = fnum(stats.get("open_interest_24h_pct"))
@@ -2970,6 +2960,25 @@ class PaperBot:
         momentum_push = directional_short >= 0.4 and directional_1h >= 0.5 and directional_4h >= 1.2
         taker_strong = taker_aligned >= 1.05
         taker_weak = taker_aligned < 0.92
+        volume_state = self.directional_volume_state(side, change_1h, short_move, volume_ratio, stats)
+
+        if bool(volume_state["aligned"]):
+            score += 0.6
+            reasons.append(f"方向放量 {volume_ratio:.1f}x/1h {fnum(volume_state['volume_1h_ratio']):.1f}x")
+        elif bool(volume_state["counter"]):
+            score -= 0.6
+            caps.append(5.8)
+            reasons.append(f"反向放量 {volume_ratio:.1f}x")
+        elif volume_ratio > 7.5:
+            score -= 0.2
+            warnings.append("volume overheated")
+            reasons.append(f"量能极强 {volume_ratio:.1f}x")
+        elif volume_ratio >= 1.2:
+            score -= 0.1
+            reasons.append(f"放量待确认 {volume_ratio:.1f}x")
+        else:
+            score -= 0.7
+            reasons.append(f"量能不足 {volume_ratio:.1f}x")
 
         if one_hour_accel:
             if taker_strong and momentum_push:
@@ -3119,6 +3128,7 @@ class PaperBot:
         min_oi = float(self.config.get("pre_start_oi_1h_min_pct", 0.0))
         max_funding = float(self.config.get("pre_start_funding_abs_max_pct", 0.06))
         max_long_short = float(self.config.get("pre_start_long_short_max", 2.5))
+        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
 
         if min_24h <= change_24h <= max_24h:
             score += 1.0
@@ -3132,7 +3142,7 @@ class PaperBot:
         if trend == "up":
             score += 1.0
             reasons.append("短线趋势向上")
-        if min_volume <= volume_ratio <= max_volume:
+        if min_volume <= volume_ratio <= max_volume and taker_ratio >= min_taker and short_move > 0 and change_1h > 0:
             score += 1.2
             reasons.append(f"量能刚放大 {volume_ratio:.1f}x")
 
@@ -3191,6 +3201,7 @@ class PaperBot:
         min_oi = float(self.config.get("old_rebound_short_oi_1h_min_pct", -5.0))
         max_funding = float(self.config.get("old_rebound_short_funding_abs_max_pct", 0.08))
         min_long_short = float(self.config.get("old_rebound_short_long_short_min", 1.2))
+        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
 
         if min_24h <= change_24h <= max_24h:
             score += 1.0
@@ -3207,7 +3218,7 @@ class PaperBot:
         elif trend != "up":
             score += 0.4
             reasons.append("短线不再上推")
-        if min_volume <= volume_ratio <= max_volume:
+        if min_volume <= volume_ratio <= max_volume and taker_ratio <= max_taker and short_move <= max_15m and change_1h <= max_1h:
             score += 0.6
             reasons.append(f"量能可交易 {volume_ratio:.1f}x")
 
@@ -3652,6 +3663,7 @@ class PaperBot:
             limit_1h = max(5, int(self.config.get("kline_1h_limit", 10)))
             klines1h = self.fetch_klines_interval(symbol, "1h", limit_1h)
             closes1h = [fnum(k[4]) for k in klines1h]
+            volumes1h = [fnum(k[7]) for k in klines1h]
             if closes1h:
                 metrics["price"] = closes1h[-1] or metrics["price"] or fallback_price
                 metrics["enriched"] = True
@@ -3659,6 +3671,10 @@ class PaperBot:
                 metrics["change_1h"] = pct(closes1h[-1], closes1h[-2])
             if len(closes1h) > 4:
                 metrics["change_4h"] = pct(closes1h[-1], closes1h[-5])
+            if len(volumes1h) > 2:
+                base_count = min(12, len(volumes1h) - 1)
+                base = sum(volumes1h[-base_count - 1 : -1]) / base_count
+                metrics["volume_1h_ratio"] = volumes1h[-1] / base if base > 0 else 1.0
             trend1h = infer_trend(closes1h)
             if trend1h != "neutral":
                 metrics["trend"] = trend1h
@@ -3792,6 +3808,7 @@ class PaperBot:
             change_1h = fnum(metrics.get("change_1h"))
             change_4h = fnum(metrics.get("change_4h"))
             volume_ratio = fnum(metrics.get("volume_ratio"), 1.0)
+            volume_1h_ratio = fnum(metrics.get("volume_1h_ratio"), 1.0)
             trend = str(metrics.get("trend", "neutral"))
 
             long_score, long_reason = self.score_side("LONG", change, short_move, volume_ratio, trend)
@@ -3828,6 +3845,7 @@ class PaperBot:
                 change_1h = fnum(metrics.get("change_1h"))
                 change_4h = fnum(metrics.get("change_4h"))
                 volume_ratio = fnum(metrics.get("volume_ratio"), 1.0)
+                volume_1h_ratio = fnum(metrics.get("volume_1h_ratio"), 1.0)
                 trend = str(metrics.get("trend", "neutral"))
                 long_score, long_reason = self.score_side("LONG", change, short_move, volume_ratio, trend)
                 short_score, short_reason = self.score_side("SHORT", change, short_move, volume_ratio, trend)
@@ -3860,6 +3878,7 @@ class PaperBot:
                 "funding_rate_pct": 0.0,
                 "long_short_ratio": 1.0,
                 "volume_4h_ratio": max(0.1, min(20.0, volume_ratio * 3.2)),
+                "volume_1h_ratio": volume_1h_ratio,
                 "taker_long_short_ratio": 1.0,
                 "oi_volume_ratio": 0.22,
             }
@@ -3870,6 +3889,7 @@ class PaperBot:
                     if index >= 6 and not (is_pre_start_long or is_old_rebound_short):
                         raise RuntimeError("skip slow derivatives enrichment")
                     market_stats = self.fetch_signal_market_stats(symbol, item)
+                    market_stats["volume_1h_ratio"] = volume_1h_ratio
                 except Exception:
                     pass
                 if not reject and is_pre_start_long:
@@ -4028,6 +4048,35 @@ class PaperBot:
 
     def score_threshold_for_mode(self, signal_mode: str) -> float:
         return float(self.config.get("signal_score_threshold", 4.0))
+
+    def directional_volume_state(
+        self,
+        side: str,
+        change_1h: float,
+        short_move: float,
+        volume_ratio: float,
+        stats: dict[str, float],
+    ) -> dict[str, float | bool]:
+        is_long = side == "LONG"
+        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
+        taker_aligned = taker_ratio if is_long else (1.0 / taker_ratio if taker_ratio > 0 else 1.0)
+        volume_1h_ratio = fnum(stats.get("volume_1h_ratio"), 1.0)
+        directional_1h = change_1h if is_long else -change_1h
+        directional_short = short_move if is_long else -short_move
+        volume_active = volume_ratio >= 1.2
+        one_hour_confirmed = volume_1h_ratio >= 0.8
+        price_push = directional_short >= 0.4 and directional_1h >= 0.5
+        aligned = volume_active and one_hour_confirmed and price_push and taker_aligned >= 1.05
+        counter = volume_active and (taker_aligned < 0.92 or directional_short < -0.4 or directional_1h < -0.6)
+        return {
+            "aligned": aligned,
+            "counter": counter,
+            "volume_active": volume_active,
+            "one_hour_confirmed": one_hour_confirmed,
+            "price_push": price_push,
+            "taker_aligned": taker_aligned,
+            "volume_1h_ratio": volume_1h_ratio,
+        }
 
     def score_side(self, side: str, change: float, short_move: float, volume_ratio: float, trend: str) -> tuple[float, str]:
         score = 0.0
