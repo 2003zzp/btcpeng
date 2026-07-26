@@ -102,6 +102,7 @@ function normalizeSettingsLabels() {
     pre_start_funding_abs_max_pct: "预启动资金费率上限 (%)",
     pre_start_long_short_max: "预启动多空比上限",
     pre_start_market_confirm_min_score: "预启动确认分阈值",
+    signal_score_threshold: "系统分阈值",
     market_confirm_min_score: "市场确认分阈值",
     short_market_confirm_min_score: "做空确认分阈值",
     short_max_24h_high_drawdown_pct: "做空最大回撤限制 (%)",
@@ -170,6 +171,10 @@ function normalizeSettingsLabels() {
   const confirmationModeLabel = els.form?.elements?.confirmation_mode?.closest("label");
   if (confirmationModeLabel) {
     confirmationModeLabel.title = "市场确认分使用趋势、动量、量能、OI、资金费率、多空比和主动成交替代黑盒置信度；分析器置信度则切回原来的脚本确认。";
+  }
+  const systemScoreLabel = els.form?.elements?.signal_score_threshold?.closest("label");
+  if (systemScoreLabel) {
+    systemScoreLabel.title = "强波动池系统分最低门槛，默认4.0。调高会减少候选继续进入真实K线、结构分和市场确认分；调低会更激进。";
   }
   const marketConfirmLabel = els.form?.elements?.market_confirm_min_score?.closest("label");
   if (marketConfirmLabel) {
