@@ -69,6 +69,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "quote_asset": "USDT",
     "min_quote_volume_usdt": 20_000_000,
     "min_abs_24h_change_pct": 6.0,
+    "strong_long_24h_min_change_pct": 0.0,
     "long_24h_change_pct": 7.0,
     "short_24h_change_pct": -7.0,
     "short_term_move_pct": 1.2,
@@ -1452,6 +1453,7 @@ class PaperBot:
             "previous_day_equity_usdt": float,
             "equity_take_profit_usdt": float,
             "signal_score_threshold": float,
+            "strong_long_24h_min_change_pct": float,
             "confirmation_mode": str,
             "market_confirm_min_score": float,
             "short_market_confirm_min_score": float,
@@ -1504,6 +1506,7 @@ class PaperBot:
                     "take_profit_roi_pct",
                     "stop_loss_roi_pct",
                     "signal_score_threshold",
+                    "strong_long_24h_min_change_pct",
                     "market_confirm_min_score",
                     "short_market_confirm_min_score",
                     "pre_start_market_confirm_min_score",
@@ -3687,6 +3690,7 @@ class PaperBot:
         blocked = set(normalize_symbol_list(self.config.get("blocked_symbols", []), str(self.config.get("quote_asset", "USDT"))))
         min_volume = float(self.config.get("min_quote_volume_usdt", 0))
         min_abs_change = float(self.config.get("min_abs_24h_change_pct", 0))
+        strong_long_min_change = float(self.config.get("strong_long_24h_min_change_pct", 0))
         max_candidates = int(self.config.get("max_candidates_per_scan", 18))
         pre_start_limit = int(self.config.get("pre_start_max_candidates", 8))
         old_rebound_limit = int(self.config.get("old_rebound_short_max_candidates", 8))
@@ -3694,9 +3698,11 @@ class PaperBot:
 
         def change_allowed(change: float) -> bool:
             if direction_mode == "long_only":
-                return change >= min_abs_change
+                return change >= max(min_abs_change, strong_long_min_change)
             if direction_mode == "short_only":
                 return change <= -min_abs_change
+            if change > 0:
+                return change >= max(min_abs_change, strong_long_min_change)
             return abs(change) >= min_abs_change
 
         def is_blocked_candidate(item: dict[str, Any]) -> bool:

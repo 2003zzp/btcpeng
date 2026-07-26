@@ -498,6 +498,35 @@ class KlineShortMetricsTest(unittest.TestCase):
         self.assertEqual(first["signal_mode"], "strong_momentum")
         self.assertNotIn("metrics", first)
 
+    def test_strong_long_candidates_respect_configured_24h_gain_floor(self):
+        bot = self.make_bot()
+        bot.config["trade_direction_mode"] = "long_only"
+        bot.config["strong_long_24h_min_change_pct"] = 20.0
+
+        candidates = bot.build_candidate_pool(
+            [
+                {"symbol": "LOWUSDT", "lastPrice": "10", "priceChangePercent": "18", "quoteVolume": "50000000"},
+                {"symbol": "HIGHUSDT", "lastPrice": "10", "priceChangePercent": "25", "quoteVolume": "50000000"},
+            ]
+        )
+
+        symbols = {candidate["item"]["symbol"] for candidate in candidates}
+        self.assertNotIn("LOWUSDT", symbols)
+        self.assertIn("HIGHUSDT", symbols)
+
+    def test_strong_long_gain_floor_does_not_filter_pre_start_pool(self):
+        bot = self.make_bot()
+        bot.config["trade_direction_mode"] = "long_only"
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["strong_long_24h_min_change_pct"] = 20.0
+
+        candidates = bot.build_candidate_pool(
+            [{"symbol": "CALMUSDT", "lastPrice": "10", "priceChangePercent": "5", "quoteVolume": "50000000"}]
+        )
+
+        pre_start = next(candidate for candidate in candidates if candidate["item"]["symbol"] == "CALMUSDT")
+        self.assertEqual(pre_start["signal_mode"], "pre_start_long")
+
     def test_pre_start_long_candidates_are_added_when_enabled(self):
         bot = self.make_bot()
         bot.config["pre_start_long_enabled"] = True

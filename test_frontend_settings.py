@@ -26,6 +26,14 @@ class FrontendSettingsTest(unittest.TestCase):
 
         self.assertIn("signal_score_threshold", parser.input_names)
 
+    def test_settings_form_exposes_strong_long_24h_gain_floor(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+
+        parser.feed(html)
+
+        self.assertIn("strong_long_24h_min_change_pct", parser.input_names)
+
 
 if __name__ == "__main__":
     unittest.main()

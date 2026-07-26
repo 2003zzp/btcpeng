@@ -103,6 +103,7 @@ function normalizeSettingsLabels() {
     pre_start_long_short_max: "预启动多空比上限",
     pre_start_market_confirm_min_score: "预启动确认分阈值",
     signal_score_threshold: "系统分阈值",
+    strong_long_24h_min_change_pct: "强波动做多24h涨幅下限 (%)",
     market_confirm_min_score: "市场确认分阈值",
     short_market_confirm_min_score: "做空确认分阈值",
     short_max_24h_high_drawdown_pct: "做空最大回撤限制 (%)",
@@ -175,6 +176,10 @@ function normalizeSettingsLabels() {
   const systemScoreLabel = els.form?.elements?.signal_score_threshold?.closest("label");
   if (systemScoreLabel) {
     systemScoreLabel.title = "强波动池系统分最低门槛，默认4.0。调高会减少候选继续进入真实K线、结构分和市场确认分；调低会更激进。";
+  }
+  const strongLongMinChangeLabel = els.form?.elements?.strong_long_24h_min_change_pct?.closest("label");
+  if (strongLongMinChangeLabel) {
+    strongLongMinChangeLabel.title = "只作用于强波动池做多候选。设置20表示24h涨幅低于20%的币不会进入强波动做多候选；预启动池和做空池不受影响。默认0。";
   }
   const marketConfirmLabel = els.form?.elements?.market_confirm_min_score?.closest("label");
   if (marketConfirmLabel) {
