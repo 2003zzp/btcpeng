@@ -578,6 +578,97 @@ class KlineShortMetricsTest(unittest.TestCase):
         self.assertTrue(candidates)
         self.assertNotIn("old_rebound_short", {candidate["signal_mode"] for candidate in candidates})
 
+    def test_high_pullback_short_candidates_are_added_when_enabled(self):
+        bot = self.make_bot()
+        bot.config["high_pullback_short_enabled"] = True
+        bot.config["high_pullback_short_max_candidates"] = 5
+        bot.config["trade_direction_mode"] = "short_only"
+
+        candidates = bot.build_candidate_pool(
+            [
+                {
+                    "symbol": "PULLUSDT",
+                    "lastPrice": "1.10",
+                    "highPrice": "1.50",
+                    "lowPrice": "0.90",
+                    "priceChangePercent": "18",
+                    "quoteVolume": "50000000",
+                },
+                {
+                    "symbol": "FLATPUUSDT",
+                    "lastPrice": "1.42",
+                    "highPrice": "1.50",
+                    "lowPrice": "0.90",
+                    "priceChangePercent": "18",
+                    "quoteVolume": "50000000",
+                },
+            ]
+        )
+
+        high_pullback = next(candidate for candidate in candidates if candidate["item"]["symbol"] == "PULLUSDT")
+        self.assertEqual(high_pullback["signal_mode"], "high_pullback_short")
+        self.assertNotIn("FLATPUUSDT", {candidate["item"]["symbol"] for candidate in candidates})
+
+    def test_high_pullback_short_skips_candidates_too_close_to_24h_low(self):
+        bot = self.make_bot()
+        bot.config["high_pullback_short_enabled"] = True
+        bot.config["high_pullback_short_min_low_distance_pct"] = 5.0
+        bot.config["trade_direction_mode"] = "short_only"
+
+        candidates = bot.build_candidate_pool(
+            [
+                {
+                    "symbol": "LOWTAILUSDT",
+                    "lastPrice": "0.93",
+                    "highPrice": "1.50",
+                    "lowPrice": "0.90",
+                    "priceChangePercent": "18",
+                    "quoteVolume": "50000000",
+                }
+            ]
+        )
+
+        self.assertNotIn("LOWTAILUSDT", {candidate["item"]["symbol"] for candidate in candidates})
+
+    def test_strong_short_candidates_can_be_disabled(self):
+        bot = self.make_bot()
+        bot.config["strong_short_enabled"] = False
+        bot.config["trade_direction_mode"] = "short_only"
+
+        candidates = bot.build_candidate_pool(
+            [
+                {
+                    "symbol": "DROPUSDT",
+                    "lastPrice": "1",
+                    "priceChangePercent": "-28",
+                    "quoteVolume": "50000000",
+                }
+            ]
+        )
+
+        self.assertEqual(candidates, [])
+
+    def test_high_pullback_short_has_priority_over_old_rebound_short_for_same_symbol(self):
+        bot = self.make_bot()
+        bot.config["high_pullback_short_enabled"] = True
+        bot.config["old_rebound_short_enabled"] = True
+
+        candidates = bot.build_candidate_pool(
+            [
+                {
+                    "symbol": "OVERLAPUSDT",
+                    "lastPrice": "1.10",
+                    "highPrice": "1.50",
+                    "lowPrice": "0.90",
+                    "priceChangePercent": "18",
+                    "quoteVolume": "25000000",
+                }
+            ]
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["signal_mode"], "high_pullback_short")
+
     def test_blocked_symbols_are_filtered_before_candidate_pool(self):
         bot = self.make_bot()
         bot.config["pre_start_long_enabled"] = True

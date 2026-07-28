@@ -104,6 +104,13 @@ function normalizeSettingsLabels() {
     pre_start_market_confirm_min_score: "预启动确认分阈值",
     signal_score_threshold: "系统分阈值",
     strong_long_24h_min_change_pct: "强波动做多24h涨幅下限 (%)",
+    high_pullback_short_max_candidates: "高位回落候选数",
+    high_pullback_short_24h_min_pct: "高位回落24h下限 (%)",
+    high_pullback_short_24h_max_pct: "高位回落24h上限 (%)",
+    high_pullback_short_min_drawdown_pct: "高位回落最小回撤 (%)",
+    high_pullback_short_max_drawdown_pct: "高位回落最大回撤 (%)",
+    high_pullback_short_min_low_distance_pct: "距24h低点最小距离 (%)",
+    high_pullback_short_confirm_min_score: "高位回落确认分阈值",
     market_confirm_min_score: "市场确认分阈值",
     short_market_confirm_min_score: "做空确认分阈值",
     short_max_24h_high_drawdown_pct: "做空最大回撤限制 (%)",
@@ -130,6 +137,8 @@ function normalizeSettingsLabels() {
     long_structure_confirmation_enabled: "启用做多结构确认",
     short_structure_confirmation_enabled: "启用做空结构确认",
     pre_start_long_enabled: "启用预启动做多池",
+    high_pullback_short_enabled: "启用高位回落做空池",
+    strong_short_enabled: "启用强波动池做空",
   };
   for (const [name, textValue] of Object.entries(toggles)) {
     const input = els.form?.elements?.[name];
@@ -168,6 +177,26 @@ function normalizeSettingsLabels() {
   if (preStartLeverageLabel) {
     preStartLeverageLabel.title = "仅用于预启动做多池的杠杆上限。交易所不支持时仍会自动降档。";
   }
+  const highPullbackLabel = els.form?.elements?.high_pullback_short_enabled?.closest("label");
+  if (highPullbackLabel) {
+    highPullbackLabel.title = "默认关闭。开启后额外筛选24h仍上涨、但已经从24h高点明显回落且未贴近24h低点的做空候选。";
+  }
+  const highPullbackDrawdownLabel = els.form?.elements?.high_pullback_short_min_drawdown_pct?.closest("label");
+  if (highPullbackDrawdownLabel) {
+    highPullbackDrawdownLabel.title = "从24h最高价回落的最小比例，默认18%。太小说明还没确认走弱。";
+  }
+  const highPullbackMaxDrawdownLabel = els.form?.elements?.high_pullback_short_max_drawdown_pct?.closest("label");
+  if (highPullbackMaxDrawdownLabel) {
+    highPullbackMaxDrawdownLabel.title = "从24h最高价回落的最大比例，默认45%。超过后可能已经跌到尾巴，容易反弹。";
+  }
+  const highPullbackLowLabel = els.form?.elements?.high_pullback_short_min_low_distance_pct?.closest("label");
+  if (highPullbackLowLabel) {
+    highPullbackLowLabel.title = "当前价距离24h最低价至少要有的空间，默认5%。太贴近低点时不追空。";
+  }
+  const highPullbackConfirmLabel = els.form?.elements?.high_pullback_short_confirm_min_score?.closest("label");
+  if (highPullbackConfirmLabel) {
+    highPullbackConfirmLabel.title = "高位回落做空池的独立确认分阈值，默认7.0。越高越保守。";
+  }
 
   const confirmationModeLabel = els.form?.elements?.confirmation_mode?.closest("label");
   if (confirmationModeLabel) {
@@ -180,6 +209,10 @@ function normalizeSettingsLabels() {
   const strongLongMinChangeLabel = els.form?.elements?.strong_long_24h_min_change_pct?.closest("label");
   if (strongLongMinChangeLabel) {
     strongLongMinChangeLabel.title = "只作用于强波动池做多候选。设置20表示24h涨幅低于20%的币不会进入强波动做多候选；预启动池和做空池不受影响。默认0。";
+  }
+  const strongShortEnabledLabel = els.form?.elements?.strong_short_enabled?.closest("label");
+  if (strongShortEnabledLabel) {
+    strongShortEnabledLabel.title = "只控制强波动池里的24h下跌做空候选。关闭后不再筛选强波动做空币；老币反弹和高位回落做空池仍按各自开关独立运行。";
   }
   const marketConfirmLabel = els.form?.elements?.market_confirm_min_score?.closest("label");
   if (marketConfirmLabel) {
@@ -833,6 +866,9 @@ function candidateModeBadge(row) {
   if (mode === "old_rebound_short") {
     return { text: "老币做空", className: "mode-old-short" };
   }
+  if (mode === "high_pullback_short") {
+    return { text: "高位回落", className: "mode-old-short" };
+  }
   return { text: "强波动", className: "mode-strong" };
 }
 
@@ -844,6 +880,9 @@ function candidateConfirmThreshold(row) {
   }
   if (mode === "old_rebound_short") {
     return Number(config.old_rebound_short_confirm_min_score || 6.8);
+  }
+  if (mode === "high_pullback_short") {
+    return Number(config.high_pullback_short_confirm_min_score || 7);
   }
   if (row.side === "SHORT") {
     return Number(config.short_market_confirm_min_score || 7.5);
@@ -874,7 +913,7 @@ function candidatePrimaryScore(row) {
   const mode = String(row.signal_mode || "strong_momentum");
   const systemScore = Number(row.score || 0);
   const confirmScore = Number(row.analyzer_confidence_pct || 0) / 10;
-  if ((mode === "pre_start_long" || mode === "old_rebound_short") && confirmScore > 0) {
+  if ((mode === "pre_start_long" || mode === "old_rebound_short" || mode === "high_pullback_short") && confirmScore > 0) {
     return {
       text: confirmScore.toFixed(1),
       title: `池子确认分 ${confirmScore.toFixed(1)}/10；强波动系统分 ${systemScore.toFixed(1)}`,
