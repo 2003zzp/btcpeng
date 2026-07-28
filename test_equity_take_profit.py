@@ -1168,6 +1168,19 @@ class RemovedStrategyControlsTest(unittest.TestCase):
         self.assertEqual(plan["target_leverage"], 2)
         self.assertEqual(plan["tier"], "old_rebound_short_fixed")
 
+    def test_position_plan_uses_high_pullback_short_margin_and_leverage(self):
+        bot = self.make_bot(
+            '{"margin_per_trade_usdt": 9, "leverage": 5, "high_pullback_short_margin_per_trade_usdt": 2.5, "high_pullback_short_leverage": 2}'
+        )
+        signal = self.make_signal()
+        signal.signal_mode = "high_pullback_short"
+
+        plan = bot.position_plan(signal, available=20.0)
+
+        self.assertEqual(plan["margin_usdt"], 2.5)
+        self.assertEqual(plan["target_leverage"], 2)
+        self.assertEqual(plan["tier"], "high_pullback_short_fixed")
+
     def test_pre_start_margin_and_leverage_can_be_updated(self):
         bot = self.make_bot("{}")
 
@@ -1183,6 +1196,14 @@ class RemovedStrategyControlsTest(unittest.TestCase):
 
         self.assertEqual(bot.config["old_rebound_short_margin_per_trade_usdt"], 4.5)
         self.assertEqual(bot.config["old_rebound_short_leverage"], 3)
+
+    def test_high_pullback_short_margin_and_leverage_can_be_updated(self):
+        bot = self.make_bot("{}")
+
+        bot.update_settings({"high_pullback_short_margin_per_trade_usdt": 2.5, "high_pullback_short_leverage": 2})
+
+        self.assertEqual(bot.config["high_pullback_short_margin_per_trade_usdt"], 2.5)
+        self.assertEqual(bot.config["high_pullback_short_leverage"], 2)
 
     def test_removed_strategy_controls_are_ignored_by_settings_update(self):
         bot = self.make_bot(

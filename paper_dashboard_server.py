@@ -147,6 +147,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "high_pullback_short_oi_1h_min_pct": -5.0,
     "high_pullback_short_funding_abs_max_pct": 0.08,
     "high_pullback_short_confirm_min_score": 7.0,
+    "high_pullback_short_margin_per_trade_usdt": 3.0,
+    "high_pullback_short_leverage": 2,
     "max_kline_enriched_candidates": 8,
     "kline_15m_limit": 40,
     "kline_1h_limit": 10,
@@ -1472,6 +1474,8 @@ class PaperBot:
             "high_pullback_short_oi_1h_min_pct": float,
             "high_pullback_short_funding_abs_max_pct": float,
             "high_pullback_short_confirm_min_score": float,
+            "high_pullback_short_margin_per_trade_usdt": float,
+            "high_pullback_short_leverage": int,
             "kline_15m_limit": int,
             "kline_1h_limit": int,
             "max_open_positions": int,
@@ -1527,7 +1531,7 @@ class PaperBot:
                         value = "market_score"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "pre_start_max_candidates", "old_rebound_short_max_candidates", "high_pullback_short_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan", "telegram_hourly_status_interval_minutes"}:
+                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "high_pullback_short_leverage", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "pre_start_max_candidates", "old_rebound_short_max_candidates", "high_pullback_short_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan", "telegram_hourly_status_interval_minutes"}:
                     value = max(1, int(value))
                 if key == "previous_day_equity_usdt":
                     value = max(0.0, float(value))
@@ -1535,6 +1539,7 @@ class PaperBot:
                     "margin_per_trade_usdt",
                     "pre_start_margin_per_trade_usdt",
                     "old_rebound_short_margin_per_trade_usdt",
+                    "high_pullback_short_margin_per_trade_usdt",
                     "take_profit_roi_pct",
                     "stop_loss_roi_pct",
                     "signal_score_threshold",
@@ -2412,6 +2417,7 @@ class PaperBot:
     def position_plan(self, signal: Signal, available: float) -> dict[str, Any]:
         is_pre_start = signal.signal_mode == "pre_start_long"
         is_old_rebound_short = signal.signal_mode == "old_rebound_short"
+        is_high_pullback_short = signal.signal_mode == "high_pullback_short"
         if is_pre_start:
             base_margin = float(self.config.get("pre_start_margin_per_trade_usdt", self.config.get("margin_per_trade_usdt", 9.0)))
             target_leverage = max(1, int(self.config.get("pre_start_leverage", self.config.get("leverage", 3))))
@@ -2420,6 +2426,10 @@ class PaperBot:
             base_margin = float(self.config.get("old_rebound_short_margin_per_trade_usdt", self.config.get("margin_per_trade_usdt", 9.0)))
             target_leverage = max(1, int(self.config.get("old_rebound_short_leverage", self.config.get("leverage", 3))))
             tier = "old_rebound_short_fixed"
+        elif is_high_pullback_short:
+            base_margin = float(self.config.get("high_pullback_short_margin_per_trade_usdt", self.config.get("margin_per_trade_usdt", 9.0)))
+            target_leverage = max(1, int(self.config.get("high_pullback_short_leverage", self.config.get("leverage", 3))))
+            tier = "high_pullback_short_fixed"
         else:
             base_margin = float(self.config.get("margin_per_trade_usdt", 9.0))
             target_leverage = max(1, int(self.config.get("leverage", 3)))

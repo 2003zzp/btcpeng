@@ -50,6 +50,8 @@ class FrontendSettingsTest(unittest.TestCase):
 
         expected = {
             "high_pullback_short_enabled",
+            "high_pullback_short_margin_per_trade_usdt",
+            "high_pullback_short_leverage",
             "high_pullback_short_max_candidates",
             "high_pullback_short_24h_min_pct",
             "high_pullback_short_24h_max_pct",

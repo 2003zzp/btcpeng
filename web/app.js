@@ -85,6 +85,8 @@ function normalizeSettingsLabels() {
     leverage: "最高杠杆上限",
     pre_start_margin_per_trade_usdt: "预启动保证金 (U)",
     pre_start_leverage: "预启动杠杆上限",
+    high_pullback_short_margin_per_trade_usdt: "高位回落保证金 (U)",
+    high_pullback_short_leverage: "高位回落杠杆上限",
     take_profit_roi_pct: "初始止盈 ROI (%)",
     stop_loss_roi_pct: "初始止损 ROI (%)",
     max_candidates_per_scan: "候选币数量",
@@ -180,6 +182,14 @@ function normalizeSettingsLabels() {
   const highPullbackLabel = els.form?.elements?.high_pullback_short_enabled?.closest("label");
   if (highPullbackLabel) {
     highPullbackLabel.title = "默认关闭。开启后额外筛选24h仍上涨、但已经从24h高点明显回落且未贴近24h低点的做空候选。";
+  }
+  const highPullbackMarginLabel = els.form?.elements?.high_pullback_short_margin_per_trade_usdt?.closest("label");
+  if (highPullbackMarginLabel) {
+    highPullbackMarginLabel.title = "仅用于高位回落做空池的单笔开仓保证金。止盈止损ROI仍沿用全局止盈/止损参数。";
+  }
+  const highPullbackLeverageLabel = els.form?.elements?.high_pullback_short_leverage?.closest("label");
+  if (highPullbackLeverageLabel) {
+    highPullbackLeverageLabel.title = "仅用于高位回落做空池的杠杆上限。交易所不支持时仍会自动降档。";
   }
   const highPullbackDrawdownLabel = els.form?.elements?.high_pullback_short_min_drawdown_pct?.closest("label");
   if (highPullbackDrawdownLabel) {
