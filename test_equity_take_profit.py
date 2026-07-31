@@ -396,8 +396,8 @@ class KlineShortMetricsTest(unittest.TestCase):
         config_path.write_text('{"max_kline_enriched_candidates": 2}', encoding="utf-8")
         return server.PaperBot(config_path, state_path)
 
-    def kline(self, close: float, quote_volume: float = 1000.0) -> list[object]:
-        return [0, "0", "0", "0", str(close), "0", 0, str(quote_volume)]
+    def kline(self, close: float, quote_volume: float = 1000.0, close_time: int = 0) -> list[object]:
+        return [0, "0", "0", "0", str(close), "0", close_time, str(quote_volume)]
 
     def test_stale_scan_in_progress_is_released_on_next_scan(self):
         bot = self.make_bot()
@@ -482,6 +482,32 @@ class KlineShortMetricsTest(unittest.TestCase):
         metrics = bot.kline_short_metrics("VOLUSDT", 100.0, 8.0)
 
         self.assertAlmostEqual(metrics["volume_1h_ratio"], 2.4, places=2)
+
+    def test_short_metrics_ignore_unclosed_1h_kline_for_structure(self):
+        bot = self.make_bot()
+        future_close_time = int(server.time.time() * 1000) + 30 * 60 * 1000
+
+        def fetch_interval(symbol, interval, limit):
+            if interval == "15m":
+                return [self.kline(100.0, 1000.0) for _ in range(39)] + [self.kline(101.0, 1500.0)]
+            if interval == "1h":
+                return [
+                    self.kline(100.0, 1000.0),
+                    self.kline(101.0, 1000.0),
+                    self.kline(102.0, 1000.0),
+                    self.kline(103.0, 1000.0),
+                    self.kline(104.0, 1000.0),
+                    self.kline(98.0, 5000.0, close_time=future_close_time),
+                ]
+            raise AssertionError(interval)
+
+        bot.fetch_klines_interval = fetch_interval
+
+        metrics = bot.kline_short_metrics("LIVE1HUSDT", 100.0, 8.0)
+
+        self.assertAlmostEqual(metrics["change_1h"], server.pct(104.0, 103.0), places=2)
+        self.assertAlmostEqual(metrics["change_4h"], server.pct(104.0, 100.0), places=2)
+        self.assertEqual(metrics["price"], 101.0)
 
     def test_strong_candidates_are_not_enriched_in_candidate_pool(self):
         bot = self.make_bot()

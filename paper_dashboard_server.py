@@ -259,6 +259,16 @@ def parse_time_ms(value: Any) -> int:
     return 0
 
 
+def closed_klines(klines: list[list[Any]], now_ms: int | None = None) -> list[list[Any]]:
+    cutoff = now_ms if now_ms is not None else int(time.time() * 1000)
+    closed: list[list[Any]] = []
+    for kline in klines:
+        close_time = parse_time_ms(kline[6] if len(kline) > 6 else 0)
+        if close_time <= 0 or close_time <= cutoff:
+            closed.append(kline)
+    return closed
+
+
 def local_datetime(value: Any) -> datetime | None:
     millis = parse_time_ms(value)
     if millis <= 0:
@@ -3837,10 +3847,10 @@ class PaperBot:
         try:
             limit_1h = max(5, int(self.config.get("kline_1h_limit", 10)))
             klines1h = self.fetch_klines_interval(symbol, "1h", limit_1h)
+            klines1h = closed_klines(klines1h)
             closes1h = [fnum(k[4]) for k in klines1h]
             volumes1h = [fnum(k[7]) for k in klines1h]
             if closes1h:
-                metrics["price"] = closes1h[-1] or metrics["price"] or fallback_price
                 metrics["enriched"] = True
             if len(closes1h) > 1:
                 metrics["change_1h"] = pct(closes1h[-1], closes1h[-2])
