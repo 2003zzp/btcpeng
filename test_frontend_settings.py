@@ -62,6 +62,18 @@ class FrontendSettingsTest(unittest.TestCase):
         }
         self.assertTrue(expected.issubset(parser.input_names))
 
+    def test_active_positions_expose_strategy_reason_column(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        js = Path("web/app.js").read_text(encoding="utf-8")
+        render_positions = js[js.index("function renderPositions") : js.index("function renderEvents")]
+
+        self.assertGreaterEqual(html.count("<th>策略归因</th>"), 2)
+        self.assertIn("function strategyReasonDisplay(row)", js)
+        self.assertIn('Array.isArray(row.decision_steps)', js)
+        self.assertIn("const strategy = strategyReasonDisplay(row);", render_positions)
+        self.assertIn('title="${titleText(strategy.title)}"', render_positions)
+        self.assertIn('${escapeHtml(strategy.text)}', render_positions)
+
 
 if __name__ == "__main__":
     unittest.main()

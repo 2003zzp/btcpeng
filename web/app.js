@@ -997,12 +997,7 @@ function renderHistory(rows) {
   els.historyRows.innerHTML = rows
     .slice(0, 60)
     .map((row) => {
-      const strategyParts = [];
-      if (Number(row.strategy_score || 0) > 0) strategyParts.push(`分 ${Number(row.strategy_score || 0).toFixed(1)}`);
-      if (row.analyzer_direction) strategyParts.push(`${row.analyzer_direction} ${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%`);
-      if (row.decision_summary) strategyParts.push(row.decision_summary);
-      const strategyText = strategyParts.join(" / ") || row.trigger_reason || "-";
-      const strategyTitle = Array.isArray(row.decision_steps) && row.decision_steps.length ? row.decision_steps.join("\n") : strategyText;
+      const strategy = strategyReasonDisplay(row);
       return `
         <tr>
           <td>${row.symbol}</td>
@@ -1012,13 +1007,23 @@ function renderHistory(rows) {
           <td>${priceOrDash(row.entry_price)}</td>
           <td>${priceOrDash(row.exit_price)}</td>
           <td>${row.close_reason}</td>
-          <td><span class="decision-chain" title="${titleText(strategyTitle)}">${escapeHtml(strategyText)}</span></td>
+          <td><span class="decision-chain" title="${titleText(strategy.title)}">${escapeHtml(strategy.text)}</span></td>
           <td class="${signedClass(row.pnl_usdt)}">${money(row.pnl_usdt)}</td>
           <td class="${signedClass(row.roi_pct)}">${pct(row.roi_pct)}</td>
         </tr>
       `;
     })
     .join("");
+}
+
+function strategyReasonDisplay(row) {
+  const strategyParts = [];
+  if (Number(row.strategy_score || row.score || 0) > 0) strategyParts.push(`分 ${Number(row.strategy_score || row.score || 0).toFixed(1)}`);
+  if (row.analyzer_direction) strategyParts.push(`${row.analyzer_direction} ${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%`);
+  if (row.decision_summary) strategyParts.push(row.decision_summary);
+  const text = strategyParts.join(" / ") || row.trigger_reason || "-";
+  const title = Array.isArray(row.decision_steps) && row.decision_steps.length ? row.decision_steps.join("\n") : text;
+  return { text, title };
 }
 
 function renderPositions(rows) {
@@ -1029,10 +1034,11 @@ function renderPositions(rows) {
   }
   els.positionRows.innerHTML = rows
     .map((row) => {
+      const strategy = strategyReasonDisplay(row);
       return `
         <tr>
           <td>${row.symbol}</td>
-          <td>${row.trigger_reason}</td>
+          <td><span class="decision-chain" title="${titleText(strategy.title)}">${escapeHtml(strategy.text)}</span></td>
           <td>${sidePill(row.side)}</td>
           <td>${formatDate(row.opened_at)}</td>
           <td><strong>${price(row.last_price)} U</strong></td>
