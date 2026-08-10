@@ -172,6 +172,13 @@
               <input name="leverage" type="number" min="1" max="20" step="1" />
             </label>
             <label>
+              仓位模式
+              <select name="margin_type">
+                <option value="ISOLATED">逐仓</option>
+                <option value="CROSSED">全仓</option>
+              </select>
+            </label>
+            <label>
               预启动保证金 (U)
               <input name="pre_start_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
             </label>

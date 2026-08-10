@@ -59,6 +59,27 @@ class HedgeModeCloseOrderTest(unittest.TestCase):
         self.assertNotIn("reduceOnly", calls[0][2])
 
 
+class MarginTypeSettingTest(unittest.TestCase):
+    def test_ensure_exchange_settings_uses_global_margin_type(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text('{"margin_type": "CROSSED"}', encoding="utf-8")
+        bot = server.PaperBot(config_path, state_path)
+        calls = []
+        bot.signed_exchange_request = lambda method, path, payload: calls.append((method, path, payload)) or {}
+
+        bot.ensure_exchange_settings("BTCUSDT", target_leverage=5)
+
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[0][1], "/fapi/v1/marginType")
+        self.assertEqual(calls[0][2]["marginType"], "CROSSED")
+        self.assertEqual(calls[1][1], "/fapi/v1/leverage")
+        self.assertEqual(calls[1][2]["leverage"], 5)
+
+
 class ClosedTradeCooldownTest(unittest.TestCase):
     def make_bot(self, take_profit_cooldown_enabled=True) -> server.PaperBot:
         tmp = tempfile.TemporaryDirectory()

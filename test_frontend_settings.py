@@ -7,14 +7,18 @@ class InputNameParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.input_names = set()
+        self.select_names = set()
 
     def handle_starttag(self, tag, attrs):
-        if tag != "input":
+        if tag not in {"input", "select"}:
             return
         values = dict(attrs)
         name = values.get("name")
         if name:
-            self.input_names.add(name)
+            if tag == "input":
+                self.input_names.add(name)
+            else:
+                self.select_names.add(name)
 
 
 class FrontendSettingsTest(unittest.TestCase):
@@ -61,6 +65,14 @@ class FrontendSettingsTest(unittest.TestCase):
             "high_pullback_short_confirm_min_score",
         }
         self.assertTrue(expected.issubset(parser.input_names))
+
+    def test_settings_form_exposes_margin_type_selector(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+
+        parser.feed(html)
+
+        self.assertIn("margin_type", parser.select_names)
 
     def test_active_positions_expose_strategy_reason_column(self):
         html = Path("web/index.html").read_text(encoding="utf-8")

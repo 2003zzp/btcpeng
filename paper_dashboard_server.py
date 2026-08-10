@@ -155,6 +155,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_new_positions_per_scan": 2,
     "margin_per_trade_usdt": 9.0,
     "leverage": 3,
+    "margin_type": "ISOLATED",
     "max_open_positions": 15,
     "max_exposure_pct": 200.0,
     "max_daily_profit_enabled": True,
@@ -636,7 +637,10 @@ class PaperBot:
 
     def exchange_config(self) -> dict[str, Any]:
         key = "futures_live" if self.is_live_trading() else "futures_testnet"
-        return self.config.get(key, {})
+        futures = dict(self.config.get(key, {}))
+        margin_type = str(self.config.get("margin_type", futures.get("margin_type", "ISOLATED"))).upper()
+        futures["margin_type"] = margin_type if margin_type in {"ISOLATED", "CROSSED"} else "ISOLATED"
+        return futures
 
     def exchange_base_url(self) -> str:
         futures = self.exchange_config()
@@ -1500,6 +1504,7 @@ class PaperBot:
             "signal_score_threshold": float,
             "strong_long_24h_min_change_pct": float,
             "strong_short_enabled": str,
+            "margin_type": str,
             "confirmation_mode": str,
             "market_confirm_min_score": float,
             "short_market_confirm_min_score": float,
@@ -1539,6 +1544,10 @@ class PaperBot:
                     value = str(value)
                     if value not in {"market_score", "analyzer"}:
                         value = "market_score"
+                if key == "margin_type":
+                    value = str(value).upper()
+                    if value not in {"ISOLATED", "CROSSED"}:
+                        value = "ISOLATED"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
                 if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "high_pullback_short_leverage", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "pre_start_max_candidates", "old_rebound_short_max_candidates", "high_pullback_short_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan", "telegram_hourly_status_interval_minutes"}:

@@ -83,6 +83,7 @@ function normalizeSettingsLabels() {
   const labelTextMap = {
     margin_per_trade_usdt: "基础开仓保证金 (U)",
     leverage: "最高杠杆上限",
+    margin_type: "仓位模式",
     pre_start_margin_per_trade_usdt: "预启动保证金 (U)",
     pre_start_leverage: "预启动杠杆上限",
     high_pullback_short_margin_per_trade_usdt: "高位回落保证金 (U)",
@@ -178,6 +179,10 @@ function normalizeSettingsLabels() {
   const preStartLeverageLabel = els.form?.elements?.pre_start_leverage?.closest("label");
   if (preStartLeverageLabel) {
     preStartLeverageLabel.title = "仅用于预启动做多池的杠杆上限。交易所不支持时仍会自动降档。";
+  }
+  const marginTypeLabel = els.form?.elements?.margin_type?.closest("label");
+  if (marginTypeLabel) {
+    marginTypeLabel.title = "全局仓位模式。逐仓风险隔离更强；全仓会共用账户保证金，适合你明确想统一切换时使用。";
   }
   const highPullbackLabel = els.form?.elements?.high_pullback_short_enabled?.closest("label");
   if (highPullbackLabel) {
