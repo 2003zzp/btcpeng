@@ -530,6 +530,28 @@ class KlineShortMetricsTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["change_4h"], server.pct(104.0, 100.0), places=2)
         self.assertEqual(metrics["price"], 101.0)
 
+    def test_short_metrics_ignore_unclosed_15m_kline_for_short_move(self):
+        bot = self.make_bot()
+        future_close_time = int(server.time.time() * 1000) + 8 * 60 * 1000
+
+        def fetch_interval(symbol, interval, limit):
+            if interval == "15m":
+                return [
+                    self.kline(100.0, 1000.0),
+                    self.kline(102.0, 1200.0),
+                    self.kline(96.0, 8000.0, close_time=future_close_time),
+                ]
+            if interval == "1h":
+                return [self.kline(100.0, 1000.0) for _ in range(5)]
+            raise AssertionError(interval)
+
+        bot.fetch_klines_interval = fetch_interval
+
+        metrics = bot.kline_short_metrics("LIVE15MUSDT", 100.0, 8.0)
+
+        self.assertAlmostEqual(metrics["short_move"], server.pct(102.0, 100.0), places=2)
+        self.assertEqual(metrics["price"], 102.0)
+
     def test_strong_candidates_are_not_enriched_in_candidate_pool(self):
         bot = self.make_bot()
         bot.kline_short_metrics = lambda symbol, price, change: (_ for _ in ()).throw(AssertionError("candidate pool should not fetch Klines"))

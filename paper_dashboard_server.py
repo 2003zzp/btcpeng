@@ -3838,6 +3838,7 @@ class PaperBot:
         try:
             limit_15m = max(2, int(self.config.get("kline_15m_limit", 40)))
             klines15 = self.fetch_klines_interval(symbol, "15m", limit_15m)
+            klines15 = closed_klines(klines15)
             closes15 = [fnum(k[4]) for k in klines15]
             volumes15 = [fnum(k[7]) for k in klines15]
             if closes15:
