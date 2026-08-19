@@ -83,6 +83,7 @@ function normalizeSettingsLabels() {
   const labelTextMap = {
     margin_per_trade_usdt: "基础开仓保证金 (U)",
     leverage: "最高杠杆上限",
+    reverse_orders_enabled: "开启反向订单",
     margin_type: "仓位模式",
     pre_start_margin_per_trade_usdt: "预启动保证金 (U)",
     pre_start_leverage: "预启动杠杆上限",
@@ -142,6 +143,7 @@ function normalizeSettingsLabels() {
     pre_start_long_enabled: "启用预启动做多池",
     high_pullback_short_enabled: "启用高位回落做空池",
     strong_short_enabled: "启用强波动池做空",
+    reverse_orders_enabled: "开启反向订单",
   };
   for (const [name, textValue] of Object.entries(toggles)) {
     const input = els.form?.elements?.[name];
@@ -228,6 +230,10 @@ function normalizeSettingsLabels() {
   const strongShortEnabledLabel = els.form?.elements?.strong_short_enabled?.closest("label");
   if (strongShortEnabledLabel) {
     strongShortEnabledLabel.title = "只控制强波动池里的24h下跌做空候选。关闭后不再筛选强波动做空币；老币反弹和高位回落做空池仍按各自开关独立运行。";
+  }
+  const reverseOrdersLabel = els.form?.elements?.reverse_orders_enabled?.closest("label");
+  if (reverseOrdersLabel) {
+    reverseOrdersLabel.title = "开启后，所有池子的最终下单方向都会反过来执行：原本做多会实际开空，原本做空会实际开多；止盈止损也会跟着最终方向自动反转。";
   }
   const marketConfirmLabel = els.form?.elements?.market_confirm_min_score?.closest("label");
   if (marketConfirmLabel) {

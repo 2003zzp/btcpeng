@@ -76,6 +76,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "short_term_move_pct": 1.2,
     "volume_spike_ratio": 1.5,
     "trade_direction_mode": "both",
+    "reverse_orders_enabled": False,
     "signal_score_threshold": 4.0,
     "confirmation_mode": "market_score",
     "market_confirm_min_score": 7.0,
@@ -759,6 +760,9 @@ class PaperBot:
                 "open_order_id": str(record.get("entry_order_id") or ""),
                 "opened_at": record.get("time") or iso_now(),
                 "entry_price": fnum(record.get("entry_price"), signal.price),
+                "original_side": record.get("original_side", signal.side),
+                "executed_side": record.get("side", signal.side),
+                "reverse_order": bool(record.get("reverse_order", False)),
                 "decision_summary": signal.decision_summary,
                 "decision_steps": list(signal.decision_steps),
             }
@@ -841,7 +845,7 @@ class PaperBot:
             return False
 
     def notify_open_position(self, signal: Signal, record: dict[str, Any]) -> None:
-        side = self.side_cn(signal.side)
+        side = self.side_cn(str(record.get("side") or signal.side))
         analyzer_text = "-"
         if signal.analyzer_direction:
             analyzer_text = f"{signal.analyzer_direction} {signal.analyzer_confidence_pct:.1f}%"
@@ -854,6 +858,7 @@ class PaperBot:
                 f"名义价值：{fnum(record.get('notional_usdt')):.2f} U",
                 f"止盈：{record.get('take_profit', '-')}",
                 f"止损：{record.get('stop_price', '-')}",
+                f"反向订单：{'是' if record.get('reverse_order') else '否'}",
                 f"系统分：{signal.score:.2f}",
                 f"分析器：{analyzer_text}",
                 f"触发：{signal.trigger_reason}",
@@ -1123,8 +1128,9 @@ class PaperBot:
                 time.sleep(60)
 
     def build_square_open_post(self, signal: Signal, record: dict[str, Any]) -> str:
-        side = self.side_cn(signal.side)
-        side_view = "\u770b\u591a" if signal.side == "LONG" else "\u770b\u7a7a"
+        execution_side = str(record.get("side") or signal.side)
+        side = self.side_cn(execution_side)
+        side_view = "\u770b\u591a" if execution_side == "LONG" else "\u770b\u7a7a"
         analyzer_text = "-"
         if signal.analyzer_direction:
             analyzer_text = f"{signal.analyzer_direction} {signal.analyzer_confidence_pct:.1f}%"
@@ -1519,6 +1525,7 @@ class PaperBot:
             "analyzer_realtime_before_open": str,
             "max_new_positions_per_scan": int,
             "trade_direction_mode": str,
+            "reverse_orders_enabled": str,
             "blocked_symbols": str,
             "live_trading_enabled": str,
             "telegram_hourly_status_enabled": str,
@@ -1531,7 +1538,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "analyzer_realtime_before_open", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "old_rebound_short_enabled", "high_pullback_short_enabled", "strong_short_enabled", "take_profit_cooldown_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "analyzer_realtime_before_open", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "old_rebound_short_enabled", "high_pullback_short_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -2356,6 +2363,12 @@ class PaperBot:
     def futures_side(signal_side: str) -> str:
         return "BUY" if signal_side == "LONG" else "SELL"
 
+    def execution_side(self, signal_side: str) -> str:
+        original_side = str(signal_side).upper()
+        if not self.config.get("reverse_orders_enabled", False):
+            return original_side
+        return "SHORT" if original_side == "LONG" else "LONG"
+
     @staticmethod
     def close_side(signal_side: str) -> str:
         return "SELL" if signal_side == "LONG" else "BUY"
@@ -2473,6 +2486,13 @@ class PaperBot:
         if margin <= 0:
             raise RuntimeError(f"{self.exchange_label()} 可用 USDT 余额不足")
         futures = self.exchange_config()
+        original_side = str(signal.side).upper()
+        execution_side = self.execution_side(original_side)
+        reverse_order = execution_side != original_side
+        if reverse_order:
+            signal.decision_steps.append(
+                f"反向订单：原策略{self.side_cn(original_side)}，实际开{self.side_cn(execution_side)}"
+            )
         leverage = float(self.ensure_exchange_settings(signal.symbol, int(sizing.get("target_leverage", self.config.get("leverage", 3)))))
         notional = margin * leverage * float(futures.get("quantity_safety_factor", 0.98))
         if self.exposure_pct(extra_notional=notional) > float(self.config.get("max_exposure_pct", 65.0)):
@@ -2486,20 +2506,20 @@ class PaperBot:
             "/fapi/v1/order",
             {
                 "symbol": signal.symbol,
-                "side": self.futures_side(signal.side),
+                "side": self.futures_side(execution_side),
                 "type": "MARKET",
                 "quantity": qty_text,
             },
-            signal.side,
+            execution_side,
         )
 
-        if fnum(signal.planned_stop_price) > 0 and fnum(signal.planned_take_profit_price) > 0:
+        if not reverse_order and fnum(signal.planned_stop_price) > 0 and fnum(signal.planned_take_profit_price) > 0:
             stop_price = fnum(signal.planned_stop_price)
             take_profit = fnum(signal.planned_take_profit_price)
         else:
             stop_pct = float(self.config.get("stop_loss_roi_pct", 86.0)) / max(1.0, leverage) / 100.0
             take_pct = float(self.config.get("take_profit_roi_pct", 90.0)) / max(1.0, leverage) / 100.0
-            if signal.side == "LONG":
+            if execution_side == "LONG":
                 stop_price = signal.price * (1.0 - stop_pct)
                 take_profit = signal.price * (1.0 + take_pct)
             else:
@@ -2515,13 +2535,13 @@ class PaperBot:
                 {
                     "algoType": "CONDITIONAL",
                     "symbol": signal.symbol,
-                    "side": self.close_side(signal.side),
+                    "side": self.close_side(execution_side),
                     "type": "STOP_MARKET",
                     "triggerPrice": self.round_price(symbol_info, stop_price),
                     "closePosition": "true",
                     "workingType": futures.get("working_type", "MARK_PRICE"),
                 },
-                signal.side,
+                execution_side,
             )
             take_order = self.signed_exchange_request_position_aware(
                 "POST",
@@ -2529,13 +2549,13 @@ class PaperBot:
                 {
                     "algoType": "CONDITIONAL",
                     "symbol": signal.symbol,
-                    "side": self.close_side(signal.side),
+                    "side": self.close_side(execution_side),
                     "type": "TAKE_PROFIT_MARKET",
                     "triggerPrice": self.round_price(symbol_info, take_profit),
                     "closePosition": "true",
                     "workingType": futures.get("working_type", "MARK_PRICE"),
                 },
-                signal.side,
+                execution_side,
             )
         except Exception as exc:
             self.event("error", f"{signal.symbol} 已开仓但保护单提交失败：{exc}")
@@ -2543,8 +2563,8 @@ class PaperBot:
                 self.signed_exchange_request_position_aware(
                     "POST",
                     "/fapi/v1/order",
-                    self.market_close_order_params(signal.symbol, signal.side, qty_text),
-                    signal.side,
+                    self.market_close_order_params(signal.symbol, execution_side, qty_text),
+                    execution_side,
                 )
                 self.event("risk", f"{signal.symbol} 保护单失败，已提交紧急平仓")
             except Exception as close_exc:
@@ -2555,7 +2575,9 @@ class PaperBot:
             "time": iso_now(),
             "execution_mode": self.exchange_mode(),
             "symbol": signal.symbol,
-            "side": signal.side,
+            "side": execution_side,
+            "original_side": original_side,
+            "reverse_order": reverse_order,
             "entry_order_id": entry_order.get("orderId"),
             "stop_algo_id": stop_order.get("algoId"),
             "take_profit_algo_id": take_order.get("algoId"),
@@ -4711,7 +4733,7 @@ class PaperBot:
                 self.mark_signal_review_opened(signal, record)
                 self.event(
                     "trade",
-                    f"{self.exchange_label()} 开仓 {signal.symbol} {self.side_cn(signal.side)}，保证金 {record['margin_usdt']:.2f} U",
+                    f"{self.exchange_label()} 开仓 {signal.symbol} {self.side_cn(str(record.get('side') or signal.side))}，保证金 {record['margin_usdt']:.2f} U",
                 )
                 self.notify_open_position(signal, record)
                 self.publish_square_open_position_async(signal, record)

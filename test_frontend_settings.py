@@ -46,6 +46,14 @@ class FrontendSettingsTest(unittest.TestCase):
 
         self.assertIn("strong_short_enabled", parser.input_names)
 
+    def test_settings_form_exposes_reverse_orders_toggle(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+
+        parser.feed(html)
+
+        self.assertIn("reverse_orders_enabled", parser.input_names)
+
     def test_settings_form_exposes_high_pullback_short_pool_settings(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         parser = InputNameParser()

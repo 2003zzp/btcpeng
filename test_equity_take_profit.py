@@ -80,6 +80,100 @@ class MarginTypeSettingTest(unittest.TestCase):
         self.assertEqual(calls[1][2]["leverage"], 5)
 
 
+class ReverseOrdersTest(unittest.TestCase):
+    def make_bot(self) -> server.PaperBot:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text("{}", encoding="utf-8")
+        return server.PaperBot(config_path, state_path)
+
+    def make_signal(self) -> server.Signal:
+        return server.Signal(
+            symbol="BTCUSDT",
+            side="LONG",
+            score=8.0,
+            price=100.0,
+            quote_volume=50_000_000.0,
+            change_24h_pct=10.0,
+            change_4h_pct=2.0,
+            change_1h_pct=1.0,
+            short_move_pct=0.8,
+            volume_ratio=2.0,
+            open_interest_usdt=1_000_000.0,
+            open_interest_24h_pct=5.0,
+            open_interest_4h_pct=2.0,
+            open_interest_1h_pct=1.0,
+            funding_rate_pct=0.01,
+            long_short_ratio=1.1,
+            volume_4h_ratio=1.5,
+            taker_long_short_ratio=1.1,
+            oi_volume_ratio=0.2,
+            signal_mode="strong_momentum",
+            signal_heat_level="normal",
+            market_regime_score=8.0,
+            market_regime_label="正常",
+            market_regime_reason="",
+            risk_level="正常",
+            analyzer_direction="市场确认",
+            analyzer_confidence_pct=80.0,
+            analyzer_reason="",
+            trigger_reason="测试信号",
+            reject_reason="",
+            decision_summary="待开仓",
+            decision_steps=[],
+            priority="高",
+        )
+
+    def test_reverse_orders_setting_can_be_updated(self):
+        bot = self.make_bot()
+
+        bot.update_settings({"reverse_orders_enabled": "true"})
+
+        self.assertTrue(bot.config["reverse_orders_enabled"])
+
+    def test_reverse_orders_flip_entry_and_protection_order_sides(self):
+        bot = self.make_bot()
+        bot.config["reverse_orders_enabled"] = True
+        bot.get_available_balance = lambda: 100.0
+        bot.ensure_exchange_settings = lambda symbol, target_leverage: target_leverage
+        bot.exposure_pct = lambda extra_notional=0.0: 0.0
+        calls = []
+
+        def submit(method, path, params, signal_side):
+            calls.append((method, path, params, signal_side))
+            if path == "/fapi/v1/order":
+                return {"orderId": "entry-1"}
+            return {"algoId": f"algo-{len(calls)}"}
+
+        bot.signed_exchange_request_position_aware = submit
+        signal = self.make_signal()
+        symbol_info = {
+            "filters": [
+                {"filterType": "LOT_SIZE", "stepSize": "0.001"},
+                {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+            ]
+        }
+
+        record = bot.exchange_open_position_with_sizing(
+            signal,
+            symbol_info,
+            {"margin_usdt": 10.0, "target_leverage": 2, "tier": "fixed", "margin_multiplier": 1.0, "reason": "test"},
+        )
+
+        self.assertEqual(calls[0][2]["side"], "SELL")
+        self.assertEqual(calls[0][3], "SHORT")
+        self.assertEqual(calls[1][2]["side"], "BUY")
+        self.assertEqual(calls[2][2]["side"], "BUY")
+        self.assertEqual(record["side"], "SHORT")
+        self.assertEqual(record["original_side"], "LONG")
+        self.assertTrue(record["reverse_order"])
+        self.assertGreater(float(record["stop_price"]), signal.price)
+        self.assertLess(float(record["take_profit"]), signal.price)
+
+
 class ClosedTradeCooldownTest(unittest.TestCase):
     def make_bot(self, take_profit_cooldown_enabled=True) -> server.PaperBot:
         tmp = tempfile.TemporaryDirectory()
