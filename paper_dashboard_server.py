@@ -271,6 +271,15 @@ def closed_klines(klines: list[list[Any]], now_ms: int | None = None) -> list[li
     return closed
 
 
+def latest_unclosed_kline(klines: list[list[Any]], now_ms: int | None = None) -> list[Any] | None:
+    if not klines:
+        return None
+    cutoff = now_ms if now_ms is not None else int(time.time() * 1000)
+    latest = klines[-1]
+    close_time = parse_time_ms(latest[6] if len(latest) > 6 else 0)
+    return latest if close_time > cutoff else None
+
+
 def local_datetime(value: Any) -> datetime | None:
     millis = parse_time_ms(value)
     if millis <= 0:
@@ -3290,9 +3299,11 @@ class PaperBot:
         volume_ratio: float,
         trend: str,
         stats: dict[str, float],
+        live_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         score = 0.0
         reasons: list[str] = []
+        live_metrics = live_metrics or {}
         min_24h = float(self.config.get("old_rebound_short_24h_min_pct", 8.0))
         max_24h = float(self.config.get("old_rebound_short_24h_max_pct", 35.0))
         max_15m = float(self.config.get("old_rebound_short_15m_max_pct", 0.3))
@@ -3320,6 +3331,22 @@ class PaperBot:
         elif trend != "up":
             score += 0.4
             reasons.append("短线不再上推")
+        if "live_short_move" in live_metrics and short_move <= max_15m:
+            live_short_move = fnum(live_metrics.get("live_short_move"))
+            if live_short_move <= 0:
+                score += 0.2
+                reasons.append(f"15m实时继续下压 {live_short_move:+.1f}%")
+            elif live_short_move > max_15m:
+                score -= 0.4
+                reasons.append(f"15m实时反抽 {live_short_move:+.1f}%")
+        if "live_change_1h" in live_metrics and change_1h <= max_1h:
+            live_change_1h = fnum(live_metrics.get("live_change_1h"))
+            if live_change_1h <= 0:
+                score += 0.2
+                reasons.append(f"1h实时继续下压 {live_change_1h:+.1f}%")
+            elif live_change_1h > max_1h:
+                score -= 0.3
+                reasons.append(f"1h实时反抽 {live_change_1h:+.1f}%")
         if min_volume <= volume_ratio <= max_volume and taker_ratio <= max_taker and short_move <= max_15m and change_1h <= max_1h:
             score += 0.6
             reasons.append(f"量能可交易 {volume_ratio:.1f}x")
@@ -3783,20 +3810,37 @@ class PaperBot:
         except Exception:
             return False
 
-    def old_rebound_short_kline_reject_reason(self, symbol: str, short_move: float, change_1h: float, volume_ratio: float, trend: str) -> str:
+    def old_rebound_short_kline_reject_reason(
+        self,
+        symbol: str,
+        short_move: float,
+        change_1h: float,
+        volume_ratio: float,
+        trend: str,
+        live_metrics: dict[str, Any] | None = None,
+    ) -> str:
         min_days = int(self.config.get("old_rebound_short_min_history_days", 365))
         max_15m = float(self.config.get("old_rebound_short_15m_max_pct", 0.3))
         max_1h = float(self.config.get("old_rebound_short_1h_max_pct", 0.5))
         min_volume = float(self.config.get("old_rebound_short_volume_ratio_min", 0.8))
         max_volume = float(self.config.get("old_rebound_short_volume_ratio_max", 6.0))
+        live_metrics = live_metrics or {}
+        live_note = ""
+        if fnum(live_metrics.get("live_short_move"), 999.0) <= 0 or fnum(live_metrics.get("live_change_1h"), 999.0) <= 0:
+            live_parts = []
+            if "live_short_move" in live_metrics:
+                live_parts.append(f"15m {fnum(live_metrics.get('live_short_move')):+.1f}%")
+            if "live_change_1h" in live_metrics:
+                live_parts.append(f"1h {fnum(live_metrics.get('live_change_1h')):+.1f}%")
+            live_note = f"（实时转弱观察中 {' / '.join(live_parts)}，不单独放行）"
         if not self.has_symbol_history(symbol, min_days):
             return f"老币反弹历史不足 {min_days} 天"
+        if short_move > max_15m:
+            return f"老币反弹15m未转弱 {short_move:.1f}%/{max_15m:.1f}%{live_note}"
+        if change_1h > max_1h:
+            return f"老币反弹1h未转弱 {change_1h:.1f}%/{max_1h:.1f}%{live_note}"
         if trend == "up" and short_move > 0 and change_1h > 0:
             return "老币反弹仍在短线推升"
-        if short_move > max_15m:
-            return f"老币反弹15m未转弱 {short_move:.1f}%/{max_15m:.1f}%"
-        if change_1h > max_1h:
-            return f"老币反弹1h未转弱 {change_1h:.1f}%/{max_1h:.1f}%"
         if volume_ratio < min_volume:
             return f"老币反弹量能不足 {volume_ratio:.1f}x/{min_volume:.1f}x"
         if volume_ratio > max_volume:
@@ -3860,12 +3904,17 @@ class PaperBot:
         try:
             limit_15m = max(2, int(self.config.get("kline_15m_limit", 40)))
             klines15 = self.fetch_klines_interval(symbol, "15m", limit_15m)
+            live15 = latest_unclosed_kline(klines15)
             klines15 = closed_klines(klines15)
             closes15 = [fnum(k[4]) for k in klines15]
             volumes15 = [fnum(k[7]) for k in klines15]
             if closes15:
                 metrics["price"] = closes15[-1] or metrics["price"] or fallback_price
                 metrics["enriched"] = True
+            if live15 is not None and closes15:
+                live_close = fnum(live15[4])
+                if live_close > 0 and closes15[-1] > 0:
+                    metrics["live_short_move"] = pct(live_close, closes15[-1])
             if len(closes15) > 1:
                 metrics["short_move"] = pct(closes15[-1], closes15[-2])
             trend15 = infer_trend(closes15)
@@ -3879,11 +3928,16 @@ class PaperBot:
         try:
             limit_1h = max(5, int(self.config.get("kline_1h_limit", 10)))
             klines1h = self.fetch_klines_interval(symbol, "1h", limit_1h)
+            live1h = latest_unclosed_kline(klines1h)
             klines1h = closed_klines(klines1h)
             closes1h = [fnum(k[4]) for k in klines1h]
             volumes1h = [fnum(k[7]) for k in klines1h]
             if closes1h:
                 metrics["enriched"] = True
+            if live1h is not None and closes1h:
+                live_close = fnum(live1h[4])
+                if live_close > 0 and closes1h[-1] > 0:
+                    metrics["live_change_1h"] = pct(live_close, closes1h[-1])
             if len(closes1h) > 1:
                 metrics["change_1h"] = pct(closes1h[-1], closes1h[-2])
             if len(closes1h) > 4:
@@ -4132,7 +4186,7 @@ class PaperBot:
                 if not reject and is_pre_start_long:
                     reject = self.pre_start_kline_reject_reason(short_move, change_1h, volume_ratio, trend)
                 if not reject and is_old_rebound_short:
-                    reject = self.old_rebound_short_kline_reject_reason(symbol, short_move, change_1h, volume_ratio, trend)
+                    reject = self.old_rebound_short_kline_reject_reason(symbol, short_move, change_1h, volume_ratio, trend, metrics)
                 if not reject and is_high_pullback_short:
                     reject = self.high_pullback_short_kline_reject_reason(short_move, change_1h, volume_ratio, trend)
             priority = "高" if score >= 6 else "中" if score >= 4.5 else "低"
@@ -4213,6 +4267,7 @@ class PaperBot:
                         volume_ratio,
                         trend,
                         market_stats,
+                        metrics,
                     )
                 elif is_high_pullback_short:
                     market_confirm = self.high_pullback_short_confirmation_score(

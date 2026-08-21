@@ -646,6 +646,84 @@ class KlineShortMetricsTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["short_move"], server.pct(102.0, 100.0), places=2)
         self.assertEqual(metrics["price"], 102.0)
 
+    def test_short_metrics_expose_unclosed_klines_as_live_auxiliary_only(self):
+        bot = self.make_bot()
+        future_close_time = int(server.time.time() * 1000) + 8 * 60 * 1000
+
+        def fetch_interval(symbol, interval, limit):
+            if interval == "15m":
+                return [
+                    self.kline(100.0, 1000.0),
+                    self.kline(102.0, 1200.0),
+                    self.kline(98.0, 8000.0, close_time=future_close_time),
+                ]
+            if interval == "1h":
+                return [
+                    self.kline(100.0, 1000.0),
+                    self.kline(101.0, 1000.0),
+                    self.kline(102.0, 1000.0),
+                    self.kline(104.0, 1000.0),
+                    self.kline(99.0, 5000.0, close_time=future_close_time),
+                ]
+            raise AssertionError(interval)
+
+        bot.fetch_klines_interval = fetch_interval
+
+        metrics = bot.kline_short_metrics("LIVEAUXUSDT", 100.0, 8.0)
+
+        self.assertAlmostEqual(metrics["short_move"], server.pct(102.0, 100.0), places=2)
+        self.assertAlmostEqual(metrics["change_1h"], server.pct(104.0, 102.0), places=2)
+        self.assertAlmostEqual(metrics["live_short_move"], server.pct(98.0, 102.0), places=2)
+        self.assertAlmostEqual(metrics["live_change_1h"], server.pct(99.0, 104.0), places=2)
+
+    def test_old_rebound_short_live_drop_cannot_override_unclosed_main_confirmation(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+
+        reject = bot.old_rebound_short_kline_reject_reason(
+            "LIVEONLYUSDT",
+            short_move=1.0,
+            change_1h=1.2,
+            volume_ratio=2.0,
+            trend="up",
+            live_metrics={"live_short_move": -2.0, "live_change_1h": -1.5},
+        )
+
+        self.assertIn("未转弱", reject)
+        self.assertIn("实时转弱观察中", reject)
+
+    def test_old_rebound_short_live_auxiliary_adjusts_confirmation_score(self):
+        bot = self.make_bot()
+        stats = {
+            "taker_long_short_ratio": 0.88,
+            "open_interest_1h_pct": 2.0,
+            "funding_rate_pct": 0.03,
+            "long_short_ratio": 1.8,
+        }
+
+        continuing = bot.old_rebound_short_confirmation_score(
+            change_24h=18.0,
+            change_1h=-0.8,
+            short_move=-0.6,
+            volume_ratio=2.0,
+            trend="down",
+            stats=stats,
+            live_metrics={"live_short_move": -0.7, "live_change_1h": -0.4},
+        )
+        rebounding = bot.old_rebound_short_confirmation_score(
+            change_24h=18.0,
+            change_1h=-0.8,
+            short_move=-0.6,
+            volume_ratio=2.0,
+            trend="down",
+            stats=stats,
+            live_metrics={"live_short_move": 0.8, "live_change_1h": 0.7},
+        )
+
+        self.assertGreater(continuing["score"], rebounding["score"])
+        self.assertIn("实时继续下压", continuing["reason"])
+        self.assertIn("实时反抽", rebounding["reason"])
+
     def test_strong_candidates_are_not_enriched_in_candidate_pool(self):
         bot = self.make_bot()
         bot.kline_short_metrics = lambda symbol, price, change: (_ for _ in ()).throw(AssertionError("candidate pool should not fetch Klines"))
