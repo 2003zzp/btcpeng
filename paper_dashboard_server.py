@@ -541,6 +541,10 @@ class PaperBot:
         self.stop_event = threading.Event()
         self.exchange_time_offsets: dict[str, dict[str, float]] = {}
         self.position_mode_cache: dict[str, Any] = {"mode": "", "synced_at_ms": 0}
+        self.exchange_symbols_cache: dict[str, Any] = {"symbols": {}, "synced_at_ms": 0}
+        self.market_exchange_symbols_cache: dict[str, Any] = {"symbols": {}, "synced_at_ms": 0}
+        self.crypto_symbols: set[str] = set()
+        self.crypto_classification_error = ""
         self.analyzer_cache: dict[str, dict[str, Any]] = dict(self.state.get("analyzer_cache", {}))
         stale_errors = [
             symbol
@@ -1737,7 +1741,13 @@ class PaperBot:
                         pos["last_price"] = price_map[pos["symbol"]]
                 open_symbols = {p["symbol"] for p in self.state.get("positions", [])}
             set_scan_stage("build_signals")
-            signals = self.build_signals(tickers, open_symbols)
+            if self.crypto_classification_error:
+                signals = []
+                with self.lock:
+                    self.state["last_error"] = self.crypto_classification_error
+                    self.event("error", f"加密合约分类数据不可用，本轮只更新持仓行情、不生成新开仓信号：{self.crypto_classification_error}")
+            else:
+                signals = self.build_signals(tickers, open_symbols)
             if equity_take_profit_active:
                 equity_tp_reason = self.equity_take_profit_block_reason()
                 if equity_tp_reason:
@@ -1750,7 +1760,7 @@ class PaperBot:
                 self.record_signal_review_scan(signals)
                 self.persist()
             set_scan_stage("open_positions")
-            opened = 0 if equity_take_profit_active else self.open_from_signals(signals)
+            opened = 0 if equity_take_profit_active or self.crypto_classification_error else self.open_from_signals(signals)
             with self.lock:
                 if opened:
                     self.event("trade", f"本轮 {self.exchange_label()} 开仓 {opened} 笔")
@@ -1765,9 +1775,10 @@ class PaperBot:
                 self.state["scan_stage"] = "idle"
                 self.state["last_scan_finished_at"] = iso_now()
                 self.state["last_scan_duration_sec"] = round(time.monotonic() - started, 2)
-                pending_signals = self.collect_pending_open_signals()
+                if not self.crypto_classification_error:
+                    pending_signals = self.collect_pending_open_signals()
                 self.persist()
-            pending_opened = self.open_from_signals(pending_signals) if pending_signals else 0
+            pending_opened = self.open_from_signals(pending_signals) if pending_signals and not self.crypto_classification_error else 0
             if pending_opened:
                 self.sync_exchange_state()
 
@@ -1776,11 +1787,49 @@ class PaperBot:
         payload = http_get_json(self.config["market_base_url"], "/fapi/v1/ticker/24hr", timeout=timeout)
         quote = str(self.config.get("quote_asset", "USDT"))
         excluded = set(self.config.get("exclude_symbols", []))
+        try:
+            exchange_symbols = self.get_market_exchange_symbols()
+            self.crypto_classification_error = ""
+        except Exception as exc:
+            self.crypto_symbols = set()
+            self.crypto_classification_error = str(exc)
+            existing_symbols = {
+                str(position.get("symbol", "")).upper()
+                for position in self.state.get("positions", [])
+                if str(position.get("symbol", "")).strip()
+            }
+            return [
+                {**item, "_crypto_candidate_allowed": False}
+                for item in payload
+                if item.get("symbol") in existing_symbols
+                and str(item.get("symbol", "")).endswith(quote)
+                and item.get("symbol") not in excluded
+                and fnum(item.get("lastPrice")) > 0
+            ]
+        self.crypto_symbols = {
+            symbol for symbol, info in exchange_symbols.items() if self.is_crypto_contract(info)
+        }
+        existing_symbols = {
+            str(position.get("symbol", "")).upper()
+            for position in self.state.get("positions", [])
+            if str(position.get("symbol", "")).strip()
+        }
         result = []
         for item in payload:
             symbol = item.get("symbol", "")
-            if symbol.endswith(quote) and symbol not in excluded and fnum(item.get("lastPrice")) > 0:
-                result.append(item)
+            symbol_info = exchange_symbols.get(symbol)
+            if (
+                symbol.endswith(quote)
+                and symbol not in excluded
+                and fnum(item.get("lastPrice")) > 0
+                and symbol in exchange_symbols
+                and (symbol in self.crypto_symbols or symbol in existing_symbols)
+            ):
+                enriched = dict(item)
+                enriched["_crypto_candidate_allowed"] = symbol in self.crypto_symbols
+                enriched["_contract_underlying_type"] = str(symbol_info.get("underlyingType", ""))
+                enriched["_contract_type"] = str(symbol_info.get("contractType", ""))
+                result.append(enriched)
         return result
 
     def signed_exchange_request(self, method: str, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -1840,13 +1889,55 @@ class PaperBot:
         )
 
     def get_exchange_symbols(self) -> dict[str, dict[str, Any]]:
+        now_ms = int(time.time() * 1000)
+        cache_ttl_ms = max(5, int(self.config.get("exchange_info_cache_sec", 30))) * 1000
+        cached_at = int(self.exchange_symbols_cache.get("synced_at_ms", 0))
+        cached_symbols = self.exchange_symbols_cache.get("symbols")
+        if cached_at > 0 and now_ms - cached_at < cache_ttl_ms and isinstance(cached_symbols, dict):
+            return dict(cached_symbols)
         payload = self.unsigned_exchange_request("/fapi/v1/exchangeInfo")
         result: dict[str, dict[str, Any]] = {}
         for item in payload.get("symbols", []):
             symbol = item.get("symbol")
             if item.get("status") == "TRADING" and item.get("quoteAsset") == "USDT":
                 result[symbol] = item
+        self.exchange_symbols_cache = {"symbols": result, "synced_at_ms": now_ms}
         return result
+
+    def get_market_exchange_symbols(self) -> dict[str, dict[str, Any]]:
+        now_ms = int(time.time() * 1000)
+        cache_ttl_ms = max(5, int(self.config.get("exchange_info_cache_sec", 30))) * 1000
+        cached_at = int(self.market_exchange_symbols_cache.get("synced_at_ms", 0))
+        cached_symbols = self.market_exchange_symbols_cache.get("symbols")
+        if cached_at > 0 and now_ms - cached_at < cache_ttl_ms and isinstance(cached_symbols, dict):
+            return dict(cached_symbols)
+        payload = http_get_json(
+            self.config["market_base_url"],
+            "/fapi/v1/exchangeInfo",
+            timeout=float(self.config.get("request_timeout_sec", 6)),
+        )
+        result = {
+            str(item.get("symbol")): item
+            for item in payload.get("symbols", [])
+            if item.get("symbol") and item.get("status") == "TRADING"
+        }
+        if not result:
+            raise RuntimeError("Binance exchangeInfo 未返回可用交易对，停止筛选")
+        self.market_exchange_symbols_cache = {"symbols": result, "synced_at_ms": now_ms}
+        return result
+
+    @staticmethod
+    def is_crypto_contract(symbol_info: dict[str, Any]) -> bool:
+        underlying_type = str(symbol_info.get("underlyingType", "")).upper()
+        contract_type = str(symbol_info.get("contractType", "")).upper()
+        underlying_subtypes = {
+            str(item).upper() for item in symbol_info.get("underlyingSubType", [])
+        }
+        if underlying_type != "COIN":
+            return False
+        if contract_type.startswith("TRADIFI"):
+            return False
+        return not underlying_subtypes or "TRADFI" not in underlying_subtypes
 
     @staticmethod
     def get_symbol_filter(symbol_info: dict[str, Any], filter_type: str) -> dict[str, Any]:
@@ -3978,6 +4069,9 @@ class PaperBot:
         def is_blocked_candidate(item: dict[str, Any]) -> bool:
             return str(item.get("symbol", "")).upper() in blocked
 
+        def is_non_crypto_candidate(item: dict[str, Any]) -> bool:
+            return item.get("_crypto_candidate_allowed") is False
+
         def is_cooldown_candidate(item: dict[str, Any]) -> bool:
             symbol = str(item.get("symbol", "")).upper()
             return bool(symbol and self.stop_loss_cooldown_reason(symbol))
@@ -3999,7 +4093,7 @@ class PaperBot:
             hp_min_low_distance = float(self.config.get("high_pullback_short_min_low_distance_pct", 5.0))
             high_pullback = []
             for item in tickers:
-                if is_blocked_candidate(item) or is_cooldown_candidate(item):
+                if is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item):
                     continue
                 change = fnum(item.get("priceChangePercent"))
                 volume = fnum(item.get("quoteVolume"))
@@ -4026,7 +4120,7 @@ class PaperBot:
             old_max_volume = float(self.config.get("old_rebound_short_max_quote_volume_usdt", 80_000_000))
             old_rebound = []
             for item in tickers:
-                if is_blocked_candidate(item) or is_cooldown_candidate(item):
+                if is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item):
                     continue
                 change = fnum(item.get("priceChangePercent"))
                 volume = fnum(item.get("quoteVolume"))
@@ -4047,7 +4141,7 @@ class PaperBot:
         strong = []
         for item in tickers:
             symbol = str(item.get("symbol", ""))
-            if symbol in pool or is_blocked_candidate(item) or is_cooldown_candidate(item):
+            if symbol in pool or is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item):
                 continue
             change = fnum(item.get("priceChangePercent"))
             volume = fnum(item.get("quoteVolume"))
@@ -4068,7 +4162,7 @@ class PaperBot:
             pre_start = []
             for item in tickers:
                 symbol = str(item.get("symbol", ""))
-                if symbol in pool or is_blocked_candidate(item) or is_cooldown_candidate(item):
+                if symbol in pool or is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item):
                     continue
                 change = fnum(item.get("priceChangePercent"))
                 volume = fnum(item.get("quoteVolume"))
@@ -4102,8 +4196,9 @@ class PaperBot:
 
     def build_signals(self, tickers: list[dict[str, Any]], open_symbols: set[str]) -> list[Signal]:
         signals: list[Signal] = []
-        long_regime = self.market_regime_score("LONG", tickers)
-        short_regime = self.market_regime_score("SHORT", tickers)
+        crypto_tickers = [item for item in tickers if item.get("_crypto_candidate_allowed") is not False]
+        long_regime = self.market_regime_score("LONG", crypto_tickers)
+        short_regime = self.market_regime_score("SHORT", crypto_tickers)
         candidates = self.build_candidate_pool(tickers)
         enrich_limit = int(self.config.get("max_kline_enriched_candidates", 8))
         if enrich_limit <= 0:
@@ -4720,6 +4815,7 @@ class PaperBot:
             return 0
         try:
             exchange_symbols = self.get_exchange_symbols()
+            market_exchange_symbols = self.get_market_exchange_symbols()
         except Exception as exc:
             self.event("error", f"读取 {self.exchange_label()} 交易规则失败：{exc}")
             return 0
@@ -4748,6 +4844,12 @@ class PaperBot:
             if not symbol_info:
                 self.update_signal_decision(signal, f"{self.exchange_label()} 无此交易对", f"开仓前复核：不在 {self.exchange_label()} 交易对中")
                 self.event("warn", f"{signal.symbol} 不在 {self.exchange_label()} 交易对中，跳过")
+                continue
+            market_symbol_info = market_exchange_symbols.get(signal.symbol, {})
+            if not self.is_crypto_contract(market_symbol_info):
+                reason = "非加密货币合约，禁止新开仓"
+                self.update_signal_decision(signal, reason, f"开仓前复核：{reason}")
+                self.event("risk", f"{signal.symbol} {reason}，跳过")
                 continue
             if (
                 str(self.config.get("confirmation_mode", "market_score")) == "analyzer"

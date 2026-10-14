@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import paper_dashboard_server as server
 
@@ -249,6 +250,93 @@ class ClosedTradeCooldownTest(unittest.TestCase):
 
 
 class EquityTakeProfitScanTest(unittest.TestCase):
+    def make_bot(self) -> server.PaperBot:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text('{"market_base_url": "https://fapi.binance.com"}', encoding="utf-8")
+        return server.PaperBot(config_path, state_path)
+
+    def test_fetch_tickers_only_returns_coin_contracts_and_keeps_existing_position_quotes(self):
+        bot = self.make_bot()
+        bot.state["positions"] = [{"symbol": "AAPLUSDT"}]
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["old_rebound_short_enabled"] = True
+        bot.config["high_pullback_short_enabled"] = True
+        ticker_payload = [
+            {"symbol": "BTCUSDT", "lastPrice": "100", "priceChangePercent": "10", "quoteVolume": "50000000"},
+            {"symbol": "AAPLUSDT", "lastPrice": "200", "priceChangePercent": "10", "quoteVolume": "50000000"},
+            {"symbol": "0700USDT", "lastPrice": "300", "priceChangePercent": "10", "quoteVolume": "50000000"},
+            {"symbol": "UNKNOWNUSDT", "lastPrice": "400", "priceChangePercent": "10", "quoteVolume": "50000000"},
+        ]
+        exchange_info = {"symbols": [
+            {"symbol": "BTCUSDT", "status": "TRADING", "quoteAsset": "USDT", "underlyingType": "COIN", "contractType": "PERPETUAL"},
+            {"symbol": "AAPLUSDT", "status": "TRADING", "quoteAsset": "USDT", "underlyingType": "EQUITY", "contractType": "TRADIFI_PERPETUAL"},
+            {"symbol": "0700USDT", "status": "TRADING", "quoteAsset": "USDT", "underlyingType": "HK_EQUITY", "contractType": "TRADIFI_PERPETUAL"},
+            {"symbol": "STOCKLIKEUSDT", "status": "TRADING", "quoteAsset": "USDT", "underlyingType": "COIN", "underlyingSubType": ["TradFi"], "contractType": "TRADIFI_PERPETUAL"},
+            {"symbol": "MISSINGTYPEUSDT", "status": "TRADING", "quoteAsset": "USDT", "contractType": "PERPETUAL"},
+        ]}
+
+        with patch.object(server, "http_get_json", side_effect=[ticker_payload, exchange_info]):
+            tickers = bot.fetch_tickers()
+
+        self.assertEqual({item["symbol"] for item in tickers}, {"BTCUSDT", "AAPLUSDT"})
+        self.assertEqual(bot.crypto_symbols, {"BTCUSDT"})
+        self.assertEqual([row["item"]["symbol"] for row in bot.build_candidate_pool(tickers)], ["BTCUSDT"])
+
+    def test_fetch_tickers_fails_closed_when_contract_classification_is_unavailable(self):
+        bot = self.make_bot()
+        bot.state["positions"] = [{"symbol": "AAPLUSDT"}]
+
+        with patch.object(server, "http_get_json", side_effect=[
+            [{"symbol": "BTCUSDT", "lastPrice": "100"}, {"symbol": "AAPLUSDT", "lastPrice": "200"}],
+            RuntimeError("exchangeInfo unavailable"),
+        ]):
+            tickers = bot.fetch_tickers()
+
+        self.assertEqual([item["symbol"] for item in tickers], ["AAPLUSDT"])
+        self.assertFalse(tickers[0]["_crypto_candidate_allowed"])
+        self.assertIn("exchangeInfo unavailable", bot.crypto_classification_error)
+
+    def test_fetch_tickers_scan_failure_does_not_build_or_open_signals(self):
+        bot = self.make_bot()
+        bot.state["positions"] = [{"symbol": "AAPLUSDT", "last_price": 100.0}]
+        bot.update_signal_future_returns = lambda price_map: None
+        bot.sync_exchange_state = lambda: None
+        bot.build_signals = lambda tickers, open_symbols: self.fail("signals must not be built without contract classification")
+        bot.open_from_signals = lambda signals: self.fail("orders must not be opened without contract classification")
+
+        with patch.object(server, "http_get_json", side_effect=[
+            [{"symbol": "AAPLUSDT", "lastPrice": "200"}],
+            RuntimeError("metadata timeout"),
+        ]):
+            bot.scan_once()
+
+        self.assertEqual(bot.state["market_source"], "binance_public")
+        self.assertIn("metadata timeout", bot.state["last_error"])
+        self.assertEqual(bot.state["positions"][0]["last_price"], 200.0)
+
+    def test_open_from_signals_rejects_non_crypto_contract_as_final_guard(self):
+        bot = self.make_bot()
+        bot.get_exchange_symbols = lambda: {
+            "AAPLUSDT": {
+                "symbol": "AAPLUSDT",
+                "status": "TRADING",
+                "quoteAsset": "USDT",
+                "underlyingType": "EQUITY",
+                "contractType": "TRADIFI_PERPETUAL",
+            }
+        }
+        bot.get_market_exchange_symbols = bot.get_exchange_symbols
+        bot.exchange_open_position = lambda signal, symbol_info: self.fail("stock contract must not reach exchange order")
+        signal = ReverseOrdersTest().make_signal()
+        signal.symbol = "AAPLUSDT"
+
+        self.assertEqual(bot.open_from_signals([signal]), 0)
+        self.assertIn("非加密货币合约", signal.reject_reason)
+
     def test_scan_still_refreshes_candidates_when_equity_take_profit_is_triggered(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
