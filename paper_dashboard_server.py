@@ -124,6 +124,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "old_rebound_short_min_history_days": 365,
     "old_rebound_short_15m_max_pct": 0.3,
     "old_rebound_short_1h_max_pct": 0.5,
+    "old_rebound_short_15m_min_pct": -3.0,
+    "old_rebound_short_1h_min_pct": -6.0,
+    "old_rebound_short_15m_break_min_pct": 0.2,
+    "old_rebound_short_max_high_drawdown_pct": 35.0,
+    "old_rebound_short_min_low_distance_pct": 5.0,
     "old_rebound_short_volume_ratio_min": 0.8,
     "old_rebound_short_volume_ratio_max": 6.0,
     "old_rebound_short_taker_ratio_max": 0.95,
@@ -3909,10 +3914,15 @@ class PaperBot:
         volume_ratio: float,
         trend: str,
         live_metrics: dict[str, Any] | None = None,
+        high_24h: float = 0.0,
+        low_24h: float = 0.0,
+        current_price: float = 0.0,
     ) -> str:
         min_days = int(self.config.get("old_rebound_short_min_history_days", 365))
         max_15m = float(self.config.get("old_rebound_short_15m_max_pct", 0.3))
         max_1h = float(self.config.get("old_rebound_short_1h_max_pct", 0.5))
+        min_15m = float(self.config.get("old_rebound_short_15m_min_pct", -3.0))
+        min_1h = float(self.config.get("old_rebound_short_1h_min_pct", -6.0))
         min_volume = float(self.config.get("old_rebound_short_volume_ratio_min", 0.8))
         max_volume = float(self.config.get("old_rebound_short_volume_ratio_max", 6.0))
         live_metrics = live_metrics or {}
@@ -3926,12 +3936,42 @@ class PaperBot:
             live_note = f"（实时转弱观察中 {' / '.join(live_parts)}，不单独放行）"
         if not self.has_symbol_history(symbol, min_days):
             return f"老币反弹历史不足 {min_days} 天"
+        if int(live_metrics.get("closed_15m_count", 0)) < 30:
+            return "老币反弹15m已收盘K线不足，禁止用24h估算开空"
+        if int(live_metrics.get("closed_1h_count", 0)) < 30:
+            return "老币反弹1h已收盘K线不足，禁止用24h估算开空"
+        if short_move < min_15m or change_1h < min_1h:
+            return f"老币反弹跌幅过深，禁止追空：15m {short_move:+.1f}% / 1h {change_1h:+.1f}%"
+        price = fnum(live_metrics.get("price"))
+        if price <= 0:
+            return "老币反弹K线价格无效"
+        if (current_price > 0 or high_24h > 0 or low_24h > 0) and (high_24h <= 0 or low_24h <= 0):
+            return "老币反弹24h高低点数据缺失，暂停开空"
+        location_price = current_price if current_price > 0 else price
+        if high_24h > 0 and max(0.0, -pct(location_price, high_24h)) >= float(self.config.get("old_rebound_short_max_high_drawdown_pct", 35.0)):
+            return "老币反弹距24h高点回撤过深，禁止追空"
+        if low_24h > 0 and pct(location_price, low_24h) <= float(self.config.get("old_rebound_short_min_low_distance_pct", 5.0)):
+            return "老币反弹太靠近24h低点，禁止追空"
+        if current_price > 0 and pct(current_price, price) < min_15m:
+            return "老币反弹15m实时跌幅过深，禁止追空"
         if short_move > max_15m:
             return f"老币反弹15m未转弱 {short_move:.1f}%/{max_15m:.1f}%{live_note}"
         if change_1h > max_1h:
             return f"老币反弹1h未转弱 {change_1h:.1f}%/{max_1h:.1f}%{live_note}"
-        if trend == "up" and short_move > 0 and change_1h > 0:
-            return "老币反弹仍在短线推升"
+        if short_move >= 0:
+            return "老币反弹15m未明确转弱，短暂横盘或微涨不允许开空"
+        if live_metrics.get("trend_1h") == "up":
+            return "老币反弹1h趋势仍上行，等待转弱"
+        previous_low = fnum(live_metrics.get("closed_15m_previous_low"))
+        break_min_pct = float(self.config.get("old_rebound_short_15m_break_min_pct", 0.2))
+        if previous_low <= 0 or pct(price, previous_low) > -break_min_pct:
+            return f"老币反弹15m未确认破位，需跌破前3根已收盘K线低点至少 {break_min_pct:.1f}%"
+        if current_price > 0 and current_price >= previous_low:
+            return "老币反弹当前价站回破位线，暂停开空"
+        if "live_short_move" in live_metrics:
+            live_price = price * (1 + fnum(live_metrics["live_short_move"]) / 100)
+            if live_price >= previous_low:
+                return "老币反弹15m实时反抽站回破位线，暂停开空"
         if volume_ratio < min_volume:
             return f"老币反弹量能不足 {volume_ratio:.1f}x/{min_volume:.1f}x"
         if volume_ratio > max_volume:
@@ -3989,16 +4029,23 @@ class PaperBot:
             return f"高位回落费率过热 {funding:.3f}%/{max_funding:.3f}%"
         return ""
 
-    def kline_short_metrics(self, symbol: str, fallback_price: float, change: float) -> dict[str, Any]:
+    def kline_short_metrics(self, symbol: str, fallback_price: float, change: float, old_rebound: bool = False) -> dict[str, Any]:
         metrics = self.fallback_short_metrics(change)
         metrics["price"] = fallback_price
         try:
-            limit_15m = max(2, int(self.config.get("kline_15m_limit", 40)))
+            limit_15m = max(30 if old_rebound else 2, int(self.config.get("kline_15m_limit", 40))) + (1 if old_rebound else 0)
             klines15 = self.fetch_klines_interval(symbol, "15m", limit_15m)
             live15 = latest_unclosed_kline(klines15)
             klines15 = closed_klines(klines15)
             closes15 = [fnum(k[4]) for k in klines15]
             volumes15 = [fnum(k[7]) for k in klines15]
+            if old_rebound:
+                metrics["closed_15m_count"] = len(klines15)
+                metrics["trend_15m"] = infer_trend(closes15)
+                if len(klines15) >= 4:
+                    lows = [fnum(k[3]) for k in klines15[-4:-1]]
+                    if all(low > 0 for low in lows):
+                        metrics["closed_15m_previous_low"] = min(lows)
             if closes15:
                 metrics["price"] = closes15[-1] or metrics["price"] or fallback_price
                 metrics["enriched"] = True
@@ -4017,12 +4064,15 @@ class PaperBot:
         except Exception:
             pass
         try:
-            limit_1h = max(5, int(self.config.get("kline_1h_limit", 10)))
+            limit_1h = max(30 if old_rebound else 5, int(self.config.get("kline_1h_limit", 10))) + (1 if old_rebound else 0)
             klines1h = self.fetch_klines_interval(symbol, "1h", limit_1h)
             live1h = latest_unclosed_kline(klines1h)
             klines1h = closed_klines(klines1h)
             closes1h = [fnum(k[4]) for k in klines1h]
             volumes1h = [fnum(k[7]) for k in klines1h]
+            if old_rebound:
+                metrics["closed_1h_count"] = len(klines1h)
+                metrics["trend_1h"] = infer_trend(closes1h)
             if closes1h:
                 metrics["enriched"] = True
             if live1h is not None and closes1h:
@@ -4251,7 +4301,7 @@ class PaperBot:
                 reject = self.direction_mode_reject_reason(side)
 
             if not reject and (enriched_count < enrich_limit or is_pre_start_long or is_old_rebound_short or is_high_pullback_short):
-                metrics = self.kline_short_metrics(symbol, price, change)
+                metrics = self.kline_short_metrics(symbol, price, change, old_rebound=True) if is_old_rebound_short else self.kline_short_metrics(symbol, price, change)
                 enriched_count += 1
                 price = fnum(metrics.get("price")) or price
                 short_move = fnum(metrics.get("short_move"))
@@ -4281,7 +4331,11 @@ class PaperBot:
                 if not reject and is_pre_start_long:
                     reject = self.pre_start_kline_reject_reason(short_move, change_1h, volume_ratio, trend)
                 if not reject and is_old_rebound_short:
-                    reject = self.old_rebound_short_kline_reject_reason(symbol, short_move, change_1h, volume_ratio, trend, metrics)
+                    reject = self.old_rebound_short_kline_reject_reason(
+                        symbol, short_move, change_1h, volume_ratio, trend, metrics,
+                        high_24h=fnum(item.get("highPrice")), low_24h=fnum(item.get("lowPrice")),
+                        current_price=fnum(item.get("lastPrice")),
+                    )
                 if not reject and is_high_pullback_short:
                     reject = self.high_pullback_short_kline_reject_reason(short_move, change_1h, volume_ratio, trend)
             priority = "高" if score >= 6 else "中" if score >= 4.5 else "低"

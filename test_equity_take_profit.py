@@ -602,6 +602,155 @@ class KlineShortMetricsTest(unittest.TestCase):
     def kline(self, close: float, quote_volume: float = 1000.0, close_time: int = 0) -> list[object]:
         return [0, "0", "0", "0", str(close), "0", close_time, str(quote_volume)]
 
+    def test_old_rebound_requests_enough_closed_1h_bars_and_keeps_separate_trends(self):
+        bot = self.make_bot()
+        bot.config["kline_1h_limit"] = 8
+        calls = []
+        future = int(server.time.time() * 1000) + 60_000
+
+        def fetch(symbol, interval, limit):
+            calls.append((interval, limit))
+            if interval == "1h":
+                return [self.kline(120 - i) for i in range(30)] + [self.kline(99, close_time=future)]
+            return [self.kline(100 + i * .2) for i in range(40)] + [self.kline(109, close_time=future)]
+
+        bot.fetch_klines_interval = fetch
+        metrics = bot.kline_short_metrics("OLDUSDT", 100, 12, old_rebound=True)
+        self.assertGreaterEqual(dict(calls)["1h"], 31)
+        self.assertEqual(metrics["closed_1h_count"], 30)
+        self.assertEqual(metrics["trend_1h"], "down")
+        self.assertEqual(metrics["trend_15m"], "up")
+
+    def test_old_rebound_flat_candle_needs_closed_15m_break(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "trend_15m": "neutral", "trend_1h": "neutral", "closed_15m_previous_low": 9.8,
+                   "price": 10.0}
+        reason = bot.old_rebound_short_kline_reject_reason("OLDUSDT", 0.0, -0.2, 1.1, "neutral", metrics)
+        self.assertIn("15m", reason)
+        self.assertIn("转弱", reason)
+
+    def test_old_rebound_no_1h_klines_does_not_use_24h_fallback(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 0, "price": 10,
+                   "closed_15m_previous_low": 11}
+        reason = bot.old_rebound_short_kline_reject_reason("OLDUSDT", -1, -1, 1.1, "down", metrics)
+        self.assertIn("1h", reason)
+        self.assertIn("不足", reason)
+
+    def test_old_rebound_rejects_waterfall_but_allows_fresh_break(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30, "trend_15m": "down",
+                   "trend_1h": "neutral", "closed_15m_previous_low": 10.1, "price": 10.0}
+        def reason(move15, move1h, price=10, high=12, low=8):
+            return bot.old_rebound_short_kline_reject_reason(
+                "OLDUSDT", move15, move1h, 1.1, "down", {**metrics, "price": price},
+                high_24h=high, low_24h=low)
+        self.assertEqual(reason(-0.8, -1), "")
+        self.assertIn("追空", reason(-5, -1))
+        self.assertIn("追空", reason(-0.8, -9))
+        self.assertIn("24h高点", reason(-0.8, -1, high=20))
+        self.assertIn("24h低点", reason(-0.8, -1, low=9.9))
+
+    def test_old_rebound_uses_real_closed_lows_for_break_check(self):
+        bot = self.make_bot()
+        future = int(server.time.time() * 1000) + 60_000
+        def candle(close, low, close_time=0):
+            return [0, "0", "0", str(low), str(close), "0", close_time, "1000"]
+        def fetch(symbol, interval, limit):
+            if interval == "15m":
+                return [candle(10.5, 10.2) for _ in range(36)] + [
+                    candle(10.4, 10.2), candle(10.3, 10.15), candle(10.2, 10.1),
+                    candle(10.0, 9.9), candle(9.95, 9.8, future)]
+            return [candle(10.5, 10.2) for _ in range(30)] + [candle(10.5, 10.2, future)]
+        bot.fetch_klines_interval = fetch
+        metrics = bot.kline_short_metrics("OLDUSDT", 10, 10, old_rebound=True)
+        self.assertEqual(metrics["closed_15m_previous_low"], 10.1)
+        self.assertEqual(metrics["closed_15m_count"], 40)
+        bot.has_symbol_history = lambda symbol, days: True
+        self.assertEqual(bot.old_rebound_short_kline_reject_reason("OLDUSDT", metrics["short_move"], 0, 1, metrics["trend"], metrics), "")
+
+    def test_old_rebound_checks_live_ticker_location_not_only_closed_price(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
+        reason = bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics,
+            high_24h=12.0, low_24h=8.0, current_price=8.2)
+        self.assertIn("24h低点", reason)
+
+    def test_old_rebound_requires_valid_24h_high_and_low(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
+        reason = bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics, high_24h=12.0, low_24h=0.0)
+        self.assertIn("24h", reason)
+        self.assertIn("缺失", reason)
+        no_extremes = bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics, current_price=10.0)
+        self.assertIn("24h", no_extremes)
+
+    def test_old_rebound_rejects_ticker_reclaim_after_closed_break(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
+        reason = bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics,
+            high_24h=12.0, low_24h=8.0, current_price=10.2)
+        self.assertIn("站回破位线", reason)
+
+    def test_old_rebound_requires_closed_down_candle_even_if_low_comparison_passes(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
+        reason = bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", 0.1, -1.0, 1.1, "down", metrics)
+        self.assertIn("15m", reason)
+        self.assertIn("转弱", reason)
+
+    def test_old_rebound_first_closed_candle_can_break_but_does_not_wait_for_retest(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
+        reason = bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics,
+            high_24h=12.0, low_24h=8.0, current_price=10.0)
+        self.assertEqual(reason, "")
+
+    def test_old_rebound_rejects_live_waterfall_after_mild_closed_break(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
+        reason = bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics,
+            high_24h=12.0, low_24h=8.0, current_price=9.5)
+        self.assertIn("实时", reason)
+        self.assertIn("追空", reason)
+
+    def test_old_rebound_upward_1h_trend_and_live_reclaim_block_entry(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "trend_15m": "down", "trend_1h": "up", "closed_15m_previous_low": 10.1,
+                   "price": 10.0}
+        reason = bot.old_rebound_short_kline_reject_reason("OLDUSDT", -0.8, -1, 1.1, "neutral", metrics)
+        self.assertIn("1h", reason)
+        self.assertIn("上行", reason)
+        metrics["trend_1h"] = "neutral"
+        metrics["live_short_move"] = 2.0
+        reason = bot.old_rebound_short_kline_reject_reason("OLDUSDT", -0.8, -1, 1.1, "neutral", metrics)
+        self.assertIn("反抽", reason)
+
     def test_stale_scan_in_progress_is_released_on_next_scan(self):
         bot = self.make_bot()
         bot.config["max_scan_runtime_sec"] = 60
@@ -774,7 +923,9 @@ class KlineShortMetricsTest(unittest.TestCase):
             change_1h=1.2,
             volume_ratio=2.0,
             trend="up",
-            live_metrics={"live_short_move": -2.0, "live_change_1h": -1.5},
+            live_metrics={"live_short_move": -2.0, "live_change_1h": -1.5,
+                          "closed_15m_count": 40, "closed_1h_count": 30, "price": 10,
+                          "closed_15m_previous_low": 9.5},
         )
 
         self.assertIn("未转弱", reject)
@@ -1347,7 +1498,7 @@ class KlineShortMetricsTest(unittest.TestCase):
         bot.config["short_structure_confirmation_enabled"] = False
         calls = []
 
-        def enrich(symbol, price, change):
+        def enrich(symbol, price, change, old_rebound=False):
             calls.append(symbol)
             return {
                 "short_move": -0.8,
@@ -1357,6 +1508,11 @@ class KlineShortMetricsTest(unittest.TestCase):
                 "trend": "down",
                 "price": price,
                 "enriched": True,
+                "closed_15m_count": 40,
+                "closed_1h_count": 30,
+                "closed_15m_previous_low": price * 1.01,
+                "trend_15m": "down",
+                "trend_1h": "neutral",
             }
 
         bot.kline_short_metrics = enrich
@@ -1380,6 +1536,7 @@ class KlineShortMetricsTest(unittest.TestCase):
                     "symbol": "OLDUSDT",
                     "lastPrice": "10",
                     "highPrice": "12",
+                    "lowPrice": "8",
                     "priceChangePercent": "18",
                     "quoteVolume": "25000000",
                 }
