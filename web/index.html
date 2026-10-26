@@ -232,47 +232,43 @@
             </label>
             <label class="settings-check">
               <input name="pre_start_long_enabled" type="checkbox" />
-              <span>启用预启动做多池</span>
+              <span>启用持续放量做多观察池</span>
+            </label>
+            <label class="settings-check" title="默认只观察候选信号。允许自动开仓前需关闭全局反向订单。">
+              <input name="pre_start_volume_auto_trade_enabled" type="checkbox" />
+              <span>允许持续放量池自动开仓</span>
             </label>
             <label>
               预启动候选数
               <input name="pre_start_max_candidates" type="number" min="1" max="30" step="1" />
             </label>
             <label>
-              预启动24h下限 (%)
-              <input name="pre_start_24h_min_pct" type="number" min="0" max="100" step="0.1" />
+              24h涨幅下限 (%)
+              <input name="pre_start_volume_24h_min_pct" type="number" min="-50" max="50" step="0.1" />
             </label>
             <label>
-              预启动24h上限 (%)
-              <input name="pre_start_24h_max_pct" type="number" min="0" max="100" step="0.1" />
+              24h涨幅上限 (%)
+              <input name="pre_start_volume_24h_max_pct" type="number" min="0" max="100" step="0.1" />
             </label>
             <label>
-              预启动15m下限 (%)
-              <input name="pre_start_15m_min_pct" type="number" min="0" max="50" step="0.1" />
+              24h最低成交额 (U)
+              <input name="pre_start_volume_24h_min_usdt" type="number" min="100000" step="100000" />
             </label>
             <label>
-              预启动15m上限 (%)
-              <input name="pre_start_15m_max_pct" type="number" min="0" max="50" step="0.1" />
+              15m单根最低成交额 (U)
+              <input name="pre_start_volume_15m_min_usdt" type="number" min="10000" step="10000" />
             </label>
             <label>
-              预启动1h下限 (%)
-              <input name="pre_start_1h_min_pct" type="number" min="0" max="100" step="0.1" />
+              15m相对放量下限 (x)
+              <input name="pre_start_volume_relative_min" type="number" min="1" max="20" step="0.05" />
             </label>
             <label>
-              预启动1h上限 (%)
-              <input name="pre_start_1h_max_pct" type="number" min="0" max="100" step="0.1" />
+              后两根/前两根量比 (x)
+              <input name="pre_start_volume_growth_min" type="number" min="1" max="10" step="0.05" />
             </label>
             <label>
-              预启动量能下限
-              <input name="pre_start_volume_ratio_min" type="number" min="0.1" max="50" step="0.1" />
-            </label>
-            <label>
-              预启动量能上限
-              <input name="pre_start_volume_ratio_max" type="number" min="0.1" max="50" step="0.1" />
-            </label>
-            <label>
-              预启动主动买入下限
-              <input name="pre_start_taker_ratio_min" type="number" min="0.1" max="10" step="0.01" />
+              15m主动买入下限 (x)
+              <input name="pre_start_volume_taker_min" type="number" min="1" max="10" step="0.01" />
             </label>
             <label>
               预启动OI 1h下限 (%)
@@ -281,10 +277,6 @@
             <label>
               预启动资金费率上限 (%)
               <input name="pre_start_funding_abs_max_pct" type="number" min="0" max="1" step="0.001" />
-            </label>
-            <label>
-              预启动多空比上限
-              <input name="pre_start_long_short_max" type="number" min="0.1" max="20" step="0.1" />
             </label>
             <label>
               预启动确认分阈值
@@ -417,6 +409,10 @@
             <label>
               强波动做多24h涨幅下限 (%)
               <input name="strong_long_24h_min_change_pct" type="number" min="0" max="300" step="0.1" />
+            </label>
+            <label class="checkbox-label">
+              <input name="strong_long_enabled" type="checkbox" />
+              <span>启用强波动池做多</span>
             </label>
             <label class="checkbox-label">
               <input name="strong_short_enabled" type="checkbox" />

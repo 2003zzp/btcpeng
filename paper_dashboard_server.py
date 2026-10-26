@@ -70,6 +70,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "min_quote_volume_usdt": 20_000_000,
     "min_abs_24h_change_pct": 6.0,
     "strong_long_24h_min_change_pct": 0.0,
+    "strong_long_enabled": True,
     "strong_short_enabled": True,
     "long_24h_change_pct": 7.0,
     "short_24h_change_pct": -7.0,
@@ -100,6 +101,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_candidates_per_scan": 18,
     "pre_start_long_enabled": False,
     "pre_start_max_candidates": 8,
+    "pre_start_volume_auto_trade_enabled": False,
+    "pre_start_volume_24h_min_pct": -5.0,
+    "pre_start_volume_24h_max_pct": 20.0,
+    "pre_start_volume_24h_min_usdt": 5_000_000.0,
+    "pre_start_volume_15m_min_usdt": 250_000.0,
+    "pre_start_volume_relative_min": 1.25,
+    "pre_start_volume_growth_min": 1.1,
+    "pre_start_volume_taker_min": 1.05,
     "pre_start_24h_min_pct": 1.0,
     "pre_start_24h_max_pct": 12.0,
     "pre_start_15m_min_pct": 0.4,
@@ -241,6 +250,7 @@ class Signal:
     priority: str
     planned_stop_price: float = 0.0
     planned_take_profit_price: float = 0.0
+    signal_model: str = ""
 
 
 def utc_now() -> datetime:
@@ -728,6 +738,7 @@ class PaperBot:
             "long_short_ratio": signal.long_short_ratio,
             "taker_long_short_ratio": signal.taker_long_short_ratio,
             "signal_mode": signal.signal_mode,
+            "signal_model": signal.signal_model,
             "signal_heat_level": signal.signal_heat_level,
             "market_regime_score": signal.market_regime_score,
             "market_regime_label": signal.market_regime_label,
@@ -1464,6 +1475,14 @@ class PaperBot:
             "max_candidates_per_scan": int,
             "pre_start_long_enabled": str,
             "pre_start_max_candidates": int,
+            "pre_start_volume_auto_trade_enabled": str,
+            "pre_start_volume_24h_min_pct": float,
+            "pre_start_volume_24h_max_pct": float,
+            "pre_start_volume_24h_min_usdt": float,
+            "pre_start_volume_15m_min_usdt": float,
+            "pre_start_volume_relative_min": float,
+            "pre_start_volume_growth_min": float,
+            "pre_start_volume_taker_min": float,
             "pre_start_24h_min_pct": float,
             "pre_start_24h_max_pct": float,
             "pre_start_15m_min_pct": float,
@@ -1527,6 +1546,7 @@ class PaperBot:
             "equity_take_profit_usdt": float,
             "signal_score_threshold": float,
             "strong_long_24h_min_change_pct": float,
+            "strong_long_enabled": str,
             "strong_short_enabled": str,
             "margin_type": str,
             "confirmation_mode": str,
@@ -1556,7 +1576,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "analyzer_realtime_before_open", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "old_rebound_short_enabled", "high_pullback_short_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "analyzer_realtime_before_open", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled", "old_rebound_short_enabled", "high_pullback_short_enabled", "strong_long_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -1591,6 +1611,12 @@ class PaperBot:
                     "market_confirm_min_score",
                     "short_market_confirm_min_score",
                     "pre_start_market_confirm_min_score",
+                    "pre_start_volume_24h_max_pct",
+                    "pre_start_volume_24h_min_usdt",
+                    "pre_start_volume_15m_min_usdt",
+                    "pre_start_volume_relative_min",
+                    "pre_start_volume_growth_min",
+                    "pre_start_volume_taker_min",
                     "short_max_24h_high_drawdown_pct",
                     "short_structure_min_score",
                     "long_structure_min_score",
@@ -1638,6 +1664,8 @@ class PaperBot:
                 }:
                     value = max(0.01, float(value))
                 if key == "pre_start_oi_1h_min_pct":
+                    value = float(value)
+                if key == "pre_start_volume_24h_min_pct":
                     value = float(value)
                 if key == "old_rebound_short_oi_1h_min_pct":
                     value = float(value)
@@ -2806,6 +2834,8 @@ class PaperBot:
             "volume_1h_ratio": 1.0,
             "taker_long_short_ratio": 1.0,
             "oi_volume_ratio": 0.0,
+            "funding_rate_available": False,
+            "open_interest_1h_available": False,
         }
         try:
             oi = http_get_json(self.config["market_base_url"], "/fapi/v1/openInterest", {"symbol": symbol}, timeout=timeout)
@@ -2816,7 +2846,9 @@ class PaperBot:
 
         try:
             premium = http_get_json(self.config["market_base_url"], "/fapi/v1/premiumIndex", {"symbol": symbol}, timeout=timeout)
-            stats["funding_rate_pct"] = fnum(premium.get("lastFundingRate")) * 100
+            if premium.get("lastFundingRate") is not None:
+                stats["funding_rate_pct"] = fnum(premium.get("lastFundingRate")) * 100
+                stats["funding_rate_available"] = True
         except Exception:
             stats["funding_rate_pct"] = 0.0
 
@@ -2833,6 +2865,7 @@ class PaperBot:
                 stats["open_interest_usdt"] = latest or stats["open_interest_usdt"]
                 if len(values) > 1:
                     stats["open_interest_1h_pct"] = pct(latest, values[-2])
+                    stats["open_interest_1h_available"] = latest > 0 and values[-2] > 0
                 if len(values) > 4:
                     stats["open_interest_4h_pct"] = pct(latest, values[-5])
                 if len(values) > 24:
@@ -3310,83 +3343,6 @@ class PaperBot:
             label = "不足"
         return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:8])}
 
-    def pre_start_confirmation_score(
-        self,
-        change_24h: float,
-        change_1h: float,
-        short_move: float,
-        volume_ratio: float,
-        trend: str,
-        stats: dict[str, float],
-        price: float,
-        high_24h: float,
-    ) -> dict[str, Any]:
-        score = 0.0
-        reasons: list[str] = []
-        min_24h = float(self.config.get("pre_start_24h_min_pct", 1.0))
-        max_24h = float(self.config.get("pre_start_24h_max_pct", 12.0))
-        min_15m = float(self.config.get("pre_start_15m_min_pct", 0.4))
-        max_15m = float(self.config.get("pre_start_15m_max_pct", 4.0))
-        min_1h = float(self.config.get("pre_start_1h_min_pct", 0.8))
-        max_1h = float(self.config.get("pre_start_1h_max_pct", 8.0))
-        min_volume = float(self.config.get("pre_start_volume_ratio_min", 1.5))
-        max_volume = float(self.config.get("pre_start_volume_ratio_max", 5.0))
-        min_taker = float(self.config.get("pre_start_taker_ratio_min", 1.05))
-        min_oi = float(self.config.get("pre_start_oi_1h_min_pct", 0.0))
-        max_funding = float(self.config.get("pre_start_funding_abs_max_pct", 0.06))
-        max_long_short = float(self.config.get("pre_start_long_short_max", 2.5))
-        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
-
-        if min_24h <= change_24h <= max_24h:
-            score += 1.0
-            reasons.append(f"24h温和启动 {change_24h:+.1f}%")
-        if min_15m <= short_move <= max_15m:
-            score += 1.5
-            reasons.append(f"15m温和推进 {short_move:+.1f}%")
-        if min_1h <= change_1h <= max_1h:
-            score += 1.5
-            reasons.append(f"1h温和推进 {change_1h:+.1f}%")
-        if trend == "up":
-            score += 1.0
-            reasons.append("短线趋势向上")
-        if min_volume <= volume_ratio <= max_volume and taker_ratio >= min_taker and short_move > 0 and change_1h > 0:
-            score += 1.2
-            reasons.append(f"量能刚放大 {volume_ratio:.1f}x")
-
-        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
-        oi_1h = fnum(stats.get("open_interest_1h_pct"))
-        funding = abs(fnum(stats.get("funding_rate_pct")))
-        long_short = fnum(stats.get("long_short_ratio"), 1.0)
-        if taker_ratio >= min_taker:
-            score += 1.2
-            reasons.append(f"主动买入转强 {taker_ratio:.2f}")
-        if oi_1h >= min_oi:
-            score += 0.8
-            reasons.append(f"OI跟随 {oi_1h:+.1f}%")
-        if funding <= max_funding:
-            score += 0.8
-            reasons.append(f"资金费率未过热 {funding:.3f}%")
-        if 0.75 <= long_short <= max_long_short:
-            score += 0.7
-            reasons.append(f"多空比未拥挤 {long_short:.2f}")
-        if high_24h > 0 and price > 0:
-            distance_from_high = max(0.0, -pct(price, high_24h))
-            if distance_from_high >= 1.0:
-                score += 0.3
-                reasons.append(f"距离24h高点 {distance_from_high:.1f}%")
-
-        score = max(0.0, min(10.0, score))
-        threshold = float(self.config.get("pre_start_market_confirm_min_score", 6.5))
-        if score >= 8.0:
-            label = "强确认"
-        elif score >= threshold:
-            label = "通过"
-        elif score >= 5.0:
-            label = "偏弱"
-        else:
-            label = "不足"
-        return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:8])}
-
     def old_rebound_short_confirmation_score(
         self,
         change_24h: float,
@@ -3841,7 +3797,7 @@ class PaperBot:
         if signal_mode == "old_rebound_short":
             return "老币反弹做空"
         if signal_mode == "pre_start_long":
-            return "预启动做多"
+            return "持续放量做多"
         return "强波动"
 
     def fallback_short_metrics(self, change: float) -> dict[str, Any]:
@@ -3855,46 +3811,114 @@ class PaperBot:
             "enriched": False,
         }
 
-    def pre_start_kline_reject_reason(self, short_move: float, change_1h: float, volume_ratio: float, trend: str) -> str:
-        min_15m = float(self.config.get("pre_start_15m_min_pct", 0.4))
-        max_15m = float(self.config.get("pre_start_15m_max_pct", 4.0))
-        min_1h = float(self.config.get("pre_start_1h_min_pct", 0.8))
-        max_1h = float(self.config.get("pre_start_1h_max_pct", 8.0))
-        min_volume = float(self.config.get("pre_start_volume_ratio_min", 1.5))
-        max_volume = float(self.config.get("pre_start_volume_ratio_max", 5.0))
-        if trend != "up":
-            return "预启动趋势未向上"
-        if short_move < min_15m:
-            return f"预启动15m涨幅 {short_move:.1f}% 低于 {min_15m:.1f}%"
-        if short_move > max_15m:
-            return f"预启动15m涨幅 {short_move:.1f}% 高于 {max_15m:.1f}%"
-        if change_1h < min_1h:
-            return f"预启动1h涨幅 {change_1h:.1f}% 低于 {min_1h:.1f}%"
-        if change_1h > max_1h:
-            return f"预启动1h涨幅 {change_1h:.1f}% 高于 {max_1h:.1f}%"
-        if volume_ratio < min_volume:
-            return f"预启动量能 {volume_ratio:.1f}x 低于 {min_volume:.1f}x"
-        if volume_ratio > max_volume:
-            return f"预启动量能 {volume_ratio:.1f}x 高于 {max_volume:.1f}x"
+    def pre_start_volume_metrics(self, klines: list[list[Any]], current_price: float) -> dict[str, Any]:
+        closed = closed_klines(klines)
+        result: dict[str, Any] = {"valid": False, "closed_count": len(closed)}
+        if len(closed) < 24:
+            return result
+        recent = closed[-4:]
+        baseline = [fnum(row[7]) for row in closed[-24:-4] if len(row) > 10]
+        if len(baseline) != 20 or any(value <= 0 for value in baseline):
+            return result
+        if any(len(row) <= 10 or fnum(row[7]) <= 0 for row in recent):
+            return result
+        base = sum(baseline) / len(baseline)
+        volumes = [fnum(row[7]) for row in recent]
+        buys = [fnum(row[10], -1) for row in recent]
+        if any(buy < 0 or buy > volume for buy, volume in zip(buys, volumes)):
+            return result
+        closes = [fnum(row[4]) for row in recent]
+        highs = [fnum(row[2]) for row in recent]
+        lows = [fnum(row[3]) for row in recent]
+        if any(price <= 0 for price in closes + highs + lows):
+            return result
+        total_buy = sum(buys)
+        total_sell = sum(volumes) - total_buy
+        result.update({
+            "valid": True,
+            "confirmed_bars": sum(
+                volume >= float(self.config.get("pre_start_volume_15m_min_usdt", 250_000))
+                and volume >= base * float(self.config.get("pre_start_volume_relative_min", 1.25))
+                for volume in volumes
+            ),
+            "volume_ratio": sum(volumes) / 4 / base,
+            "volume_growth": sum(volumes[-2:]) / max(1, sum(volumes[:2])),
+            "taker_ratio": total_buy / total_sell if total_sell > 0 else 0.0,
+            "price_advance_pct": pct(closes[-1], closes[0]),
+            "close_count_up": sum(closes[i] > closes[i - 1] for i in range(1, 4)),
+            "latest_is_highest_close": closes[-1] > max(closes[:-1]),
+            "close_position": (closes[-1] - lows[-1]) / (highs[-1] - lows[-1]) if highs[-1] > lows[-1] else 0.0,
+            "current_move_pct": pct(current_price, closes[-1]),
+            "last_closed_price": closes[-1],
+            "last_volume": volumes[-1],
+            "baseline_volume": base,
+        })
+        return result
+
+    def pre_start_volume_reject_reason(self, metrics: dict[str, Any]) -> str:
+        if not metrics.get("valid"):
+            return "预启动15m真实成交额或主动买入数据不足"
+        growth_min = float(self.config.get("pre_start_volume_growth_min", 1.1))
+        if int(metrics.get("confirmed_bars", 0)) < 3 or fnum(metrics.get("volume_growth")) < growth_min:
+            return "预启动15m成交额未持续放大"
+        if fnum(metrics.get("volume_ratio")) > 6.0:
+            return "预启动15m量能过热，防止单根冲量追高"
+        advance = fnum(metrics.get("price_advance_pct"))
+        if not 0.2 <= advance <= 8.0 or int(metrics.get("close_count_up", 0)) < 2 or not metrics.get("latest_is_highest_close") or fnum(metrics.get("close_position")) < 0.35:
+            return "预启动放量但价格未持续推进或冲高回落"
+        if fnum(metrics.get("taker_ratio")) < float(self.config.get("pre_start_volume_taker_min", 1.05)):
+            return "预启动15m主动买入不足"
+        if not -1.0 <= fnum(metrics.get("current_move_pct")) <= 2.5:
+            return "预启动当前价格偏离已收盘15m过大，暂缓追涨"
         return ""
 
+    def pre_start_volume_confirmation_score(self, metrics: dict[str, Any]) -> dict[str, Any]:
+        score = 0.0
+        reasons: list[str] = []
+        bars = int(metrics.get("confirmed_bars", 0))
+        if bars >= 3:
+            score += 2.5 if bars == 4 else 2.0
+            reasons.append(f"已收盘15m持续放量 {bars}/4")
+        volume_ratio = fnum(metrics.get("volume_ratio"))
+        if volume_ratio >= 1.25:
+            score += 1.5 if volume_ratio >= 1.5 else 1.0
+            reasons.append(f"15m均量 {volume_ratio:.1f}x")
+        if fnum(metrics.get("volume_growth")) >= float(self.config.get("pre_start_volume_growth_min", 1.1)):
+            score += 1.0
+            reasons.append("后两根成交额继续增加")
+        advance = fnum(metrics.get("price_advance_pct"))
+        if 0.2 <= advance <= 8.0:
+            score += 1.5
+            reasons.append(f"15m价格推进 {advance:+.1f}%")
+        up_count = int(metrics.get("close_count_up", 0))
+        if up_count >= 2 and metrics.get("latest_is_highest_close"):
+            score += 1.5 if up_count == 3 else 1.0
+            reasons.append("收盘价持续抬高")
+        taker = fnum(metrics.get("taker_ratio"))
+        if taker >= float(self.config.get("pre_start_volume_taker_min", 1.05)):
+            score += 1.7 if taker >= 1.2 else 1.3
+            reasons.append(f"15m主动买入 {taker:.2f}")
+        if fnum(metrics.get("close_position")) >= 0.35:
+            score += 0.5
+            reasons.append("收盘未明显回落")
+        if -1.0 <= fnum(metrics.get("current_move_pct")) <= 2.5:
+            score += 0.5
+        score = round(min(10.0, score), 1)
+        threshold = float(self.config.get("pre_start_market_confirm_min_score", 6.5))
+        label = "强确认" if score >= 8 else "通过" if score >= threshold else "不足"
+        return {"score": score, "label": label, "reason": " / ".join(reasons)}
+
     def pre_start_market_stats_reject_reason(self, stats: dict[str, float]) -> str:
-        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
+        if self.config.get("pre_start_volume_auto_trade_enabled", False) and not (stats.get("funding_rate_available") and stats.get("open_interest_1h_available")):
+            return "预启动资金面真实数据不足，禁止自动开仓"
         oi_1h = fnum(stats.get("open_interest_1h_pct"))
         funding = abs(fnum(stats.get("funding_rate_pct")))
-        long_short = fnum(stats.get("long_short_ratio"), 1.0)
-        min_taker = float(self.config.get("pre_start_taker_ratio_min", 1.05))
         min_oi = float(self.config.get("pre_start_oi_1h_min_pct", 0.0))
         max_funding = float(self.config.get("pre_start_funding_abs_max_pct", 0.06))
-        max_long_short = float(self.config.get("pre_start_long_short_max", 2.5))
-        if taker_ratio < min_taker:
-            return f"预启动主动买入不足 {taker_ratio:.2f}/{min_taker:.2f}"
         if oi_1h < min_oi:
             return f"预启动OI未跟随 {oi_1h:+.1f}%/{min_oi:+.1f}%"
         if funding > max_funding:
             return f"预启动资金费率过热 {funding:.3f}%/{max_funding:.3f}%"
-        if long_short > max_long_short:
-            return f"预启动多空比过热 {long_short:.2f}/{max_long_short:.2f}"
         return ""
 
     def has_symbol_history(self, symbol: str, min_days: int) -> bool:
@@ -4029,16 +4053,20 @@ class PaperBot:
             return f"高位回落费率过热 {funding:.3f}%/{max_funding:.3f}%"
         return ""
 
-    def kline_short_metrics(self, symbol: str, fallback_price: float, change: float, old_rebound: bool = False) -> dict[str, Any]:
+    def kline_short_metrics(self, symbol: str, fallback_price: float, change: float, old_rebound: bool = False, pre_start: bool = False) -> dict[str, Any]:
         metrics = self.fallback_short_metrics(change)
         metrics["price"] = fallback_price
+        if pre_start:
+            metrics["pre_start_volume"] = {"valid": False}
         try:
-            limit_15m = max(30 if old_rebound else 2, int(self.config.get("kline_15m_limit", 40))) + (1 if old_rebound else 0)
-            klines15 = self.fetch_klines_interval(symbol, "15m", limit_15m)
-            live15 = latest_unclosed_kline(klines15)
-            klines15 = closed_klines(klines15)
+            limit_15m = max(30 if old_rebound else 25 if pre_start else 2, int(self.config.get("kline_15m_limit", 40))) + (1 if old_rebound or pre_start else 0)
+            raw_15m = self.fetch_klines_interval(symbol, "15m", limit_15m)
+            live15 = latest_unclosed_kline(raw_15m)
+            klines15 = closed_klines(raw_15m)
             closes15 = [fnum(k[4]) for k in klines15]
             volumes15 = [fnum(k[7]) for k in klines15]
+            if pre_start:
+                metrics["pre_start_volume"] = self.pre_start_volume_metrics(raw_15m, fallback_price)
             if old_rebound:
                 metrics["closed_15m_count"] = len(klines15)
                 metrics["trend_15m"] = infer_trend(closes15)
@@ -4055,6 +4083,10 @@ class PaperBot:
                     metrics["live_short_move"] = pct(live_close, closes15[-1])
             if len(closes15) > 1:
                 metrics["short_move"] = pct(closes15[-1], closes15[-2])
+            if pre_start and len(closes15) >= 5:
+                metrics["change_1h"] = pct(closes15[-1], closes15[-5])
+                if len(closes15) >= 17:
+                    metrics["change_4h"] = pct(closes15[-1], closes15[-17])
             trend15 = infer_trend(closes15)
             if trend15 != "neutral":
                 metrics["trend"] = trend15
@@ -4063,6 +4095,9 @@ class PaperBot:
                 metrics["volume_ratio"] = volumes15[-1] / base if base > 0 else metrics["volume_ratio"]
         except Exception:
             pass
+        if pre_start:
+            metrics["price"] = fallback_price
+            return metrics
         try:
             limit_1h = max(30 if old_rebound else 5, int(self.config.get("kline_1h_limit", 10))) + (1 if old_rebound else 0)
             klines1h = self.fetch_klines_interval(symbol, "1h", limit_1h)
@@ -4100,6 +4135,7 @@ class PaperBot:
         min_volume = float(self.config.get("min_quote_volume_usdt", 0))
         min_abs_change = float(self.config.get("min_abs_24h_change_pct", 0))
         strong_long_min_change = float(self.config.get("strong_long_24h_min_change_pct", 0))
+        strong_long_enabled = bool(self.config.get("strong_long_enabled", True))
         strong_short_enabled = bool(self.config.get("strong_short_enabled", True))
         max_candidates = int(self.config.get("max_candidates_per_scan", 18))
         pre_start_limit = int(self.config.get("pre_start_max_candidates", 8))
@@ -4109,11 +4145,11 @@ class PaperBot:
 
         def change_allowed(change: float) -> bool:
             if direction_mode == "long_only":
-                return change >= max(min_abs_change, strong_long_min_change)
+                return strong_long_enabled and change >= max(min_abs_change, strong_long_min_change)
             if direction_mode == "short_only":
                 return strong_short_enabled and change <= -min_abs_change
             if change > 0:
-                return change >= max(min_abs_change, strong_long_min_change)
+                return strong_long_enabled and change >= max(min_abs_change, strong_long_min_change)
             return strong_short_enabled and abs(change) >= min_abs_change
 
         def is_blocked_candidate(item: dict[str, Any]) -> bool:
@@ -4188,6 +4224,32 @@ class PaperBot:
                     continue
                 pool[symbol] = {"item": item, "signal_mode": "old_rebound_short", "mode_reason": "老币反弹衰竭做空池"}
 
+        if self.config.get("pre_start_long_enabled", False) and direction_mode != "short_only" and pre_start_limit > 0:
+            min_24h = float(self.config.get("pre_start_volume_24h_min_pct", -5.0))
+            max_24h = float(self.config.get("pre_start_volume_24h_max_pct", 20.0))
+            min_volume_24h = float(self.config.get("pre_start_volume_24h_min_usdt", 5_000_000))
+            pre_start = []
+            for item in tickers:
+                symbol = str(item.get("symbol", ""))
+                if symbol in pool or is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item):
+                    continue
+                change = fnum(item.get("priceChangePercent"))
+                volume = fnum(item.get("quoteVolume"))
+                if not self.config.get("pre_start_volume_auto_trade_enabled", False) and (
+                    symbol in watchlist or (volume >= min_volume and change_allowed(change))
+                ):
+                    continue
+                if volume >= min_volume_24h and min_24h <= change <= max_24h:
+                    pre_start.append(item)
+            pre_start.sort(key=lambda row: (fnum(row.get("quoteVolume")), str(row.get("symbol", ""))))
+            if pre_start:
+                start = int(self.state.get("scan_count", 0)) * pre_start_limit % len(pre_start)
+                rotated = pre_start[start:] + pre_start[:start]
+                for item in rotated[:pre_start_limit]:
+                    pool[str(item.get("symbol", ""))] = {
+                        "item": item, "signal_mode": "pre_start_long", "mode_reason": "持续放量启动做多观察池"
+                    }
+
         strong = []
         for item in tickers:
             symbol = str(item.get("symbol", ""))
@@ -4195,7 +4257,7 @@ class PaperBot:
                 continue
             change = fnum(item.get("priceChangePercent"))
             volume = fnum(item.get("quoteVolume"))
-            if symbol in watchlist or (volume >= min_volume and change_allowed(change)):
+            if (symbol in watchlist and (strong_long_enabled or change < 0)) or (volume >= min_volume and change_allowed(change)):
                 strong.append(item)
         if direction_mode == "long_only":
             strong.sort(key=lambda x: (-fnum(x.get("priceChangePercent")), -fnum(x.get("quoteVolume"))))
@@ -4205,27 +4267,6 @@ class PaperBot:
             strong.sort(key=lambda x: (-abs(fnum(x.get("priceChangePercent"))), -fnum(x.get("quoteVolume"))))
         for item in strong[:max_candidates]:
             pool[str(item.get("symbol", ""))] = {"item": item, "signal_mode": "strong_momentum", "mode_reason": "24h强波动池"}
-
-        if self.config.get("pre_start_long_enabled", False) and direction_mode != "short_only" and pre_start_limit > 0:
-            min_24h = float(self.config.get("pre_start_24h_min_pct", 1.0))
-            max_24h = float(self.config.get("pre_start_24h_max_pct", 12.0))
-            pre_start = []
-            for item in tickers:
-                symbol = str(item.get("symbol", ""))
-                if symbol in pool or is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item):
-                    continue
-                change = fnum(item.get("priceChangePercent"))
-                volume = fnum(item.get("quoteVolume"))
-                if volume >= min_volume and min_24h <= change <= max_24h:
-                    pre_start.append(item)
-            pre_start.sort(
-                key=lambda x: (
-                    -fnum(x.get("quoteVolume")),
-                    fnum(x.get("priceChangePercent")),
-                )
-            )
-            for item in pre_start[:pre_start_limit]:
-                pool[str(item.get("symbol", ""))] = {"item": item, "signal_mode": "pre_start_long", "mode_reason": "预启动做多池"}
 
         candidates = list(pool.values())
         candidates.sort(
@@ -4293,7 +4334,7 @@ class PaperBot:
                 reject = self.blocked_symbol_reject_reason(symbol)
             elif score < score_threshold and not (is_pre_start_long or is_old_rebound_short or is_high_pullback_short):
                 reject = f"分数 {score:.1f} 低于阈值 {score_threshold:.1f}"
-            elif side == "LONG" and trend == "down":
+            elif side == "LONG" and trend == "down" and not is_pre_start_long:
                 reject = "短线趋势反向"
             elif side == "SHORT" and trend == "up" and not (is_old_rebound_short or is_high_pullback_short):
                 reject = "短线趋势反向"
@@ -4301,7 +4342,12 @@ class PaperBot:
                 reject = self.direction_mode_reject_reason(side)
 
             if not reject and (enriched_count < enrich_limit or is_pre_start_long or is_old_rebound_short or is_high_pullback_short):
-                metrics = self.kline_short_metrics(symbol, price, change, old_rebound=True) if is_old_rebound_short else self.kline_short_metrics(symbol, price, change)
+                if is_old_rebound_short:
+                    metrics = self.kline_short_metrics(symbol, price, change, old_rebound=True)
+                elif is_pre_start_long:
+                    metrics = self.kline_short_metrics(symbol, price, change, pre_start=True)
+                else:
+                    metrics = self.kline_short_metrics(symbol, price, change)
                 enriched_count += 1
                 price = fnum(metrics.get("price")) or price
                 short_move = fnum(metrics.get("short_move"))
@@ -4322,14 +4368,20 @@ class PaperBot:
                     side, score, reason = "SHORT", short_score, short_reason
                 if score < score_threshold and not (is_pre_start_long or is_old_rebound_short or is_high_pullback_short):
                     reject = f"分数 {score:.1f} 低于阈值 {score_threshold:.1f}"
-                elif side == "LONG" and trend == "down":
+                elif side == "LONG" and trend == "down" and not is_pre_start_long:
                     reject = "短线趋势反向"
                 elif side == "SHORT" and trend == "up" and not (is_old_rebound_short or is_high_pullback_short):
                     reject = "短线趋势反向"
                 else:
                     reject = self.direction_mode_reject_reason(side)
                 if not reject and is_pre_start_long:
-                    reject = self.pre_start_kline_reject_reason(short_move, change_1h, volume_ratio, trend)
+                    pre_start_metrics = metrics.get("pre_start_volume", {})
+                    reject = self.pre_start_volume_reject_reason(pre_start_metrics)
+                    if not reject:
+                        reason = "已收盘15m持续放量、价格推进且主动买入占优"
+                        volume_ratio = fnum(pre_start_metrics.get("volume_ratio"), volume_ratio)
+                        market_reason = f"15m量能 {volume_ratio:.1f}x，后两根/前两根 {fnum(pre_start_metrics.get('volume_growth')):.1f}x，主动买入 {fnum(pre_start_metrics.get('taker_ratio')):.2f}"
+                        mode_reason = f"{mode_reason}；{market_reason}"
                 if not reject and is_old_rebound_short:
                     reject = self.old_rebound_short_kline_reject_reason(
                         symbol, short_move, change_1h, volume_ratio, trend, metrics,
@@ -4396,18 +4448,9 @@ class PaperBot:
             market_confirm = {"score": 0.0, "label": "未计算", "reason": ""}
             should_update_analyzer = not reject or reject == "已有持仓"
             confirmation_mode = str(self.config.get("confirmation_mode", "market_score"))
-            if should_update_analyzer and not reject and confirmation_mode == "market_score":
+            if should_update_analyzer and not reject and (confirmation_mode == "market_score" or is_pre_start_long):
                 if is_pre_start_long:
-                    market_confirm = self.pre_start_confirmation_score(
-                        change,
-                        change_1h,
-                        short_move,
-                        volume_ratio,
-                        trend,
-                        market_stats,
-                        price,
-                        fnum(item.get("highPrice")),
-                    )
+                    market_confirm = self.pre_start_volume_confirmation_score(metrics["pre_start_volume"])
                 elif is_old_rebound_short:
                     market_confirm = self.old_rebound_short_confirmation_score(
                         change,
@@ -4444,7 +4487,7 @@ class PaperBot:
                     )
                 confirm_score = fnum(market_confirm.get("score"))
                 confirm_min = self.market_confirm_min_score_for_mode(signal_mode, side)
-                analyzer_direction = "预启动确认" if is_pre_start_long else "市场确认"
+                analyzer_direction = "持续放量确认" if is_pre_start_long else "市场确认"
                 analyzer_confidence = confirm_score * 10
                 if is_old_rebound_short:
                     analyzer_direction = "老币反弹确认"
@@ -4467,6 +4510,11 @@ class PaperBot:
                     analyzer_reason = str(exc)
                     if not original_reject:
                         reject = f"分析器确认失败：{exc}"
+            if is_pre_start_long and not reject:
+                if not self.config.get("pre_start_volume_auto_trade_enabled", False):
+                    reject = "持续放量观察模式：信号达标，不自动开仓"
+                elif self.config.get("reverse_orders_enabled", False):
+                    reject = "持续放量做多池不允许与反向订单同时开仓"
             risk_level = self.classify_signal_risk(
                 score,
                 market_stats["funding_rate_pct"],
@@ -4488,7 +4536,7 @@ class PaperBot:
             )
             decision_steps.insert(-1, f"候选模式：{self.signal_mode_label(signal_mode)}，{mode_reason}")
             decision_steps.insert(-1, f"市场环境：{market_regime.get('label')} {fnum(market_regime.get('score')):.1f}/10，{market_regime.get('reason') or '-'}")
-            if confirmation_mode == "market_score":
+            if confirmation_mode == "market_score" or is_pre_start_long:
                 decision_steps.insert(
                     -1,
                     f"市场确认：{market_confirm.get('label')} {fnum(market_confirm.get('score')):.1f}/10，{market_confirm.get('reason') or '-'}",
@@ -4516,6 +4564,7 @@ class PaperBot:
                     oi_volume_ratio=round(market_stats["oi_volume_ratio"], 2),
                     signal_mode=signal_mode,
                     signal_heat_level=heat_level,
+                    signal_model="sustained_volume_v1" if is_pre_start_long else "",
                     market_regime_score=fnum(market_regime.get("score")),
                     market_regime_label=str(market_regime.get("label", "")),
                     market_regime_reason=str(market_regime.get("reason", "")),
@@ -4879,6 +4928,20 @@ class PaperBot:
                 break
             if signal.reject_reason or signal.price <= 0:
                 continue
+            if signal.signal_mode == "strong_momentum" and signal.side == "LONG" and not self.config.get("strong_long_enabled", True):
+                reason = "强波动池做多已关闭"
+                self.update_signal_decision(signal, reason, f"开仓前复核：{reason}")
+                continue
+            if signal.signal_mode == "pre_start_long":
+                if not self.config.get("pre_start_volume_auto_trade_enabled", False):
+                    self.update_signal_decision(signal, "持续放量观察模式：禁止开仓", "开仓前复核：持续放量观察模式")
+                    continue
+                if self.config.get("reverse_orders_enabled", False):
+                    self.update_signal_decision(signal, "持续放量做多池禁止反向开仓", "开仓前复核：反向订单已开启")
+                    continue
+                if signal.signal_model != "sustained_volume_v1":
+                    self.update_signal_decision(signal, "旧预启动策略信号已失效", "开仓前复核：旧策略信号不允许补开")
+                    continue
             blocked_reason = self.blocked_symbol_reject_reason(signal.symbol)
             if blocked_reason:
                 self.update_signal_decision(signal, blocked_reason, f"开仓前复核：{blocked_reason}")

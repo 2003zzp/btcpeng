@@ -1021,7 +1021,7 @@ class KlineShortMetricsTest(unittest.TestCase):
 
         pre_start = next(candidate for candidate in candidates if candidate["item"]["symbol"] == "CALMUSDT")
         self.assertEqual(pre_start["signal_mode"], "pre_start_long")
-        self.assertEqual(pre_start["mode_reason"], "预启动做多池")
+        self.assertIn("持续放量", pre_start["mode_reason"])
 
     def test_pre_start_long_candidates_are_disabled_by_default(self):
         bot = self.make_bot()
@@ -1127,6 +1127,56 @@ class KlineShortMetricsTest(unittest.TestCase):
         )
 
         self.assertEqual(candidates, [])
+
+    def test_strong_long_toggle_filters_positive_candidates_without_affecting_shorts_or_watchlist(self):
+        bot = self.make_bot()
+        bot.config["strong_long_enabled"] = False
+        bot.config["manual_watchlist"] = ["WATCHUSDT"]
+
+        candidates = bot.build_candidate_pool([
+            {"symbol": "UPUSDT", "lastPrice": "10", "priceChangePercent": "20", "quoteVolume": "50000000"},
+            {"symbol": "WATCHUSDT", "lastPrice": "10", "priceChangePercent": "8", "quoteVolume": "1000000"},
+            {"symbol": "DOWNUSDT", "lastPrice": "10", "priceChangePercent": "-12", "quoteVolume": "50000000"},
+        ])
+
+        self.assertEqual([(row["item"]["symbol"], row["signal_mode"]) for row in candidates],
+                         [("DOWNUSDT", "strong_momentum")])
+
+    def test_strong_long_toggle_respects_long_only_mode(self):
+        bot = self.make_bot()
+        bot.config["trade_direction_mode"] = "long_only"
+        tickers = [{"symbol": "UPUSDT", "lastPrice": "10", "priceChangePercent": "20", "quoteVolume": "50000000"}]
+        self.assertEqual(bot.build_candidate_pool(tickers)[0]["signal_mode"], "strong_momentum")
+        bot.config["strong_long_enabled"] = False
+        self.assertEqual(bot.build_candidate_pool(tickers), [])
+
+    def test_strong_long_toggle_does_not_disable_pre_start_long_pool(self):
+        bot = self.make_bot()
+        bot.config["strong_long_enabled"] = False
+        bot.config["pre_start_long_enabled"] = True
+        candidates = bot.build_candidate_pool([
+            {"symbol": "CALMUSDT", "lastPrice": "10", "priceChangePercent": "5", "quoteVolume": "10000000"},
+        ])
+        self.assertEqual([(row["item"]["symbol"], row["signal_mode"]) for row in candidates],
+                         [("CALMUSDT", "pre_start_long")])
+
+    def test_strong_long_toggle_blocks_old_signal_at_order_gate(self):
+        bot = self.make_bot()
+        bot.config["strong_long_enabled"] = False
+        signal = ReverseOrdersTest().make_signal()
+        signal.signal_mode = "strong_momentum"
+        bot.get_exchange_symbols = lambda: {signal.symbol: {"symbol": signal.symbol}}
+        bot.get_market_exchange_symbols = lambda: {signal.symbol: {"underlyingType": "COIN", "contractType": "PERPETUAL"}}
+        bot.exchange_open_position = lambda *_: self.fail("strong long must not reach exchange order")
+
+        self.assertEqual(bot.open_from_signals([signal]), 0)
+        self.assertIn("强波动池做多", signal.reject_reason)
+
+    def test_strong_long_toggle_can_be_saved_without_disabling_strong_short(self):
+        bot = self.make_bot()
+        bot.update_settings({"strong_long_enabled": "false"})
+        self.assertFalse(bot.config["strong_long_enabled"])
+        self.assertTrue(bot.config["strong_short_enabled"])
 
     def test_high_pullback_short_has_priority_over_old_rebound_short_for_same_symbol(self):
         bot = self.make_bot()
@@ -1249,7 +1299,7 @@ class KlineShortMetricsTest(unittest.TestCase):
         bot.config["market_regime_filter_enabled"] = False
         calls = []
 
-        def enrich(symbol, price, change):
+        def enrich(symbol, price, change, pre_start=False):
             calls.append(symbol)
             return {
                 "short_move": 2.0,
@@ -1259,6 +1309,7 @@ class KlineShortMetricsTest(unittest.TestCase):
                 "trend": "up",
                 "price": price,
                 "enriched": True,
+                "pre_start_volume": bot.pre_start_volume_metrics(PreStartVolumeStrategyTest().sustained_candles(), 101.3),
             }
 
         bot.kline_short_metrics = enrich
@@ -1283,15 +1334,15 @@ class KlineShortMetricsTest(unittest.TestCase):
         self.assertEqual(calls, ["CALMUSDT"])
         self.assertEqual(signal.signal_mode, "pre_start_long")
         self.assertEqual(signal.side, "LONG")
-        self.assertEqual(signal.reject_reason, "")
-        self.assertEqual(signal.analyzer_direction, "预启动确认")
+        self.assertIn("观察", signal.reject_reason)
+        self.assertEqual(signal.analyzer_direction, "持续放量确认")
 
     def test_pre_start_long_does_not_reject_on_strong_pool_score_after_enrichment(self):
         bot = self.make_bot()
         bot.config["pre_start_long_enabled"] = True
         bot.config["confirmation_mode"] = "market_score"
         bot.config["market_regime_filter_enabled"] = False
-        bot.kline_short_metrics = lambda symbol, price, change: {
+        bot.kline_short_metrics = lambda symbol, price, change, pre_start=False: {
             "short_move": 0.5,
             "change_1h": 1.0,
             "change_4h": 1.5,
@@ -1299,6 +1350,7 @@ class KlineShortMetricsTest(unittest.TestCase):
             "trend": "up",
             "price": price,
             "enriched": True,
+            "pre_start_volume": bot.pre_start_volume_metrics(PreStartVolumeStrategyTest().sustained_candles(), 101.3),
         }
         bot.fetch_signal_market_stats = lambda symbol, item: {
             "open_interest_usdt": 1000000.0,
@@ -1328,7 +1380,7 @@ class KlineShortMetricsTest(unittest.TestCase):
         signal = next(signal for signal in signals if signal.symbol == "EARLYSLOWUSDT")
         self.assertEqual(signal.signal_mode, "pre_start_long")
         self.assertLess(signal.score, float(bot.config["signal_score_threshold"]))
-        self.assertEqual(signal.reject_reason, "")
+        self.assertIn("观察", signal.reject_reason)
         self.assertGreaterEqual(signal.analyzer_confidence_pct, 65.0)
 
     def test_pre_start_long_rejects_overheated_15m_move(self):
@@ -1336,7 +1388,7 @@ class KlineShortMetricsTest(unittest.TestCase):
         bot.config["pre_start_long_enabled"] = True
         bot.config["confirmation_mode"] = "market_score"
         bot.config["market_regime_filter_enabled"] = False
-        bot.kline_short_metrics = lambda symbol, price, change: {
+        bot.kline_short_metrics = lambda symbol, price, change, pre_start=False: {
             "short_move": 6.0,
             "change_1h": 7.0,
             "change_4h": 8.0,
@@ -1344,6 +1396,7 @@ class KlineShortMetricsTest(unittest.TestCase):
             "trend": "up",
             "price": price,
             "enriched": True,
+            "pre_start_volume": {**bot.pre_start_volume_metrics(PreStartVolumeStrategyTest().sustained_candles(), 101.3), "price_advance_pct": 9.0},
         }
         bot.fetch_signal_market_stats = lambda symbol, item: {
             "open_interest_usdt": 1000000.0,
@@ -1363,14 +1416,14 @@ class KlineShortMetricsTest(unittest.TestCase):
         )
 
         signal = next(signal for signal in signals if signal.symbol == "FASTUSDT")
-        self.assertIn("预启动15m涨幅", signal.reject_reason)
+        self.assertIn("价格", signal.reject_reason)
 
     def test_pre_start_long_uses_independent_confirmation_score(self):
         bot = self.make_bot()
         bot.config["pre_start_long_enabled"] = True
         bot.config["confirmation_mode"] = "market_score"
         bot.config["market_regime_filter_enabled"] = False
-        bot.kline_short_metrics = lambda symbol, price, change: {
+        bot.kline_short_metrics = lambda symbol, price, change, pre_start=False: {
             "short_move": 1.5,
             "change_1h": 2.5,
             "change_4h": 3.0,
@@ -1378,6 +1431,7 @@ class KlineShortMetricsTest(unittest.TestCase):
             "trend": "up",
             "price": price,
             "enriched": True,
+            "pre_start_volume": bot.pre_start_volume_metrics(PreStartVolumeStrategyTest().sustained_candles(), 101.3),
         }
         bot.fetch_signal_market_stats = lambda symbol, item: {
             "open_interest_usdt": 1000000.0,
@@ -1406,8 +1460,8 @@ class KlineShortMetricsTest(unittest.TestCase):
         )
 
         signal = next(signal for signal in signals if signal.symbol == "EARLYUSDT")
-        self.assertEqual(signal.reject_reason, "")
-        self.assertEqual(signal.analyzer_direction, "预启动确认")
+        self.assertIn("观察", signal.reject_reason)
+        self.assertEqual(signal.analyzer_direction, "持续放量确认")
         self.assertGreaterEqual(signal.analyzer_confidence_pct, 65.0)
 
     def test_short_signal_rejects_late_waterfall_after_large_24h_high_drawdown(self):
@@ -1550,6 +1604,161 @@ class KlineShortMetricsTest(unittest.TestCase):
         self.assertEqual(signal.side, "SHORT")
         self.assertEqual(signal.reject_reason, "")
         self.assertEqual(signal.analyzer_direction, "老币反弹确认")
+
+
+class PreStartVolumeStrategyTest(unittest.TestCase):
+    def make_bot(self) -> server.PaperBot:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "config.json").write_text("{}", encoding="utf-8")
+        return server.PaperBot(root / "config.json", root / "state.json")
+
+    @staticmethod
+    def candle(close: float, volume: float, buy_share: float = .56, close_time: int = 0) -> list[object]:
+        return [0, str(close * .998), str(close * 1.005), str(close * .995), str(close), "0",
+                close_time, str(volume), "0", "0", str(volume * buy_share), "0"]
+
+    def sustained_candles(self) -> list[list[object]]:
+        base = [self.candle(100, 100_000) for _ in range(20)]
+        active = [self.candle(100.3, 320_000), self.candle(100.6, 340_000),
+                  self.candle(100.9, 360_000), self.candle(101.3, 390_000)]
+        return base + active
+
+    def test_sustained_closed_volume_and_buying_confirms_start(self):
+        bot = self.make_bot()
+        metrics = bot.pre_start_volume_metrics(self.sustained_candles(), 101.3)
+        self.assertEqual(metrics["confirmed_bars"], 4)
+        self.assertEqual(bot.pre_start_volume_reject_reason(metrics), "")
+
+    def test_unclosed_spike_does_not_complete_sustained_volume(self):
+        bot = self.make_bot()
+        future = int(server.time.time() * 1000) + 900_000
+        candles = [self.candle(100, 100_000) for _ in range(21)] + [
+            self.candle(100.3, 320_000), self.candle(100.6, 340_000),
+            self.candle(101, 4_000_000, close_time=future)]
+        metrics = bot.pre_start_volume_metrics(candles, 101)
+        self.assertIn("成交额", bot.pre_start_volume_reject_reason(metrics))
+
+    def test_high_volume_without_price_progress_or_buying_is_not_a_long_signal(self):
+        bot = self.make_bot()
+        stalled = self.sustained_candles()
+        stalled[-1] = self.candle(100, 390_000)
+        metrics = bot.pre_start_volume_metrics(stalled, 100)
+        self.assertIn("价格", bot.pre_start_volume_reject_reason(metrics))
+        selling = [row.copy() for row in self.sustained_candles()]
+        for row in selling[-4:]:
+            row[10] = str(float(row[7]) * .43)
+        metrics = bot.pre_start_volume_metrics(selling, 101.3)
+        self.assertIn("主动买入", bot.pre_start_volume_reject_reason(metrics))
+
+    def test_missing_kline_buy_volume_fails_closed(self):
+        bot = self.make_bot()
+        candles = [row[:8] for row in self.sustained_candles()]
+        metrics = bot.pre_start_volume_metrics(candles, 101.3)
+        self.assertIn("数据", bot.pre_start_volume_reject_reason(metrics))
+
+    def test_pool_samples_lower_24h_volume_and_precedes_strong_pool(self):
+        bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["pre_start_volume_auto_trade_enabled"] = True
+        bot.config["pre_start_max_candidates"] = 1
+        tickers = [
+            {"symbol": "FRESHUSDT", "lastPrice": "1", "priceChangePercent": "8", "quoteVolume": "10000000"},
+            {"symbol": "BUSYUSDT", "lastPrice": "1", "priceChangePercent": "8", "quoteVolume": "200000000"},
+        ]
+        candidates = bot.build_candidate_pool(tickers)
+        self.assertEqual(next(row for row in candidates if row["item"]["symbol"] == "FRESHUSDT")["signal_mode"], "pre_start_long")
+        bot.state["scan_count"] = 1
+        candidates = bot.build_candidate_pool(tickers)
+        self.assertEqual(next(row for row in candidates if row["item"]["symbol"] == "BUSYUSDT")["signal_mode"], "pre_start_long")
+
+    def test_observation_does_not_steal_strong_pool_candidates(self):
+        bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
+        tickers = [
+            {"symbol": "HOTUSDT", "lastPrice": "1", "priceChangePercent": "8", "quoteVolume": "30000000"},
+            {"symbol": "CALMUSDT", "lastPrice": "1", "priceChangePercent": "4", "quoteVolume": "10000000"},
+        ]
+        candidates = bot.build_candidate_pool(tickers)
+        modes = {row["item"]["symbol"]: row["signal_mode"] for row in candidates}
+        self.assertEqual(modes["HOTUSDT"], "strong_momentum")
+        self.assertEqual(modes["CALMUSDT"], "pre_start_long")
+
+    def test_build_signals_records_new_model_without_placing_orders_by_default(self):
+        bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
+        bot.config["market_regime_filter_enabled"] = False
+        bot.config["reverse_orders_enabled"] = True
+        calls = []
+        def fetch(symbol, interval, limit):
+            calls.append(interval)
+            self.assertEqual(interval, "15m")
+            return self.sustained_candles()
+        bot.fetch_klines_interval = fetch
+        bot.fetch_signal_market_stats = lambda symbol, item: {
+            "open_interest_usdt": 1_000_000.0, "open_interest_24h_pct": 2.0,
+            "open_interest_4h_pct": 1.0, "open_interest_1h_pct": 1.0,
+            "funding_rate_pct": 0.01, "long_short_ratio": 1.1,
+            "volume_4h_ratio": 1.0, "taker_long_short_ratio": 1.2, "oi_volume_ratio": 0.1,
+            "funding_rate_available": True, "open_interest_1h_available": True,
+        }
+        ticker = {"symbol": "FRESHUSDT", "lastPrice": "101.3", "highPrice": "102",
+                  "priceChangePercent": "8", "quoteVolume": "10000000"}
+        signal = bot.build_signals([ticker], set())[0]
+        self.assertEqual(calls, ["15m"])
+        self.assertEqual(signal.signal_mode, "pre_start_long")
+        self.assertEqual(signal.signal_model, "sustained_volume_v1")
+        self.assertEqual(signal.analyzer_direction, "持续放量确认")
+        self.assertIn("观察", signal.reject_reason)
+        self.assertIn("15m", signal.analyzer_reason)
+        bot.config["reverse_orders_enabled"] = False
+        bot.config["pre_start_volume_auto_trade_enabled"] = True
+        signal = bot.build_signals([ticker], set())[0]
+        self.assertEqual(signal.reject_reason, "")
+
+    def test_observation_default_and_reverse_orders_guard_old_pending_signal(self):
+        bot = self.make_bot()
+        signal = RemovedStrategyControlsTest().make_signal()
+        signal.signal_mode = "pre_start_long"
+        signal.side = "LONG"
+        bot.get_exchange_symbols = lambda: {signal.symbol: {"symbol": signal.symbol}}
+        bot.get_market_exchange_symbols = lambda: {signal.symbol: {"underlyingType": "COIN", "contractType": "PERPETUAL"}}
+        bot.exchange_open_position = lambda *args: self.fail("observation / reverse guard must stop order")
+        self.assertEqual(bot.open_from_signals([signal]), 0)
+        self.assertIn("观察", signal.reject_reason)
+        bot.config["pre_start_volume_auto_trade_enabled"] = True
+        bot.config["reverse_orders_enabled"] = True
+        signal.reject_reason = ""
+        self.assertEqual(bot.open_from_signals([signal]), 0)
+        self.assertIn("反向", signal.reject_reason)
+        bot.config["reverse_orders_enabled"] = False
+        signal.reject_reason = ""
+        self.assertEqual(bot.open_from_signals([signal]), 0)
+        self.assertIn("旧", signal.reject_reason)
+
+    def test_sustained_volume_settings_are_saved_and_signed_24h_floor_is_allowed(self):
+        bot = self.make_bot()
+        bot.update_settings({
+            "pre_start_volume_auto_trade_enabled": "true",
+            "pre_start_volume_24h_min_pct": -8,
+            "pre_start_volume_24h_min_usdt": 8_000_000,
+            "pre_start_volume_15m_min_usdt": 350_000,
+            "pre_start_volume_relative_min": 1.4,
+            "pre_start_volume_growth_min": 1.15,
+            "pre_start_volume_taker_min": 1.1,
+        })
+        self.assertEqual(bot.config["pre_start_volume_24h_min_pct"], -8)
+        self.assertTrue(bot.config["pre_start_volume_auto_trade_enabled"])
+        self.assertEqual(bot.config["pre_start_volume_15m_min_usdt"], 350_000)
+
+    def test_auto_trade_requires_real_funding_and_oi_data(self):
+        bot = self.make_bot()
+        bot.config["pre_start_volume_auto_trade_enabled"] = True
+        missing = {"funding_rate_pct": 0.0, "open_interest_1h_pct": 0.0}
+        self.assertIn("资金面", bot.pre_start_market_stats_reject_reason(missing))
+        valid = {**missing, "funding_rate_available": True, "open_interest_1h_available": True}
+        self.assertEqual(bot.pre_start_market_stats_reject_reason(valid), "")
 
 
 class RemovedStrategyControlsTest(unittest.TestCase):

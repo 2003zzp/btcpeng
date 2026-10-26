@@ -22,6 +22,18 @@ class InputNameParser(HTMLParser):
 
 
 class FrontendSettingsTest(unittest.TestCase):
+    def test_pre_start_form_exposes_sustained_volume_controls(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+        parser.feed(html)
+        self.assertTrue({
+            "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled",
+            "pre_start_volume_24h_min_pct", "pre_start_volume_24h_max_pct",
+            "pre_start_volume_24h_min_usdt", "pre_start_volume_15m_min_usdt",
+            "pre_start_volume_relative_min", "pre_start_volume_growth_min",
+            "pre_start_volume_taker_min",
+        }.issubset(parser.input_names))
+
     def test_settings_form_exposes_system_score_threshold(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         parser = InputNameParser()
@@ -45,6 +57,12 @@ class FrontendSettingsTest(unittest.TestCase):
         parser.feed(html)
 
         self.assertIn("strong_short_enabled", parser.input_names)
+
+    def test_settings_form_exposes_strong_long_toggle(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+        parser.feed(html)
+        self.assertIn("strong_long_enabled", parser.input_names)
 
     def test_settings_form_exposes_reverse_orders_toggle(self):
         html = Path("web/index.html").read_text(encoding="utf-8")

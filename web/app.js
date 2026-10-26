@@ -92,22 +92,20 @@ function normalizeSettingsLabels() {
     take_profit_roi_pct: "初始止盈 ROI (%)",
     stop_loss_roi_pct: "初始止损 ROI (%)",
     max_candidates_per_scan: "候选币数量",
-    pre_start_max_candidates: "预启动候选数",
-    pre_start_24h_min_pct: "预启动24h下限 (%)",
-    pre_start_24h_max_pct: "预启动24h上限 (%)",
-    pre_start_15m_min_pct: "预启动15m下限 (%)",
-    pre_start_15m_max_pct: "预启动15m上限 (%)",
-    pre_start_1h_min_pct: "预启动1h下限 (%)",
-    pre_start_1h_max_pct: "预启动1h上限 (%)",
-    pre_start_volume_ratio_min: "预启动量能下限",
-    pre_start_volume_ratio_max: "预启动量能上限",
-    pre_start_taker_ratio_min: "预启动主动买入下限",
+    pre_start_max_candidates: "持续放量候选数",
+    pre_start_volume_24h_min_pct: "24h涨幅下限 (%)",
+    pre_start_volume_24h_max_pct: "24h涨幅上限 (%)",
+    pre_start_volume_24h_min_usdt: "24h最低成交额 (U)",
+    pre_start_volume_15m_min_usdt: "15m单根最低成交额 (U)",
+    pre_start_volume_relative_min: "15m相对放量下限 (x)",
+    pre_start_volume_growth_min: "后两根/前两根量比 (x)",
+    pre_start_volume_taker_min: "15m主动买入下限 (x)",
     pre_start_oi_1h_min_pct: "预启动OI 1h下限 (%)",
     pre_start_funding_abs_max_pct: "预启动资金费率上限 (%)",
-    pre_start_long_short_max: "预启动多空比上限",
-    pre_start_market_confirm_min_score: "预启动确认分阈值",
+    pre_start_market_confirm_min_score: "持续放量确认分阈值",
     signal_score_threshold: "系统分阈值",
     strong_long_24h_min_change_pct: "强波动做多24h涨幅下限 (%)",
+    strong_long_enabled: "启用强波动池做多",
     high_pullback_short_max_candidates: "高位回落候选数",
     high_pullback_short_24h_min_pct: "高位回落24h下限 (%)",
     high_pullback_short_24h_max_pct: "高位回落24h上限 (%)",
@@ -140,8 +138,10 @@ function normalizeSettingsLabels() {
     market_regime_filter_enabled: "启用市场环境过滤",
     long_structure_confirmation_enabled: "启用做多结构确认",
     short_structure_confirmation_enabled: "启用做空结构确认",
-    pre_start_long_enabled: "启用预启动做多池",
+    pre_start_long_enabled: "启用持续放量做多观察池",
+    pre_start_volume_auto_trade_enabled: "允许持续放量池自动开仓",
     high_pullback_short_enabled: "启用高位回落做空池",
+    strong_long_enabled: "启用强波动池做多",
     strong_short_enabled: "启用强波动池做空",
     reverse_orders_enabled: "开启反向订单",
   };
@@ -168,11 +168,15 @@ function normalizeSettingsLabels() {
 
   const preStartLongLabel = els.form?.elements?.pre_start_long_enabled?.closest("label");
   if (preStartLongLabel) {
-    preStartLongLabel.title = "默认关闭。开启后额外筛选24h温和上涨、15m/1h刚启动且资金面健康的做多候选，适合先观察几天效果。";
+    preStartLongLabel.title = "只开启候选观察。以最近4根已收盘15m成交额持续放大、价格推进和主动买入为信号。";
+  }
+  const volumeTradeLabel = els.form?.elements?.pre_start_volume_auto_trade_enabled?.closest("label");
+  if (volumeTradeLabel) {
+    volumeTradeLabel.title = "默认关闭；开启后本池通过确认可自动开仓。全局反向订单开启时，本池仍禁止自动开仓。";
   }
   const preStartConfirmLabel = els.form?.elements?.pre_start_market_confirm_min_score?.closest("label");
   if (preStartConfirmLabel) {
-    preStartConfirmLabel.title = "预启动做多池使用的市场确认分阈值，默认6.5。数值越高越保守。";
+    preStartConfirmLabel.title = "持续放量做多池的确认分阈值，默认6.5；仅调整分数，不能跳过量价硬条件。";
   }
   const preStartMarginLabel = els.form?.elements?.pre_start_margin_per_trade_usdt?.closest("label");
   if (preStartMarginLabel) {
@@ -226,6 +230,10 @@ function normalizeSettingsLabels() {
   const strongLongMinChangeLabel = els.form?.elements?.strong_long_24h_min_change_pct?.closest("label");
   if (strongLongMinChangeLabel) {
     strongLongMinChangeLabel.title = "只作用于强波动池做多候选。设置20表示24h涨幅低于20%的币不会进入强波动做多候选；预启动池和做空池不受影响。默认0。";
+  }
+  const strongLongEnabledLabel = els.form?.elements?.strong_long_enabled?.closest("label");
+  if (strongLongEnabledLabel) {
+    strongLongEnabledLabel.title = "只控制强波动池做多候选。关闭后不筛选强波动做多币；持续放量做多池仍按自己的开关独立运行。";
   }
   const strongShortEnabledLabel = els.form?.elements?.strong_short_enabled?.closest("label");
   if (strongShortEnabledLabel) {
@@ -882,7 +890,7 @@ function renderCooldowns(rows) {
 function candidateModeBadge(row) {
   const mode = String(row.signal_mode || "strong_momentum");
   if (mode === "pre_start_long") {
-    return { text: "预启动做多", className: "mode-pre-start" };
+    return { text: "持续放量做多", className: "mode-pre-start" };
   }
   if (mode === "old_rebound_short") {
     return { text: "老币做空", className: "mode-old-short" };
