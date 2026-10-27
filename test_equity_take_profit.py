@@ -1631,6 +1631,37 @@ class PreStartVolumeStrategyTest(unittest.TestCase):
         self.assertEqual(metrics["confirmed_bars"], 4)
         self.assertEqual(bot.pre_start_volume_reject_reason(metrics), "")
 
+    def test_one_or_two_zero_quote_baseline_bars_do_not_block_valid_volume(self):
+        bot = self.make_bot()
+        for zero_count in (1, 2):
+            candles = self.sustained_candles()
+            for row in candles[:zero_count]:
+                row[7] = "0"
+                row[10] = "0"
+            metrics = bot.pre_start_volume_metrics(candles, 101.3)
+            self.assertTrue(metrics["valid"])
+            self.assertEqual(metrics["baseline_volume"], 100_000)
+            self.assertEqual(metrics["confirmed_bars"], 4)
+            self.assertEqual(bot.pre_start_volume_reject_reason(metrics), "")
+
+    def test_three_zero_baseline_bars_still_fail_closed_with_specific_reason(self):
+        bot = self.make_bot()
+        candles = self.sustained_candles()
+        for row in candles[:3]:
+            row[7] = "0"
+            row[10] = "0"
+        reason = bot.pre_start_volume_reject_reason(bot.pre_start_volume_metrics(candles, 101.3))
+        self.assertIn("基准", reason)
+        self.assertIn("3/20", reason)
+
+    def test_zero_quote_volume_in_recent_confirmation_bars_still_fails_closed(self):
+        bot = self.make_bot()
+        candles = self.sustained_candles()
+        candles[-2][7] = "0"
+        candles[-2][10] = "0"
+        reason = bot.pre_start_volume_reject_reason(bot.pre_start_volume_metrics(candles, 101.3))
+        self.assertIn("最近4根", reason)
+
     def test_unclosed_spike_does_not_complete_sustained_volume(self):
         bot = self.make_bot()
         future = int(server.time.time() * 1000) + 900_000
@@ -1638,7 +1669,8 @@ class PreStartVolumeStrategyTest(unittest.TestCase):
             self.candle(100.3, 320_000), self.candle(100.6, 340_000),
             self.candle(101, 4_000_000, close_time=future)]
         metrics = bot.pre_start_volume_metrics(candles, 101)
-        self.assertIn("成交额", bot.pre_start_volume_reject_reason(metrics))
+        self.assertIn("已收盘", bot.pre_start_volume_reject_reason(metrics))
+        self.assertIn("23/24", bot.pre_start_volume_reject_reason(metrics))
 
     def test_high_volume_without_price_progress_or_buying_is_not_a_long_signal(self):
         bot = self.make_bot()
@@ -1654,9 +1686,20 @@ class PreStartVolumeStrategyTest(unittest.TestCase):
 
     def test_missing_kline_buy_volume_fails_closed(self):
         bot = self.make_bot()
-        candles = [row[:8] for row in self.sustained_candles()]
+        candles = self.sustained_candles()
+        candles[-1] = candles[-1][:8]
         metrics = bot.pre_start_volume_metrics(candles, 101.3)
-        self.assertIn("数据", bot.pre_start_volume_reject_reason(metrics))
+        self.assertIn("主动买入", bot.pre_start_volume_reject_reason(metrics))
+
+    def test_pre_start_kline_timeout_is_reported_without_bypassing_volume_gate(self):
+        bot = self.make_bot()
+        def timeout(symbol, interval, limit):
+            raise TimeoutError("15m public request timed out")
+        bot.fetch_klines_interval = timeout
+        metrics = bot.kline_short_metrics("DOODUSDT", 100, 8, pre_start=True)
+        reason = bot.pre_start_volume_reject_reason(metrics["pre_start_volume"])
+        self.assertIn("请求失败", reason)
+        self.assertIn("TimeoutError", reason)
 
     def test_pool_samples_lower_24h_volume_and_precedes_strong_pool(self):
         bot = self.make_bot()

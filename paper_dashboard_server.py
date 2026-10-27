@@ -3815,22 +3815,42 @@ class PaperBot:
         closed = closed_klines(klines)
         result: dict[str, Any] = {"valid": False, "closed_count": len(closed)}
         if len(closed) < 24:
+            result["invalid_reason"] = f"预启动15m已收盘K线不足 {len(closed)}/24"
             return result
         recent = closed[-4:]
-        baseline = [fnum(row[7]) for row in closed[-24:-4] if len(row) > 10]
-        if len(baseline) != 20 or any(value <= 0 for value in baseline):
+        baseline: list[float] = []
+        for row in closed[-24:-4]:
+            if len(row) <= 7:
+                result["invalid_reason"] = "预启动15m基准成交额字段缺失"
+                return result
+            quote_volume = fnum(row[7], -1)
+            if quote_volume < 0:
+                result["invalid_reason"] = "预启动15m基准成交额数据无效"
+                return result
+            baseline.append(quote_volume)
+        positive_baseline = [volume for volume in baseline if volume > 0]
+        zero_count = len(baseline) - len(positive_baseline)
+        result["baseline_zero_count"] = zero_count
+        if len(positive_baseline) < 18:
+            result["invalid_reason"] = f"预启动15m基准零成交额过多 {zero_count}/20"
             return result
-        if any(len(row) <= 10 or fnum(row[7]) <= 0 for row in recent):
+        base = sum(positive_baseline) / len(positive_baseline)
+        if any(len(row) <= 7 or fnum(row[7], -1) <= 0 for row in recent):
+            result["invalid_reason"] = "预启动最近4根15m成交额缺失或为0"
             return result
-        base = sum(baseline) / len(baseline)
         volumes = [fnum(row[7]) for row in recent]
+        if any(len(row) <= 10 for row in recent):
+            result["invalid_reason"] = "预启动最近4根15m主动买入字段缺失"
+            return result
         buys = [fnum(row[10], -1) for row in recent]
         if any(buy < 0 or buy > volume for buy, volume in zip(buys, volumes)):
+            result["invalid_reason"] = "预启动最近4根15m主动买入数据无效"
             return result
         closes = [fnum(row[4]) for row in recent]
         highs = [fnum(row[2]) for row in recent]
         lows = [fnum(row[3]) for row in recent]
         if any(price <= 0 for price in closes + highs + lows):
+            result["invalid_reason"] = "预启动最近4根15m价格数据无效"
             return result
         total_buy = sum(buys)
         total_sell = sum(volumes) - total_buy
@@ -3857,7 +3877,7 @@ class PaperBot:
 
     def pre_start_volume_reject_reason(self, metrics: dict[str, Any]) -> str:
         if not metrics.get("valid"):
-            return "预启动15m真实成交额或主动买入数据不足"
+            return str(metrics.get("invalid_reason") or "预启动15m真实成交额或主动买入数据不足")
         growth_min = float(self.config.get("pre_start_volume_growth_min", 1.1))
         if int(metrics.get("confirmed_bars", 0)) < 3 or fnum(metrics.get("volume_growth")) < growth_min:
             return "预启动15m成交额未持续放大"
@@ -4093,8 +4113,12 @@ class PaperBot:
             if len(volumes15) > 21:
                 base = sum(volumes15[-21:-1]) / 20
                 metrics["volume_ratio"] = volumes15[-1] / base if base > 0 else metrics["volume_ratio"]
-        except Exception:
-            pass
+        except Exception as exc:
+            if pre_start:
+                metrics["pre_start_volume"] = {
+                    "valid": False,
+                    "invalid_reason": f"预启动15m K线请求失败或解析异常：{type(exc).__name__}",
+                }
         if pre_start:
             metrics["price"] = fallback_price
             return metrics
