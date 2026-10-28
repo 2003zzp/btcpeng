@@ -87,6 +87,8 @@ function normalizeSettingsLabels() {
     margin_type: "仓位模式",
     pre_start_margin_per_trade_usdt: "预启动保证金 (U)",
     pre_start_leverage: "预启动杠杆上限",
+    pre_start_take_profit_roi_pct: "预启动初始止盈 ROI (%)",
+    pre_start_stop_loss_roi_pct: "预启动初始止损 ROI (%)",
     high_pullback_short_margin_per_trade_usdt: "高位回落保证金 (U)",
     high_pullback_short_leverage: "高位回落杠杆上限",
     take_profit_roi_pct: "初始止盈 ROI (%)",
@@ -180,11 +182,15 @@ function normalizeSettingsLabels() {
   }
   const preStartMarginLabel = els.form?.elements?.pre_start_margin_per_trade_usdt?.closest("label");
   if (preStartMarginLabel) {
-    preStartMarginLabel.title = "仅用于预启动做多池的单笔开仓保证金。止盈止损ROI仍沿用全局止盈/止损参数。";
+    preStartMarginLabel.title = "仅用于持续放量做多池的单笔开仓保证金；初始止盈止损可在旁边单独设置。";
   }
   const preStartLeverageLabel = els.form?.elements?.pre_start_leverage?.closest("label");
   if (preStartLeverageLabel) {
     preStartLeverageLabel.title = "仅用于预启动做多池的杠杆上限。交易所不支持时仍会自动降档。";
+  }
+  for (const name of ["pre_start_take_profit_roi_pct", "pre_start_stop_loss_roi_pct"]) {
+    const label = els.form?.elements?.[name]?.closest("label");
+    if (label) label.title = "仅对以后新开的持续放量做多池订单生效。这里是仓位ROI百分比，不是币价涨跌百分比；现有订单保护单不自动修改。";
   }
   const marginTypeLabel = els.form?.elements?.margin_type?.closest("label");
   if (marginTypeLabel) {

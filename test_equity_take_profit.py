@@ -175,6 +175,129 @@ class ReverseOrdersTest(unittest.TestCase):
         self.assertLess(float(record["take_profit"]), signal.price)
 
 
+class PreStartProtectionRoiTest(unittest.TestCase):
+    def make_bot(self, config: str = "{}") -> server.PaperBot:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text(config, encoding="utf-8")
+        return server.PaperBot(config_path, state_path)
+
+    def prepare_order(self, bot: server.PaperBot):
+        bot.get_available_balance = lambda: 100.0
+        bot.ensure_exchange_settings = lambda symbol, target_leverage: 4
+        bot.exposure_pct = lambda extra_notional=0.0: 0.0
+        calls = []
+        def submit(method, path, params, side):
+            calls.append((path, params, side))
+            return {"orderId": "entry-1"} if path == "/fapi/v1/order" else {"algoId": f"algo-{len(calls)}"}
+        bot.signed_exchange_request_position_aware = submit
+        symbol_info = {"filters": [
+            {"filterType": "LOT_SIZE", "stepSize": "0.001"},
+            {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+        ]}
+        return calls, symbol_info
+
+    def test_legacy_config_inherits_current_global_roi_at_load(self):
+        bot = self.make_bot('{"take_profit_roi_pct": 120, "stop_loss_roi_pct": 55}')
+        self.assertEqual(bot.config["pre_start_take_profit_roi_pct"], 120)
+        self.assertEqual(bot.config["pre_start_stop_loss_roi_pct"], 55)
+
+    def test_pre_start_roi_can_be_saved_independently_of_global_settings(self):
+        bot = self.make_bot('{"take_profit_roi_pct": 120, "stop_loss_roi_pct": 55}')
+        bot.update_settings({"pre_start_take_profit_roi_pct": 65, "pre_start_stop_loss_roi_pct": 35})
+        self.assertEqual(bot.config["pre_start_take_profit_roi_pct"], 65)
+        self.assertEqual(bot.config["pre_start_stop_loss_roi_pct"], 35)
+        self.assertEqual(bot.config["take_profit_roi_pct"], 120)
+        self.assertEqual(bot.config["stop_loss_roi_pct"], 55)
+
+    def test_pre_start_order_uses_its_own_roi_and_actual_leverage(self):
+        bot = self.make_bot('{"take_profit_roi_pct": 120, "stop_loss_roi_pct": 55, "pre_start_take_profit_roi_pct": 80, "pre_start_stop_loss_roi_pct": 40}')
+        calls, info = self.prepare_order(bot)
+        signal = ReverseOrdersTest().make_signal()
+        signal.signal_mode = "pre_start_long"
+        record = bot.exchange_open_position_with_sizing(signal, info, {"margin_usdt": 5, "target_leverage": 8})
+        self.assertEqual(float(calls[1][1]["triggerPrice"]), 90.0)
+        self.assertEqual(float(calls[2][1]["triggerPrice"]), 120.0)
+        self.assertEqual(record["stop_loss_roi_pct"], 40)
+        self.assertEqual(record["take_profit_roi_pct"], 80)
+        self.assertEqual(record["leverage"], 4)
+
+    def test_other_pool_still_uses_global_roi(self):
+        bot = self.make_bot('{"take_profit_roi_pct": 120, "stop_loss_roi_pct": 55, "pre_start_take_profit_roi_pct": 80, "pre_start_stop_loss_roi_pct": 40}')
+        calls, info = self.prepare_order(bot)
+        signal = ReverseOrdersTest().make_signal()
+        record = bot.exchange_open_position_with_sizing(signal, info, {"margin_usdt": 5, "target_leverage": 8})
+        self.assertEqual(float(calls[1][1]["triggerPrice"]), 86.25)
+        self.assertEqual(float(calls[2][1]["triggerPrice"]), 130.0)
+        self.assertNotIn("stop_loss_roi_pct", record)
+        self.assertNotIn("take_profit_roi_pct", record)
+
+    def test_pre_start_position_uses_order_snapshot_not_subsequent_global_settings(self):
+        bot = self.make_bot('{"take_profit_roi_pct": 120, "stop_loss_roi_pct": 55, "pre_start_take_profit_roi_pct": 80, "pre_start_stop_loss_roi_pct": 40}')
+        pos = {"symbol": "BTCUSDT", "side": "LONG", "entry_price": 100, "last_price": 100,
+               "quantity": 0.05, "margin_usdt": 5, "signal_mode": "pre_start_long",
+               "take_profit_roi_pct": 80, "stop_loss_roi_pct": 40}
+        bot.state["positions"] = [pos]
+        bot.config["pre_start_take_profit_roi_pct"] = 60
+        bot.config["pre_start_stop_loss_roi_pct"] = 30
+        closed = []
+        bot.close_position = lambda p, price, reason: closed.append(reason)
+        bot.refresh_positions({"BTCUSDT": 150})
+        self.assertEqual(closed, [])
+        bot.refresh_positions({"BTCUSDT": 190})
+        self.assertEqual(closed, ["止盈平仓"])
+        bot.state["positions"] = [pos]
+        bot.refresh_positions({"BTCUSDT": 55})
+        self.assertEqual(closed, ["止盈平仓", "止损平仓"])
+
+    def test_exchange_position_sync_preserves_pre_start_roi_snapshot(self):
+        bot = self.make_bot()
+        bot.state["open_order_history"] = [{
+            "symbol": "BTCUSDT", "side": "LONG", "time": server.iso_now(),
+            "execution_mode": bot.exchange_mode(), "entry_order_id": "entry-1",
+            "signal_mode": "pre_start_long", "take_profit_roi_pct": 80,
+            "stop_loss_roi_pct": 40,
+        }]
+        bot.signed_exchange_request = lambda method, path, params=None: [{
+            "symbol": "BTCUSDT", "positionAmt": "0.05", "entryPrice": "100", "markPrice": "101",
+            "unRealizedProfit": "0.05", "isolatedMargin": "5", "leverage": "4", "updateTime": 0,
+        }]
+        bot.fetch_today_position_history = lambda history: []
+        bot.get_account_balance_snapshot = lambda: {
+            "equity_usdt": 100, "available_balance_usdt": 80, "wallet_balance_usdt": 100,
+            "unrealized_pnl_usdt": 0.05,
+        }
+        bot.sync_exchange_state()
+        position = bot.state["positions"][0]
+        self.assertEqual(position["signal_mode"], "pre_start_long")
+        self.assertEqual(position["take_profit_roi_pct"], 80)
+        self.assertEqual(position["stop_loss_roi_pct"], 40)
+
+    def test_pre_start_invalid_stop_trigger_rejected_before_entry(self):
+        bot = self.make_bot('{"pre_start_stop_loss_roi_pct": 500}')
+        calls, info = self.prepare_order(bot)
+        signal = ReverseOrdersTest().make_signal()
+        signal.signal_mode = "pre_start_long"
+        with self.assertRaises(RuntimeError):
+            bot.exchange_open_position_with_sizing(signal, info, {"margin_usdt": 5, "target_leverage": 8})
+        self.assertEqual(calls, [])
+
+    def test_pre_start_stop_rounded_to_zero_is_rejected_before_entry(self):
+        bot = self.make_bot('{"pre_start_stop_loss_roi_pct": 50}')
+        calls, info = self.prepare_order(bot)
+        bot.ensure_exchange_settings = lambda symbol, target_leverage: 1
+        info["filters"][1]["tickSize"] = "0.01"
+        signal = ReverseOrdersTest().make_signal()
+        signal.signal_mode = "pre_start_long"
+        signal.price = 0.01
+        with self.assertRaises(RuntimeError):
+            bot.exchange_open_position_with_sizing(signal, info, {"margin_usdt": 5, "target_leverage": 1})
+        self.assertEqual(calls, [])
+
+
 class ClosedTradeCooldownTest(unittest.TestCase):
     def make_bot(self, take_profit_cooldown_enabled=True) -> server.PaperBot:
         tmp = tempfile.TemporaryDirectory()

@@ -124,6 +124,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pre_start_market_confirm_min_score": 6.5,
     "pre_start_margin_per_trade_usdt": 3.0,
     "pre_start_leverage": 2,
+    "pre_start_take_profit_roi_pct": None,
+    "pre_start_stop_loss_roi_pct": None,
     "old_rebound_short_enabled": False,
     "old_rebound_short_max_candidates": 8,
     "old_rebound_short_24h_min_pct": 8.0,
@@ -582,6 +584,10 @@ class PaperBot:
         config = json.loads(json.dumps(DEFAULT_CONFIG))
         if self.config_path.exists():
             deep_update(config, load_json(self.config_path, {}))
+        if config.get("pre_start_take_profit_roi_pct") is None:
+            config["pre_start_take_profit_roi_pct"] = float(config["take_profit_roi_pct"])
+        if config.get("pre_start_stop_loss_roi_pct") is None:
+            config["pre_start_stop_loss_roi_pct"] = float(config["stop_loss_roi_pct"])
         return config
 
     def load_state(self) -> dict[str, Any]:
@@ -1498,6 +1504,8 @@ class PaperBot:
             "pre_start_market_confirm_min_score": float,
             "pre_start_margin_per_trade_usdt": float,
             "pre_start_leverage": int,
+            "pre_start_take_profit_roi_pct": float,
+            "pre_start_stop_loss_roi_pct": float,
             "old_rebound_short_enabled": str,
             "old_rebound_short_max_candidates": int,
             "old_rebound_short_24h_min_pct": float,
@@ -1602,6 +1610,8 @@ class PaperBot:
                 if key in {
                     "margin_per_trade_usdt",
                     "pre_start_margin_per_trade_usdt",
+                    "pre_start_take_profit_roi_pct",
+                    "pre_start_stop_loss_roi_pct",
                     "old_rebound_short_margin_per_trade_usdt",
                     "high_pullback_short_margin_per_trade_usdt",
                     "take_profit_roi_pct",
@@ -2042,8 +2052,11 @@ class PaperBot:
                     "entry_order_id": open_record.get("entry_order_id", ""),
                     "stop_algo_id": open_record.get("stop_algo_id", ""),
                     "stop_price": open_record.get("stop_price", ""),
+                    "stop_loss_roi_pct": open_record.get("stop_loss_roi_pct"),
                     "take_profit_algo_id": open_record.get("take_profit_algo_id", ""),
                     "take_profit": open_record.get("take_profit", ""),
+                    "take_profit_roi_pct": open_record.get("take_profit_roi_pct"),
+                    "signal_mode": open_record.get("signal_mode", ""),
                     "stop_lift_stage": open_record.get("stop_lift_stage", ""),
                     "stop_lift_roi_pct": open_record.get("stop_lift_roi_pct", 0.0),
                     "signal_review_id": open_record.get("signal_review_id", ""),
@@ -2631,6 +2644,30 @@ class PaperBot:
         if self.exposure_pct(extra_notional=notional) > float(self.config.get("max_exposure_pct", 65.0)):
             self.event("risk", "仓位敞口达到上限，本轮停止新增持仓")
             return None
+        if signal.signal_mode == "pre_start_long":
+            stop_roi_pct = float(self.config["pre_start_stop_loss_roi_pct"])
+            take_roi_pct = float(self.config["pre_start_take_profit_roi_pct"])
+        else:
+            stop_roi_pct = float(self.config.get("stop_loss_roi_pct", 86.0))
+            take_roi_pct = float(self.config.get("take_profit_roi_pct", 90.0))
+        if signal.signal_mode != "pre_start_long" and not reverse_order and fnum(signal.planned_stop_price) > 0 and fnum(signal.planned_take_profit_price) > 0:
+            stop_price = fnum(signal.planned_stop_price)
+            take_profit = fnum(signal.planned_take_profit_price)
+        else:
+            stop_pct = stop_roi_pct / max(1.0, leverage) / 100.0
+            take_pct = take_roi_pct / max(1.0, leverage) / 100.0
+            if execution_side == "LONG":
+                stop_price = signal.price * (1.0 - stop_pct)
+                take_profit = signal.price * (1.0 + take_pct)
+            else:
+                stop_price = signal.price * (1.0 + stop_pct)
+                take_profit = signal.price * (1.0 - take_pct)
+        if signal.signal_mode == "pre_start_long" and (
+            stop_price <= 0 or take_profit <= 0
+            or fnum(self.round_price(symbol_info, stop_price)) <= 0
+            or fnum(self.round_price(symbol_info, take_profit)) <= 0
+        ):
+            raise RuntimeError("预启动初始止盈或止损 ROI 对当前杠杆无效，未提交开仓")
         qty_text = self.round_quantity(symbol_info, notional / signal.price)
         if fnum(qty_text) <= 0:
             raise RuntimeError(f"{signal.symbol} 计算出的下单数量为 0")
@@ -2645,19 +2682,6 @@ class PaperBot:
             },
             execution_side,
         )
-
-        if not reverse_order and fnum(signal.planned_stop_price) > 0 and fnum(signal.planned_take_profit_price) > 0:
-            stop_price = fnum(signal.planned_stop_price)
-            take_profit = fnum(signal.planned_take_profit_price)
-        else:
-            stop_pct = float(self.config.get("stop_loss_roi_pct", 86.0)) / max(1.0, leverage) / 100.0
-            take_pct = float(self.config.get("take_profit_roi_pct", 90.0)) / max(1.0, leverage) / 100.0
-            if execution_side == "LONG":
-                stop_price = signal.price * (1.0 - stop_pct)
-                take_profit = signal.price * (1.0 + take_pct)
-            else:
-                stop_price = signal.price * (1.0 + stop_pct)
-                take_profit = signal.price * (1.0 - take_pct)
 
         stop_order: dict[str, Any] = {}
         take_order: dict[str, Any] = {}
@@ -2735,6 +2759,9 @@ class PaperBot:
             "decision_steps": list(signal.decision_steps),
             "signal_review_id": self.signal_review_id(int(self.state.get("scan_count", 0)), signal.symbol),
         }
+        if signal.signal_mode == "pre_start_long":
+            record["stop_loss_roi_pct"] = stop_roi_pct
+            record["take_profit_roi_pct"] = take_roi_pct
         self.state.setdefault("open_order_history", []).insert(0, {**record, "close_reason": f"{self.exchange_record_prefix()} 开仓记录"})
         self.state["open_order_history"] = self.state["open_order_history"][:500]
         return record
@@ -4756,10 +4783,16 @@ class PaperBot:
             price = price_map.get(pos["symbol"], fnum(pos.get("last_price"), pos["entry_price"]))
             self.update_position_pnl(pos, price)
             roi = fnum(pos.get("roi_pct"))
-            if roi >= float(self.config.get("take_profit_roi_pct", 90.0)):
+            if pos.get("signal_mode") == "pre_start_long" and pos.get("take_profit_roi_pct") is not None:
+                take_roi_pct = fnum(pos["take_profit_roi_pct"])
+                stop_roi_pct = fnum(pos.get("stop_loss_roi_pct"), float(self.config.get("stop_loss_roi_pct", 86.0)))
+            else:
+                take_roi_pct = float(self.config.get("take_profit_roi_pct", 90.0))
+                stop_roi_pct = float(self.config.get("stop_loss_roi_pct", 86.0))
+            if roi >= take_roi_pct:
                 self.close_position(pos, price, "止盈平仓")
                 continue
-            if roi <= -float(self.config.get("stop_loss_roi_pct", 86.0)):
+            if roi <= -stop_roi_pct:
                 self.close_position(pos, price, "止损平仓")
                 continue
             positions.append(pos)

@@ -22,6 +22,13 @@ class InputNameParser(HTMLParser):
 
 
 class FrontendSettingsTest(unittest.TestCase):
+    def test_pre_start_has_independent_initial_profit_and_loss_roi_controls(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+        parser.feed(html)
+        self.assertIn("pre_start_take_profit_roi_pct", parser.input_names)
+        self.assertIn("pre_start_stop_loss_roi_pct", parser.input_names)
+
     def test_pre_start_form_exposes_sustained_volume_controls(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         parser = InputNameParser()
