@@ -233,6 +233,79 @@ class PreStartProtectionRoiTest(unittest.TestCase):
         ]}
         return calls, symbol_info
 
+    def test_protection_trigger_prices_default_to_mark_price(self):
+        bot = self.make_bot()
+        calls, info = self.prepare_order(bot)
+        signal = ReverseOrdersTest().make_signal()
+
+        bot.exchange_open_position_with_sizing(signal, info, {"margin_usdt": 5, "target_leverage": 4})
+
+        self.assertEqual(calls[1][1]["workingType"], "MARK_PRICE")
+        self.assertEqual(calls[2][1]["workingType"], "MARK_PRICE")
+
+    def test_protection_trigger_prices_are_independent_across_pools_and_accounts(self):
+        for live_trading in (False, True):
+            for signal_mode in ("pre_start_long", "old_rebound_short", "strong_volatility"):
+                with self.subTest(live_trading=live_trading, signal_mode=signal_mode):
+                    bot = self.make_bot()
+                    bot.update_settings({
+                        "stop_loss_trigger_price_type": "MARK_PRICE",
+                        "take_profit_trigger_price_type": "CONTRACT_PRICE",
+                    })
+                    bot.config["live_trading_enabled"] = live_trading
+                    calls, info = self.prepare_order(bot)
+                    signal = ReverseOrdersTest().make_signal()
+                    signal.signal_mode = signal_mode
+
+                    bot.exchange_open_position_with_sizing(signal, info, {"margin_usdt": 5, "target_leverage": 4})
+
+                    self.assertEqual(calls[1][1]["workingType"], "MARK_PRICE")
+                    self.assertEqual(calls[2][1]["workingType"], "CONTRACT_PRICE")
+                    reloaded = server.PaperBot(bot.config_path, bot.state_path)
+                    self.addCleanup(reloaded.analyzer_executor.shutdown, wait=False)
+                    self.assertEqual(reloaded.config["take_profit_trigger_price_type"], "CONTRACT_PRICE")
+                    self.assertEqual(reloaded.config["stop_loss_trigger_price_type"], "MARK_PRICE")
+
+    def test_protection_trigger_prices_can_be_swapped(self):
+        bot = self.make_bot()
+        bot.update_settings({
+            "stop_loss_trigger_price_type": "CONTRACT_PRICE",
+            "take_profit_trigger_price_type": "MARK_PRICE",
+        })
+        calls, info = self.prepare_order(bot)
+
+        bot.exchange_open_position_with_sizing(ReverseOrdersTest().make_signal(), info, {"margin_usdt": 5, "target_leverage": 4})
+
+        self.assertEqual(calls[1][1]["workingType"], "CONTRACT_PRICE")
+        self.assertEqual(calls[2][1]["workingType"], "MARK_PRICE")
+
+    def test_protection_trigger_prices_are_snapshotted_for_each_new_order(self):
+        bot = self.make_bot()
+        bot.update_settings({
+            "stop_loss_trigger_price_type": "MARK_PRICE",
+            "take_profit_trigger_price_type": "CONTRACT_PRICE",
+        })
+        calls, info = self.prepare_order(bot)
+
+        def submit(method, path, params, side):
+            calls.append((path, params, side))
+            if path == "/fapi/v1/order":
+                return {"orderId": "entry-1"}
+            if params["type"] == "STOP_MARKET":
+                bot.config["stop_loss_trigger_price_type"] = "CONTRACT_PRICE"
+                bot.config["take_profit_trigger_price_type"] = "MARK_PRICE"
+            return {"algoId": f"algo-{len(calls)}"}
+
+        bot.signed_exchange_request_position_aware = submit
+        record = bot.exchange_open_position_with_sizing(
+            ReverseOrdersTest().make_signal(), info, {"margin_usdt": 5, "target_leverage": 4}
+        )
+
+        self.assertEqual(calls[1][1]["workingType"], "MARK_PRICE")
+        self.assertEqual(calls[2][1]["workingType"], "CONTRACT_PRICE")
+        self.assertEqual(record["stop_loss_trigger_price_type"], "MARK_PRICE")
+        self.assertEqual(record["take_profit_trigger_price_type"], "CONTRACT_PRICE")
+
     def test_legacy_config_inherits_current_global_roi_at_load(self):
         bot = self.make_bot('{"take_profit_roi_pct": 120, "stop_loss_roi_pct": 55}')
         self.assertEqual(bot.config["pre_start_take_profit_roi_pct"], 120)

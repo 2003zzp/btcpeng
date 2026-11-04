@@ -90,6 +90,8 @@ function normalizeSettingsLabels() {
     pre_start_stop_loss_roi_pct: "预启动初始止损 ROI (%)",
     take_profit_roi_pct: "初始止盈 ROI (%)",
     stop_loss_roi_pct: "初始止损 ROI (%)",
+    take_profit_trigger_price_type: "止盈触发价格",
+    stop_loss_trigger_price_type: "止损触发价格",
     max_candidates_per_scan: "候选币数量",
     pre_start_max_candidates: "持续放量候选数",
     pre_start_volume_24h_min_pct: "24h涨幅下限 (%)",
@@ -183,6 +185,10 @@ function normalizeSettingsLabels() {
   const marginTypeLabel = els.form?.elements?.margin_type?.closest("label");
   if (marginTypeLabel) {
     marginTypeLabel.title = "全局仓位模式。逐仓风险隔离更强；全仓会共用账户保证金，适合你明确想统一切换时使用。";
+  }
+  for (const name of ["take_profit_trigger_price_type", "stop_loss_trigger_price_type"]) {
+    const label = els.form?.elements?.[name]?.closest("label");
+    if (label) label.title = "所有策略池共用，只影响以后新开的保护单。标记价和最新价是触发依据；触发后按市价平仓，实际成交价可能不同。";
   }
 
   const confirmationModeLabel = els.form?.elements?.confirmation_mode?.closest("label");

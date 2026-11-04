@@ -210,6 +210,20 @@
               止损 ROI (%)
               <input name="stop_loss_roi_pct" type="number" min="1" step="1" />
             </label>
+            <label>
+              止盈触发价格
+              <select name="take_profit_trigger_price_type">
+                <option value="MARK_PRICE">标记价</option>
+                <option value="CONTRACT_PRICE">最新价</option>
+              </select>
+            </label>
+            <label>
+              止损触发价格
+              <select name="stop_loss_trigger_price_type">
+                <option value="MARK_PRICE">标记价</option>
+                <option value="CONTRACT_PRICE">最新价</option>
+              </select>
+            </label>
             <label class="settings-check">
               <input name="live_trading_enabled" type="checkbox" />
               <span>启动实盘交易</span>

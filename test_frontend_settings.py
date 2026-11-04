@@ -99,6 +99,14 @@ class FrontendSettingsTest(unittest.TestCase):
 
         self.assertIn("margin_type", parser.select_names)
 
+    def test_settings_form_exposes_independent_protection_trigger_selectors(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+        parser.feed(html)
+
+        self.assertIn("take_profit_trigger_price_type", parser.select_names)
+        self.assertIn("stop_loss_trigger_price_type", parser.select_names)
+
     def test_active_positions_expose_strategy_reason_column(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         js = Path("web/app.js").read_text(encoding="utf-8")

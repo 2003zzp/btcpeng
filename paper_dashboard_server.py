@@ -161,6 +161,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "take_profit_cooldown_enabled": True,
     "take_profit_roi_pct": 90.0,
     "stop_loss_roi_pct": 86.0,
+    "take_profit_trigger_price_type": "MARK_PRICE",
+    "stop_loss_trigger_price_type": "MARK_PRICE",
     "square_publish_enabled": True,
     "square_publish_on_open": True,
     "square_publish_disclaimer": "本人观点仅供参考，不构成投资建议。",
@@ -556,6 +558,9 @@ class PaperBot:
             config["pre_start_take_profit_roi_pct"] = float(config["take_profit_roi_pct"])
         if config.get("pre_start_stop_loss_roi_pct") is None:
             config["pre_start_stop_loss_roi_pct"] = float(config["stop_loss_roi_pct"])
+        for key in ("take_profit_trigger_price_type", "stop_loss_trigger_price_type"):
+            value = str(config.get(key, "MARK_PRICE")).upper()
+            config[key] = value if value in {"MARK_PRICE", "CONTRACT_PRICE"} else "MARK_PRICE"
         return config
 
     def load_state(self) -> dict[str, Any]:
@@ -1071,6 +1076,8 @@ class PaperBot:
             "leverage": int,
             "take_profit_roi_pct": float,
             "stop_loss_roi_pct": float,
+            "take_profit_trigger_price_type": str,
+            "stop_loss_trigger_price_type": str,
             "take_profit_cooldown_enabled": str,
             "stop_loss_cooldown_minutes": int,
             "scan_interval_sec": int,
@@ -1172,6 +1179,10 @@ class PaperBot:
                     value = str(value).upper()
                     if value not in {"ISOLATED", "CROSSED"}:
                         value = "ISOLATED"
+                if key in {"take_profit_trigger_price_type", "stop_loss_trigger_price_type"}:
+                    value = str(value).upper()
+                    if value not in {"MARK_PRICE", "CONTRACT_PRICE"}:
+                        value = "MARK_PRICE"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
                 if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "pre_start_max_candidates", "old_rebound_short_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan"}:
@@ -2166,6 +2177,9 @@ class PaperBot:
         if margin <= 0:
             raise RuntimeError(f"{self.exchange_label()} 可用 USDT 余额不足")
         futures = self.exchange_config()
+        with self.lock:
+            stop_trigger_price_type = self.config["stop_loss_trigger_price_type"]
+            take_trigger_price_type = self.config["take_profit_trigger_price_type"]
         original_side = str(signal.side).upper()
         execution_side = self.execution_side(original_side)
         reverse_order = execution_side != original_side
@@ -2230,7 +2244,7 @@ class PaperBot:
                     "type": "STOP_MARKET",
                     "triggerPrice": self.round_price(symbol_info, stop_price),
                     "closePosition": "true",
-                    "workingType": futures.get("working_type", "MARK_PRICE"),
+                    "workingType": stop_trigger_price_type,
                 },
                 execution_side,
             )
@@ -2244,7 +2258,7 @@ class PaperBot:
                     "type": "TAKE_PROFIT_MARKET",
                     "triggerPrice": self.round_price(symbol_info, take_profit),
                     "closePosition": "true",
-                    "workingType": futures.get("working_type", "MARK_PRICE"),
+                    "workingType": take_trigger_price_type,
                 },
                 execution_side,
             )
@@ -2281,6 +2295,8 @@ class PaperBot:
             "notional_usdt": notional,
             "stop_price": self.round_price(symbol_info, stop_price),
             "take_profit": self.round_price(symbol_info, take_profit),
+            "stop_loss_trigger_price_type": stop_trigger_price_type,
+            "take_profit_trigger_price_type": take_trigger_price_type,
             "trigger_reason": signal.trigger_reason,
             "score": signal.score,
             "entry_price": signal.price,
