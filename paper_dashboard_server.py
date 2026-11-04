@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""
-Local dashboard for Binance USD-M futures testnet signals.
+"""币安 U 本位合约策略服务：行情扫描、信号生成、风控下单和网页 API。
 
-This service reads public Binance USD-M futures market data, then submits
-orders only to Binance USD-M Futures Testnet when signals pass the risk gate.
+阅读顺序：DEFAULT_CONFIG 配置默认值 -> PaperBot.scan_once 单轮扫描 ->
+build_candidate_pool 三类候选池 -> build_signals 评分与过滤 ->
+open_from_signals 开仓前复核 -> exchange_open_position_with_sizing 下单和保护单。
+实盘与测试网共用策略逻辑，由 live_trading_enabled 选择账户和接口。
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ RETRYABLE_HTTP_EXCEPTIONS = (
 )
 
 
+# 配置文件只覆盖这里的默认值；.env 单独保存实盘/测试网 API 密钥。
 DEFAULT_CONFIG: dict[str, Any] = {
     "initial_equity_usdt": 100.0,
     "execution_mode": "binance_futures_testnet",
@@ -174,6 +176,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 @dataclass
 class Signal:
+    """一轮扫描中某个币的候选结果；未通过的币也保留拒绝原因供前端复盘。"""
     symbol: str
     side: str
     score: float
@@ -200,6 +203,7 @@ class Signal:
     market_regime_reason: str
     risk_level: str
     analyzer_direction: str
+    # 历史字段名沿用前端协议：这里存的是市场/策略确认分乘以 10，不是分析器置信度。
     analyzer_confidence_pct: float
     analyzer_reason: str
     trigger_reason: str
@@ -236,6 +240,7 @@ def parse_time_ms(value: Any) -> int:
 
 
 def closed_klines(klines: list[list[Any]], now_ms: int | None = None) -> list[list[Any]]:
+    """按第 7 项收盘时间过滤未完成 K 线；缺时间戳的旧数据仍保留。"""
     cutoff = now_ms if now_ms is not None else int(time.time() * 1000)
     closed: list[list[Any]] = []
     for kline in klines:
@@ -246,6 +251,7 @@ def closed_klines(klines: list[list[Any]], now_ms: int | None = None) -> list[li
 
 
 def latest_unclosed_kline(klines: list[list[Any]], now_ms: int | None = None) -> list[Any] | None:
+    """取正在形成的最后一根 K 线，供实时反抽/延续辅助判断。"""
     if not klines:
         return None
     cutoff = now_ms if now_ms is not None else int(time.time() * 1000)
@@ -486,6 +492,8 @@ def infer_trend(closes: list[float]) -> str:
 
 
 class PaperBot:
+    """策略运行器；持有配置、运行状态、交易所缓存和扫描线程。"""
+
     def __init__(self, config_path: Path, state_path: Path) -> None:
         self.config_path = config_path
         self.state_path = state_path
@@ -502,6 +510,7 @@ class PaperBot:
         self.crypto_classification_error = ""
 
     def load_config(self) -> dict[str, Any]:
+        """合并默认配置与用户配置，并清理已移除功能的旧参数。"""
         config = json.loads(json.dumps(DEFAULT_CONFIG))
         if self.config_path.exists():
             deep_update(config, load_json(self.config_path, {}))
@@ -530,6 +539,7 @@ class PaperBot:
         return config
 
     def load_state(self) -> dict[str, Any]:
+        """读取展示/复盘状态；启动后不自动恢复扫描，持仓以交易所同步结果为准。"""
         state = load_json(self.state_path, {})
         state["running"] = False
         state["next_scan_at"] = None
@@ -612,6 +622,7 @@ class PaperBot:
         return "Binance Live" if self.is_live_trading() else "Binance Testnet"
 
     def exchange_config(self) -> dict[str, Any]:
+        """根据实盘开关选择接口配置；全局仓位模式覆盖各环境旧配置。"""
         key = "futures_live" if self.is_live_trading() else "futures_testnet"
         futures = dict(self.config.get(key, {}))
         margin_type = str(self.config.get("margin_type", futures.get("margin_type", "ISOLATED"))).upper()
@@ -713,6 +724,7 @@ class PaperBot:
         }
 
     def record_signal_review_scan(self, signals: list[Signal]) -> None:
+        """记录每轮候选及拒绝原因；JSONL 是追加日志，state 文件保留近期索引。"""
         scan_id = int(self.state.get("scan_count", 0))
         scan_time = str(self.state.get("last_scan_at") or iso_now())
         review_state = self.load_signal_review_state()
@@ -771,6 +783,7 @@ class PaperBot:
         self.save_signal_review_state(review_state)
 
     def update_signal_future_returns(self, price_map: dict[str, float]) -> None:
+        """用后续扫描价回填信号出现后 15/60/240 分钟的价格变化。"""
         review_state = self.load_signal_review_state()
         signals_state = review_state.setdefault("signals", {})
         now_ms = int(time.time() * 1000)
@@ -1226,6 +1239,7 @@ class PaperBot:
             return self.snapshot()
 
     def run_loop(self) -> None:
+        """后台按配置间隔串行执行扫描；stop_event 用于及时停止等待。"""
         while not self.stop_event.is_set():
             with self.lock:
                 running = bool(self.state.get("running"))
@@ -1243,6 +1257,7 @@ class PaperBot:
             self.state["scan_stage"] = stage
 
     def scan_once(self) -> None:
+        """单轮主流程：公开行情 -> 交易所持仓 -> 候选信号 -> 开仓 -> 状态落盘。"""
         started = time.monotonic()
         def set_scan_stage(stage: str) -> None:
             self.update_scan_stage(stage)
@@ -1281,6 +1296,7 @@ class PaperBot:
                     self.persist()
                 return
 
+            # 行情或持仓同步失败时整轮停止，避免用旧状态继续开仓。
             price_map = {item["symbol"]: fnum(item.get("lastPrice")) for item in tickers}
             set_scan_stage("update_future_returns")
             self.update_signal_future_returns(price_map)
@@ -1329,6 +1345,7 @@ class PaperBot:
                 self.persist()
 
     def fetch_tickers(self) -> list[dict[str, Any]]:
+        """获取 24h 滚动行情并按合约元数据排除非加密标的。"""
         timeout = float(self.config.get("request_timeout_sec", 6))
         payload = http_get_json(self.config["market_base_url"], "/fapi/v1/ticker/24hr", timeout=timeout)
         quote = str(self.config.get("quote_asset", "USDT"))
@@ -1379,6 +1396,7 @@ class PaperBot:
         return result
 
     def signed_exchange_request(self, method: str, path: str, params: dict[str, Any] | None = None) -> Any:
+        """按当前账户密钥签名请求；时间戳偏差 -1021 时同步服务器时间后重试。"""
         if self.is_live_trading():
             api_key = os.environ.get("BINANCE_LIVE_API_KEY", "").strip()
             api_secret = os.environ.get("BINANCE_LIVE_API_SECRET", "").strip()
@@ -1520,6 +1538,7 @@ class PaperBot:
         }
 
     def sync_exchange_state(self) -> None:
+        """以交易所实际持仓/余额为准更新本地状态，并补齐平仓及交易历史。"""
         payload = self.signed_exchange_request("GET", "/fapi/v2/positionRisk")
         with self.lock:
             open_history = [item for item in self.state.get("open_order_history", []) if self.record_belongs_to_current_exchange(item)]
@@ -2011,6 +2030,7 @@ class PaperBot:
         return "BUY" if signal_side == "LONG" else "SELL"
 
     def execution_side(self, signal_side: str) -> str:
+        """反向订单只在执行层翻转方向，原始策略信号方向保留供归因。"""
         original_side = str(signal_side).upper()
         if not self.config.get("reverse_orders_enabled", False):
             return original_side
@@ -2063,6 +2083,7 @@ class PaperBot:
             raise
 
     def ensure_exchange_settings(self, symbol: str, target_leverage: int | None = None) -> int:
+        """开仓前设置全局逐仓/全仓模式与该币杠杆；不支持目标杠杆则逐级降低。"""
         futures = self.exchange_config()
         margin_type = str(futures.get("margin_type", "ISOLATED")).upper()
         try:
@@ -2094,6 +2115,7 @@ class PaperBot:
         raise RuntimeError(f"{symbol} 无法设置杠杆：{last_error}")
 
     def position_plan(self, signal: Signal, available: float) -> dict[str, Any]:
+        """按信号所属池选择保证金和杠杆，最终保证金不超过账户可用余额。"""
         is_pre_start = signal.signal_mode == "pre_start_long"
         is_old_rebound_short = signal.signal_mode == "old_rebound_short"
         if is_pre_start:
@@ -2123,6 +2145,7 @@ class PaperBot:
         return self.exchange_open_position_with_sizing(signal, symbol_info, sizing)
 
     def exchange_open_position_with_sizing(self, signal: Signal, symbol_info: dict[str, Any], sizing: dict[str, Any]) -> dict[str, Any] | None:
+        """按仓位计划开市价单，再提交止损/止盈条件单；保护单失败则尝试紧急平仓。"""
         available = self.get_available_balance()
         margin = fnum(sizing.get("margin_usdt"))
         if margin <= 0:
@@ -2153,6 +2176,7 @@ class PaperBot:
             stop_price = fnum(signal.planned_stop_price)
             take_profit = fnum(signal.planned_take_profit_price)
         else:
+            # ROI 是保证金收益率；换算成价格距离时必须除以实际杠杆。
             stop_pct = stop_roi_pct / max(1.0, leverage) / 100.0
             take_pct = take_roi_pct / max(1.0, leverage) / 100.0
             if execution_side == "LONG":
@@ -2215,6 +2239,7 @@ class PaperBot:
             )
         except Exception as exc:
             self.event("error", f"{signal.symbol} 已开仓但保护单提交失败：{exc}")
+            # 市价单已经成交，不能当作普通开仓失败；优先尝试反向市价平掉裸仓。
             try:
                 self.signed_exchange_request_position_aware(
                     "POST",
@@ -2286,6 +2311,7 @@ class PaperBot:
         )
 
     def fetch_klines_interval(self, symbol: str, interval: str, limit: int) -> list[list[Any]]:
+        """读取真实合约 K 线；是否排除未收盘线由具体策略调用方决定。"""
         timeout = min(4.0, float(self.config.get("request_timeout_sec", 6)))
         return http_get_json(
             self.config["market_base_url"],
@@ -2348,6 +2374,7 @@ class PaperBot:
         return abs(plus_di - minus_di) / total * 100 if total > 0 else 0.0
 
     def fetch_signal_market_stats(self, symbol: str, ticker: dict[str, Any]) -> dict[str, float]:
+        """拉 OI、资金费率、多空比和主动买卖比；个别接口失败会使用默认/估算值。"""
         timeout = min(2.2, float(self.config.get("request_timeout_sec", 6)))
         price = fnum(ticker.get("lastPrice"))
         quote_volume = fnum(ticker.get("quoteVolume"))
@@ -2452,6 +2479,7 @@ class PaperBot:
         return float(self.config.get("market_confirm_min_score", 7.0))
 
     def market_regime_score(self, side: str, tickers: list[dict[str, Any]]) -> dict[str, Any]:
+        """综合大盘与代表币的方向，为多/空分别计算市场环境分。"""
         if not self.config.get("market_regime_filter_enabled", True):
             return {"score": 10.0, "label": "关闭", "reason": "市场环境过滤未启用"}
         score = 5.0
@@ -2556,6 +2584,7 @@ class PaperBot:
         volume_ratio: float,
         stats: dict[str, float],
     ) -> dict[str, Any]:
+        """按趋势、15m/1h/4h 跌幅与资金面计算做空结构破坏分。"""
         score = 0.0
         reasons: list[str] = []
         taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
@@ -2604,6 +2633,7 @@ class PaperBot:
         volume_ratio: float,
         stats: dict[str, float],
     ) -> dict[str, Any]:
+        """按价格推进、趋势、主动买入和 OI 计算做多结构分。"""
         score = 0.0
         reasons: list[str] = []
         taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
@@ -2663,6 +2693,7 @@ class PaperBot:
         trend: str,
         stats: dict[str, float],
     ) -> dict[str, Any]:
+        """强波动池的方向确认分；与结构分、市场环境分是不同关卡。"""
         score = 4.0
         reasons: list[str] = []
         caps: list[float] = []
@@ -2879,6 +2910,7 @@ class PaperBot:
         stats: dict[str, float],
         live_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """老币反弹池专用确认分：收盘 K 线定方向，实时 K 线只加减辅助分。"""
         score = 0.0
         reasons: list[str] = []
         live_metrics = live_metrics or {}
@@ -2998,6 +3030,7 @@ class PaperBot:
         }
 
     def pre_start_volume_metrics(self, klines: list[list[Any]], current_price: float) -> dict[str, Any]:
+        """用最近 4 根已收盘 15m K 线衡量持续放量、主动买入和价格推进。"""
         closed = closed_klines(klines)
         result: dict[str, Any] = {"valid": False, "closed_count": len(closed)}
         if len(closed) < 24:
@@ -3062,6 +3095,7 @@ class PaperBot:
         return result
 
     def pre_start_volume_reject_reason(self, metrics: dict[str, Any]) -> str:
+        """持续放量做多池的硬过滤；数据缺失、冲量过热或价量不配合均拒绝。"""
         if not metrics.get("valid"):
             return str(metrics.get("invalid_reason") or "预启动15m真实成交额或主动买入数据不足")
         growth_min = float(self.config.get("pre_start_volume_growth_min", 1.1))
@@ -3115,6 +3149,7 @@ class PaperBot:
         return {"score": score, "label": label, "reason": " / ".join(reasons)}
 
     def pre_start_market_stats_reject_reason(self, stats: dict[str, float]) -> str:
+        """预启动自动交易要求真实资金面数据可用，并限制 OI/费率风险。"""
         if self.config.get("pre_start_volume_auto_trade_enabled", False) and not (stats.get("funding_rate_available") and stats.get("open_interest_1h_available")):
             return "预启动资金面真实数据不足，禁止自动开仓"
         oi_1h = fnum(stats.get("open_interest_1h_pct"))
@@ -3148,6 +3183,7 @@ class PaperBot:
         low_24h: float = 0.0,
         current_price: float = 0.0,
     ) -> str:
+        """老币做空硬过滤：历史长度、已收盘破位、跌幅位置及实时反抽。"""
         min_days = int(self.config.get("old_rebound_short_min_history_days", 365))
         max_15m = float(self.config.get("old_rebound_short_15m_max_pct", 0.3))
         max_1h = float(self.config.get("old_rebound_short_1h_max_pct", 0.5))
@@ -3228,6 +3264,7 @@ class PaperBot:
         return ""
 
     def kline_short_metrics(self, symbol: str, fallback_price: float, change: float, old_rebound: bool = False, pre_start: bool = False) -> dict[str, Any]:
+        """按池子读取真实 15m/1h；老币要求至少 30 根已收盘线，预启动只用 15m。"""
         metrics = self.fallback_short_metrics(change)
         metrics["price"] = fallback_price
         if pre_start:
@@ -3235,6 +3272,7 @@ class PaperBot:
         try:
             limit_15m = max(30 if old_rebound else 25 if pre_start else 2, int(self.config.get("kline_15m_limit", 40))) + (1 if old_rebound or pre_start else 0)
             raw_15m = self.fetch_klines_interval(symbol, "15m", limit_15m)
+            # 主指标只使用已收盘线；当前半根另存为 live_short_move，不覆盖收盘结论。
             live15 = latest_unclosed_kline(raw_15m)
             klines15 = closed_klines(raw_15m)
             closes15 = [fnum(k[4]) for k in klines15]
@@ -3308,6 +3346,7 @@ class PaperBot:
         return metrics
 
     def build_candidate_pool(self, tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """用 24h 滚动行情粗筛三类池，先排除禁开、冷却和非加密合约。"""
         watchlist = {str(item).upper() for item in self.config.get("manual_watchlist", [])}
         blocked = set(normalize_symbol_list(self.config.get("blocked_symbols", []), str(self.config.get("quote_asset", "USDT"))))
         min_volume = float(self.config.get("min_quote_volume_usdt", 0))
@@ -3339,6 +3378,7 @@ class PaperBot:
             symbol = str(item.get("symbol", "")).upper()
             return bool(symbol and self.stop_loss_cooldown_reason(symbol))
 
+        # 同一币只进一个池；优先级为老币反弹、持续放量、强波动。
         pool: dict[str, dict[str, Any]] = {}
         if self.config.get("old_rebound_short_enabled", False) and direction_mode != "long_only" and old_rebound_limit > 0:
             old_min_change = float(self.config.get("old_rebound_short_24h_min_pct", 8.0))
@@ -3425,6 +3465,7 @@ class PaperBot:
         return candidates[: max_candidates + extra_limit]
 
     def build_signals(self, tickers: list[dict[str, Any]], open_symbols: set[str]) -> list[Signal]:
+        """先粗算系统分；强波动池达标且有额度才补 K 线，另两池独立验 K 线，再逐关确认。"""
         signals: list[Signal] = []
         crypto_tickers = [item for item in tickers if item.get("_crypto_candidate_allowed") is not False]
         long_regime = self.market_regime_score("LONG", crypto_tickers)
@@ -3527,6 +3568,7 @@ class PaperBot:
                         current_price=fnum(item.get("lastPrice")),
                     )
             priority = "高" if score >= 6 else "中" if score >= 4.5 else "低"
+            # 资金面先放占位估算值；后续接口能取到真实数据时再替换。
             market_stats = {
                 "open_interest_usdt": volume * 0.22,
                 "open_interest_24h_pct": change * 0.55,
@@ -3692,6 +3734,7 @@ class PaperBot:
         volume_ratio: float,
         stats: dict[str, float],
     ) -> dict[str, float | bool]:
+        """区分顺势放量与反向放量，避免仅凭总成交量奖励错误方向。"""
         is_long = side == "LONG"
         taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
         taker_aligned = taker_ratio if is_long else (1.0 / taker_ratio if taker_ratio > 0 else 1.0)
@@ -3714,6 +3757,7 @@ class PaperBot:
         }
 
     def score_side(self, side: str, change: float, short_move: float, volume_ratio: float, trend: str) -> tuple[float, str]:
+        """系统分：24h 涨跌、短线涨跌、均线趋势与放量的粗评分。"""
         score = 0.0
         reasons = []
         if volume_ratio >= float(self.config.get("volume_spike_ratio", 1.5)):
@@ -3855,6 +3899,7 @@ class PaperBot:
         self.event("trade", f"{pos['symbol']} {self.side_cn(pos['side'])} {reason}，PnL {pnl:+.2f} U")
 
     def stop_loss_cooldown_reason(self, symbol: str) -> str:
+        """从平仓记录找最近止损或启用冷静期的止盈，返回剩余冷静时间。"""
         if not self.config.get("stop_loss_cooldown_enabled", True):
             return ""
         cooldown_sec = max(60, int(float(self.config.get("stop_loss_cooldown_minutes", 60)) * 60))
@@ -3971,6 +4016,7 @@ class PaperBot:
         return {"ok": True, **self.snapshot()}
 
     def open_from_signals(self, signals: list[Signal]) -> int:
+        """开仓前再次核对禁开/冷却/方向/交易对，并限制仓位数与每轮新单数。"""
         open_count = len(self.state.get("positions", []))
         max_open = int(self.config.get("max_open_positions", 8))
         capacity = max(0, max_open - open_count)
@@ -4108,6 +4154,7 @@ class PaperBot:
         }
 
     def snapshot(self) -> dict[str, Any]:
+        """整理前端需要的配置、运行状态、仓位与汇总指标。"""
         with self.lock:
             self.refresh_trade_counters()
             positions = self.state.get("positions", [])
@@ -4145,6 +4192,7 @@ BOT = PaperBot(CONFIG_PATH, STATE_PATH)
 
 
 class Handler(BaseHTTPRequestHandler):
+    """本地仪表盘 HTTP 入口：GET 读取状态/静态页，POST 控制扫描和设置。"""
     server_version = "PaperDashboard/1.0"
 
     def do_GET(self) -> None:
