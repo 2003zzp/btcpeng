@@ -79,25 +79,17 @@ class FrontendSettingsTest(unittest.TestCase):
 
         self.assertIn("reverse_orders_enabled", parser.input_names)
 
-    def test_settings_form_exposes_high_pullback_short_pool_settings(self):
+    def test_removed_risk_and_strategy_controls_are_not_displayed(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         parser = InputNameParser()
-
         parser.feed(html)
-
-        expected = {
-            "high_pullback_short_enabled",
-            "high_pullback_short_margin_per_trade_usdt",
-            "high_pullback_short_leverage",
-            "high_pullback_short_max_candidates",
-            "high_pullback_short_24h_min_pct",
-            "high_pullback_short_24h_max_pct",
-            "high_pullback_short_min_drawdown_pct",
-            "high_pullback_short_max_drawdown_pct",
-            "high_pullback_short_min_low_distance_pct",
-            "high_pullback_short_confirm_min_score",
-        }
-        self.assertTrue(expected.issubset(parser.input_names))
+        self.assertFalse(any(name.startswith("high_pullback_short_") for name in parser.input_names))
+        self.assertTrue({"max_open_positions", "max_exposure_pct", "stop_loss_cooldown_minutes"}.issubset(parser.input_names))
+        for removed in ("max_daily_profit_usdt", "max_daily_loss_usdt", "previous_day_equity_usdt",
+                        "equity_take_profit_usdt", "max_daily_profit_enabled", "max_daily_loss_enabled",
+                        "equity_take_profit_enabled"):
+            self.assertNotIn(removed, parser.input_names)
+        self.assertNotIn("dailyPnlText", html)
 
     def test_settings_form_exposes_margin_type_selector(self):
         html = Path("web/index.html").read_text(encoding="utf-8")

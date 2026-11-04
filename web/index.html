@@ -119,7 +119,7 @@
         <article>
           <span class="summary-icon pnl">⌁</span>
           <div>
-            <span>总盈亏</span>
+            <span>已记录盈亏</span>
             <strong id="pnlText">0.00 U</strong>
           </div>
           <div class="sparkline sparkline-green"></div>
@@ -144,10 +144,6 @@
         <article>
           <span>盈亏因子</span>
           <strong id="profitFactorText">0.00</strong>
-        </article>
-        <article>
-          <span>今日已实现</span>
-          <strong id="dailyPnlText">0.00 U</strong>
         </article>
         <article>
           <span>扫描耗时</span>
@@ -205,14 +201,6 @@
             <label>
               老币反弹杠杆 (1-20X)
               <input name="old_rebound_short_leverage" type="number" min="1" max="20" step="1" />
-            </label>
-            <label>
-              高位回落保证金 (U)
-              <input name="high_pullback_short_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
-            </label>
-            <label>
-              高位回落杠杆 (1-20X)
-              <input name="high_pullback_short_leverage" type="number" min="1" max="20" step="1" />
             </label>
             <label>
               止盈 ROI (%)
@@ -356,38 +344,6 @@
               <input name="old_rebound_short_confirm_min_score" type="number" min="0" max="10" step="0.1" />
             </label>
             <label>
-              启用高位回落做空池
-              <input name="high_pullback_short_enabled" type="checkbox" />
-            </label>
-            <label>
-              高位回落候选数
-              <input name="high_pullback_short_max_candidates" type="number" min="1" max="30" step="1" />
-            </label>
-            <label>
-              高位回落24h下限 (%)
-              <input name="high_pullback_short_24h_min_pct" type="number" min="0" max="200" step="0.1" />
-            </label>
-            <label>
-              高位回落24h上限 (%)
-              <input name="high_pullback_short_24h_max_pct" type="number" min="0" max="300" step="0.1" />
-            </label>
-            <label>
-              高位回落最小回撤 (%)
-              <input name="high_pullback_short_min_drawdown_pct" type="number" min="0" max="100" step="0.1" />
-            </label>
-            <label>
-              高位回落最大回撤 (%)
-              <input name="high_pullback_short_max_drawdown_pct" type="number" min="0" max="100" step="0.1" />
-            </label>
-            <label>
-              距24h低点最小距离 (%)
-              <input name="high_pullback_short_min_low_distance_pct" type="number" min="0" max="100" step="0.1" />
-            </label>
-            <label>
-              高位回落确认分阈值
-              <input name="high_pullback_short_confirm_min_score" type="number" min="0" max="10" step="0.1" />
-            </label>
-            <label>
               交易方向
               <select name="trade_direction_mode">
                 <option value="both">多空都可以</option>
@@ -481,7 +437,7 @@
           </fieldset>
 
           <fieldset class="settings-group">
-            <legend>风控通知</legend>
+            <legend>风险控制</legend>
             <label>
               最大持仓数
               <input name="max_open_positions" type="number" min="1" step="1" />
@@ -491,36 +447,8 @@
               <input name="max_exposure_pct" type="number" min="1" step="1" />
             </label>
             <label>
-              今日盈利停开 (U)
-              <input name="max_daily_profit_usdt" type="number" min="0.01" step="0.01" />
-            </label>
-            <label>
-              今日亏损停开 (U)
-              <input name="max_daily_loss_usdt" type="number" min="0.01" step="0.01" />
-            </label>
-            <label>
-              昨日合约总账户余额 (U)
-              <input name="previous_day_equity_usdt" type="number" min="0" step="0.01" />
-            </label>
-            <label>
-              总资产止盈收益 (U)
-              <input name="equity_take_profit_usdt" type="number" min="0.01" step="0.01" />
-            </label>
-            <label>
               冷却时间 (分钟)
               <input name="stop_loss_cooldown_minutes" type="number" min="1" step="1" />
-            </label>
-            <label class="settings-check">
-              <input name="max_daily_profit_enabled" type="checkbox" />
-              <span>启用今日盈利停止开单</span>
-            </label>
-            <label class="settings-check">
-              <input name="max_daily_loss_enabled" type="checkbox" />
-              <span>启用今日亏损停止开单</span>
-            </label>
-            <label class="settings-check">
-              <input name="equity_take_profit_enabled" type="checkbox" />
-              <span>启用总资产止盈全平</span>
             </label>
             <label class="settings-check">
               <input name="take_profit_cooldown_enabled" type="checkbox" />

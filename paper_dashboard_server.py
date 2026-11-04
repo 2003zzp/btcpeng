@@ -44,8 +44,6 @@ FAST_CONFIRM_PATH = ROOT / "fast_signal_confirmer.py"
 FAST_CONFIRM_MODULE: Any | None = None
 FAST_CONFIRM_SOURCE = "fast_signal_confirmer_v2"
 SQUARE_POST_SKILL_DIR = Path(os.environ.get("BINANCE_SQUARE_SKILL_DIR", r"C:\Users\Administrator\.codex\skills\square-post"))
-REPORTS_DIR = ROOT / "reports"
-DAILY_PNL_REPORT_PATH = REPORTS_DIR / "daily_realized_pnl.xlsx"
 RETRYABLE_HTTP_EXCEPTIONS = (
     TimeoutError,
     socket.timeout,
@@ -149,23 +147,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "old_rebound_short_confirm_min_score": 6.8,
     "old_rebound_short_margin_per_trade_usdt": 3.0,
     "old_rebound_short_leverage": 2,
-    "high_pullback_short_enabled": False,
-    "high_pullback_short_max_candidates": 5,
-    "high_pullback_short_24h_min_pct": 8.0,
-    "high_pullback_short_24h_max_pct": 60.0,
-    "high_pullback_short_min_drawdown_pct": 18.0,
-    "high_pullback_short_max_drawdown_pct": 45.0,
-    "high_pullback_short_min_low_distance_pct": 5.0,
-    "high_pullback_short_15m_max_pct": 0.3,
-    "high_pullback_short_1h_max_pct": 0.5,
-    "high_pullback_short_volume_ratio_min": 0.8,
-    "high_pullback_short_volume_ratio_max": 6.0,
-    "high_pullback_short_taker_ratio_max": 0.95,
-    "high_pullback_short_oi_1h_min_pct": -5.0,
-    "high_pullback_short_funding_abs_max_pct": 0.08,
-    "high_pullback_short_confirm_min_score": 7.0,
-    "high_pullback_short_margin_per_trade_usdt": 3.0,
-    "high_pullback_short_leverage": 2,
     "max_kline_enriched_candidates": 8,
     "kline_15m_limit": 40,
     "kline_1h_limit": 10,
@@ -175,26 +156,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "margin_type": "ISOLATED",
     "max_open_positions": 15,
     "max_exposure_pct": 200.0,
-    "max_daily_profit_enabled": True,
-    "max_daily_profit_usdt": 30.0,
-    "max_daily_loss_enabled": True,
-    "max_daily_loss_usdt": 20.0,
-    "equity_take_profit_enabled": False,
-    "previous_day_equity_usdt": 0.0,
-    "equity_take_profit_usdt": 100.0,
     "stop_loss_cooldown_enabled": True,
     "stop_loss_cooldown_minutes": 60,
     "take_profit_cooldown_enabled": True,
     "take_profit_roi_pct": 90.0,
     "stop_loss_roi_pct": 86.0,
-    "telegram_enabled": True,
-    "telegram_hourly_status_enabled": True,
-    "telegram_hourly_status_interval_minutes": 60,
     "square_publish_enabled": True,
     "square_publish_on_open": True,
     "square_publish_disclaimer": "本人观点仅供参考，不构成投资建议。",
-    "daily_excel_report_enabled": True,
-    "daily_excel_report_path": str(DAILY_PNL_REPORT_PATH),
     "exclude_symbols": ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "USDPUSDT", "EURUSDT"],
     "blocked_symbols": [],
     "manual_watchlist": [],
@@ -295,13 +264,6 @@ def latest_unclosed_kline(klines: list[list[Any]], now_ms: int | None = None) ->
     latest = klines[-1]
     close_time = parse_time_ms(latest[6] if len(latest) > 6 else 0)
     return latest if close_time > cutoff else None
-
-
-def local_datetime(value: Any) -> datetime | None:
-    millis = parse_time_ms(value)
-    if millis <= 0:
-        return None
-    return datetime.fromtimestamp(millis / 1000).astimezone()
 
 
 def fnum(value: Any, default: float = 0.0) -> float:
@@ -575,15 +537,21 @@ class PaperBot:
         self.analyzer_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, int(self.config.get("analyzer_max_workers", 2)))
         )
-        self.daily_report_thread = threading.Thread(target=self.daily_excel_report_loop, name="daily-excel-report", daemon=True)
-        self.daily_report_thread.start()
-        self.hourly_status_thread = threading.Thread(target=self.hourly_status_report_loop, name="hourly-status-report", daemon=True)
-        self.hourly_status_thread.start()
 
     def load_config(self) -> dict[str, Any]:
         config = json.loads(json.dumps(DEFAULT_CONFIG))
         if self.config_path.exists():
             deep_update(config, load_json(self.config_path, {}))
+        for key in list(config):
+            if key.startswith("high_pullback_short_") or key in {
+                "max_daily_profit_enabled", "max_daily_profit_usdt",
+                "max_daily_loss_enabled", "max_daily_loss_usdt",
+                "equity_take_profit_enabled", "equity_take_profit_usdt",
+                "previous_day_equity_usdt", "telegram_enabled",
+                "telegram_hourly_status_enabled", "telegram_hourly_status_interval_minutes",
+                "daily_excel_report_enabled", "daily_excel_report_path",
+            }:
+                config.pop(key)
         if config.get("pre_start_take_profit_roi_pct") is None:
             config["pre_start_take_profit_roi_pct"] = float(config["take_profit_roi_pct"])
         if config.get("pre_start_stop_loss_roi_pct") is None:
@@ -615,14 +583,13 @@ class PaperBot:
         state.setdefault("reconciled_close_ids", [])
         state.setdefault("pending_open_signals", {})
         state.setdefault("stop_loss_cooldown_overrides", {})
-        state.setdefault("last_hourly_status_report_at", "")
-        if "telegram_close_notified_ids" not in state:
-            notified_ids: list[str] = []
-            for item in state.get("trade_history", []):
-                if not item.get("closed_at"):
-                    continue
-                notified_ids.extend(self.close_notify_ids(item))
-            state["telegram_close_notified_ids"] = list(dict.fromkeys([item for item in notified_ids if item]))[:1000]
+        for key in (
+            "last_hourly_status_report_at", "telegram_close_notified_ids",
+            "last_daily_excel_report_date", "last_daily_excel_report_path",
+            "last_equity_baseline_date", "last_equity_baseline_at",
+            "equity_take_profit_triggered", "equity_take_profit_triggered_at",
+        ):
+            state.pop(key, None)
         if self.exchange_mode() in {"binance_futures_testnet", "binance_futures_live"}:
             state["positions"] = []
         state.setdefault("candidates", [])
@@ -854,314 +821,6 @@ class PaperBot:
         if changed:
             self.save_signal_review_state(review_state)
 
-    def send_telegram_message(self, text: str) -> bool:
-        if not self.config.get("telegram_enabled", True):
-            return False
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-        if not token or not chat_id:
-            self.event("warn", "Telegram 未配置 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID，已跳过通知")
-            return False
-        try:
-            http_request_json(
-                "POST",
-                f"https://api.telegram.org/bot{token}",
-                "/sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": text,
-                    "disable_web_page_preview": "true",
-                },
-                timeout=8,
-            )
-            return True
-        except Exception as exc:
-            self.event("warn", f"Telegram 通知发送失败：{exc}")
-            return False
-
-    def notify_open_position(self, signal: Signal, record: dict[str, Any]) -> None:
-        side = self.side_cn(str(record.get("side") or signal.side))
-        analyzer_text = "-"
-        if signal.analyzer_direction:
-            analyzer_text = f"{signal.analyzer_direction} {signal.analyzer_confidence_pct:.1f}%"
-        message = "\n".join(
-            [
-                f"{self.exchange_label()} 开仓成功",
-                f"币种：{signal.symbol} {side}",
-                f"开仓价：{price_text(signal.price)}",
-                f"保证金：{fnum(record.get('margin_usdt')):.2f} U",
-                f"名义价值：{fnum(record.get('notional_usdt')):.2f} U",
-                f"止盈：{record.get('take_profit', '-')}",
-                f"止损：{record.get('stop_price', '-')}",
-                f"反向订单：{'是' if record.get('reverse_order') else '否'}",
-                f"系统分：{signal.score:.2f}",
-                f"分析器：{analyzer_text}",
-                f"触发：{signal.trigger_reason}",
-                f"时间：{iso_now()}",
-            ]
-        )
-        self.send_telegram_message(message)
-
-    def notify_close_position(self, trade: dict[str, Any]) -> bool:
-        side = self.side_cn(str(trade.get("side", "")))
-        pnl = fnum(trade.get("pnl_usdt"))
-        exit_price = self.display_exit_price(trade)
-        message = "\n".join(
-            [
-                f"{self.exchange_label()} 平仓完成",
-                f"币种：{trade.get('symbol', '-')} {side}",
-                f"平仓原因：{trade.get('close_reason', '-')}",
-                f"开仓价：{price_text(fnum(trade.get('entry_price')))}",
-                f"平仓价：{price_text(exit_price)}",
-                f"数量：{trade.get('quantity', '-')}",
-                f"保证金：{fnum(trade.get('margin_usdt')):.2f} U",
-                f"已实现盈亏：{pnl:+.2f} U",
-                f"ROI：{fnum(trade.get('roi_pct')):+.2f}%",
-                f"开仓理由：{trade.get('trigger_reason', '-')}",
-                f"时间：{trade.get('closed_at') or iso_now()}",
-            ]
-        )
-        return self.send_telegram_message(message)
-
-    def notify_new_closed_trades(self, trades: list[dict[str, Any]]) -> None:
-        if not trades:
-            return
-        notified = [str(item) for item in self.state.get("telegram_close_notified_ids", []) if str(item)]
-        notified_set = set(notified)
-        added = []
-        for trade in sorted(trades, key=lambda item: str(item.get("closed_at", ""))):
-            close_ids = self.close_notify_ids(trade)
-            if not close_ids or any(item in notified_set for item in close_ids):
-                continue
-            if not self.notify_close_position(trade):
-                continue
-            for item in close_ids:
-                notified_set.add(item)
-                added.append(item)
-        if added:
-            self.state["telegram_close_notified_ids"] = list(dict.fromkeys([*added, *notified]))[:1000]
-
-    def build_hourly_status_message(self) -> str:
-        with self.lock:
-            positions = json.loads(json.dumps(self.state.get("positions", []), ensure_ascii=False))
-            total_equity = self.equity()
-            quote_asset = str(self.config.get("quote_asset", "USDT")).upper()
-            max_open = int(self.config.get("max_open_positions", 0))
-        lines = [
-            "📊 状态报告",
-            f"持仓 ({len(positions)}/{max_open}):",
-        ]
-        if positions:
-            for pos in sorted(positions, key=lambda item: str(item.get("symbol", ""))):
-                symbol = str(pos.get("symbol", "-"))
-                side = str(pos.get("side", "-"))
-                leverage = int(fnum(pos.get("leverage"), self.config.get("leverage", 1)))
-                entry = price_text(fnum(pos.get("entry_price")))
-                roi = fnum(pos.get("roi_pct"))
-                lines.append(f"{symbol} {side} {leverage}x | 入场 {entry} | ROI {roi:+.2f}%")
-        else:
-            lines.append("暂无持仓")
-        lines.append(f"合约总资产: {total_equity:.2f} {quote_asset}")
-        return "\n".join(lines)
-
-    def send_hourly_status_report(self) -> bool:
-        if not self.config.get("telegram_hourly_status_enabled", True):
-            return False
-        try:
-            self.sync_exchange_state()
-        except Exception as exc:
-            self.event("warn", f"发送小时状态报告前同步失败，使用本地状态：{exc}")
-        message = self.build_hourly_status_message()
-        if not self.send_telegram_message(message):
-            return False
-        with self.lock:
-            self.state["last_hourly_status_report_at"] = iso_now()
-            self.persist()
-        return True
-
-    def hourly_status_report_loop(self) -> None:
-        while True:
-            try:
-                interval_minutes = max(1, int(float(self.config.get("telegram_hourly_status_interval_minutes", 60))))
-                interval_sec = interval_minutes * 60
-                last_ms = parse_time_ms(self.state.get("last_hourly_status_report_at"))
-                now_ms = int(time.time() * 1000)
-                if last_ms > 0 and now_ms - last_ms < interval_sec * 1000:
-                    sleep_sec = max(5.0, interval_sec - (now_ms - last_ms) / 1000)
-                    time.sleep(min(sleep_sec, 300.0))
-                    continue
-                self.send_hourly_status_report()
-                time.sleep(interval_sec)
-            except Exception as exc:
-                self.event("error", f"小时状态报告发送失败：{exc}")
-                time.sleep(60)
-
-    def close_notify_ids(self, trade: dict[str, Any]) -> list[str]:
-        trade_id = str(trade.get("id", "")).strip()
-        ids = [trade_id] if trade_id else []
-        ids.extend(self.close_notify_semantic_ids(trade))
-        return list(dict.fromkeys([item for item in ids if item]))
-
-    def close_notify_semantic_ids(self, trade: dict[str, Any]) -> list[str]:
-        symbol = str(trade.get("symbol", "")).strip()
-        side = str(trade.get("side", "")).strip()
-        if not symbol:
-            return []
-        mode = str(trade.get("execution_mode") or self.exchange_mode())
-        quantity = f"{fnum(trade.get('quantity')):.8f}"
-        pnl = f"{fnum(trade.get('pnl_usdt')):.2f}"
-        closed_ms = parse_time_ms(trade.get("closed_at"))
-        close_order_id = str(trade.get("close_order_id", "")).strip()
-        ids: list[str] = []
-        if close_order_id:
-            ids.append(f"closed-order:{mode}:{symbol}:{side}:{close_order_id}")
-        if closed_ms > 0:
-            ids.append(f"closed-pnl:{mode}:{symbol}:{side}:{closed_ms // 1000}:{quantity}:{pnl}")
-        ids.append(self.close_notify_semantic_id(trade))
-        return ids
-
-    def close_notify_semantic_id(self, trade: dict[str, Any]) -> str:
-        symbol = str(trade.get("symbol", ""))
-        side = str(trade.get("side", ""))
-        entry_order_id = str(trade.get("entry_order_id", ""))
-        opened_at = str(trade.get("opened_at", ""))
-        quantity = f"{fnum(trade.get('quantity')):.8f}"
-        entry = f"{fnum(trade.get('entry_price')):.12f}"
-        if not symbol:
-            return ""
-        mode = str(trade.get("execution_mode") or self.exchange_mode())
-        return f"closed:{mode}:{symbol}:{side}:{entry_order_id or opened_at}:{quantity}:{entry}"
-
-    def trades_for_local_date(self, report_date: str) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for trade in self.state.get("trade_history", []):
-            closed_dt = local_datetime(trade.get("closed_at"))
-            if not closed_dt or closed_dt.date().isoformat() != report_date:
-                continue
-            rows.append(trade)
-        rows.sort(key=lambda item: str(item.get("closed_at", "")))
-        return rows
-
-    def export_daily_realized_pnl_excel(self, report_date: str | None = None) -> Path:
-        from openpyxl import Workbook, load_workbook
-        from openpyxl.styles import Font, PatternFill
-        from openpyxl.utils import get_column_letter
-
-        if report_date is None:
-            report_date = (datetime.now().astimezone().date() - timedelta(days=1)).isoformat()
-        report_path = Path(str(self.config.get("daily_excel_report_path") or DAILY_PNL_REPORT_PATH))
-        if not report_path.is_absolute():
-            report_path = ROOT / report_path
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.lock:
-            trades = json.loads(json.dumps(self.trades_for_local_date(report_date), ensure_ascii=False))
-        total_pnl = sum(fnum(item.get("pnl_usdt")) for item in trades)
-        wins = [item for item in trades if fnum(item.get("pnl_usdt")) > 0]
-        losses = [item for item in trades if fnum(item.get("pnl_usdt")) < 0]
-        win_rate = len(wins) / len(trades) * 100.0 if trades else 0.0
-        take_profit_count = sum(1 for item in trades if fnum(item.get("pnl_usdt")) > 0 or "止盈" in str(item.get("close_reason", "")))
-        stop_loss_count = sum(1 for item in trades if fnum(item.get("pnl_usdt")) < 0 or "止损" in str(item.get("close_reason", "")))
-
-        if report_path.exists():
-            wb = load_workbook(report_path)
-        else:
-            wb = Workbook()
-            wb.active.title = "每日汇总"
-            wb.create_sheet("交易明细")
-        for sheet_name in ["每日汇总", "交易明细"]:
-            if sheet_name not in wb.sheetnames:
-                wb.create_sheet(sheet_name)
-        summary = wb["每日汇总"]
-        detail = wb["交易明细"]
-        summary_headers = ["日期", "平仓笔数", "止盈次数", "止损次数", "胜率%", "已实现盈亏USDT", "盈利合计USDT", "亏损合计USDT", "生成时间"]
-        detail_headers = ["日期", "平仓时间", "币种", "方向", "开仓价", "平仓价", "数量", "已实现盈亏USDT", "平仓原因", "订单/记录ID"]
-        if summary.max_row == 1 and not summary.cell(1, 1).value:
-            for index, header in enumerate(summary_headers, 1):
-                summary.cell(1, index, header)
-        if detail.max_row == 1 and not detail.cell(1, 1).value:
-            for index, header in enumerate(detail_headers, 1):
-                detail.cell(1, index, header)
-        for row in range(summary.max_row, 1, -1):
-            if str(summary.cell(row, 1).value) == report_date:
-                summary.delete_rows(row, 1)
-        for row in range(detail.max_row, 1, -1):
-            if str(detail.cell(row, 1).value) == report_date:
-                detail.delete_rows(row, 1)
-        summary.append([
-            report_date,
-            len(trades),
-            take_profit_count,
-            stop_loss_count,
-            round(win_rate, 2),
-            round(total_pnl, 6),
-            round(sum(fnum(item.get("pnl_usdt")) for item in wins), 6),
-            round(sum(fnum(item.get("pnl_usdt")) for item in losses), 6),
-            datetime.now().astimezone().isoformat(timespec="seconds"),
-        ])
-        for item in trades:
-            closed_dt = local_datetime(item.get("closed_at"))
-            detail.append([
-                report_date,
-                closed_dt.isoformat(timespec="seconds") if closed_dt else str(item.get("closed_at", "")),
-                item.get("symbol", ""),
-                item.get("side", ""),
-                fnum(item.get("entry_price")),
-                self.display_exit_price(item),
-                fnum(item.get("quantity")),
-                round(fnum(item.get("pnl_usdt")), 6),
-                item.get("close_reason", ""),
-                item.get("id") or item.get("entry_order_id") or "",
-            ])
-        for ws in [summary, detail]:
-            for cell in ws[1]:
-                cell.font = Font(bold=True, color="FFFFFF")
-                cell.fill = PatternFill("solid", fgColor="1F4E78")
-            ws.freeze_panes = "A2"
-            for col in range(1, ws.max_column + 1):
-                max_len = max(len(str(ws.cell(row, col).value or "")) for row in range(1, ws.max_row + 1))
-                ws.column_dimensions[get_column_letter(col)].width = min(max(max_len + 2, 10), 36)
-        wb.save(report_path)
-        with self.lock:
-            self.state["last_daily_excel_report_date"] = report_date
-            self.state["last_daily_excel_report_path"] = str(report_path)
-            self.persist()
-        self.event("info", f"每日已实现盈亏 Excel 已生成：{report_path}")
-        return report_path
-
-    def refresh_previous_day_equity_baseline(self, baseline_date: str | None = None) -> float:
-        if baseline_date is None:
-            baseline_date = datetime.now().astimezone().date().isoformat()
-        try:
-            self.sync_exchange_state()
-        except Exception as exc:
-            self.event("warn", f"更新昨日合约总账户余额前同步失败，使用本地账户资产：{exc}")
-        equity = self.equity()
-        with self.lock:
-            self.config["previous_day_equity_usdt"] = round(equity, 6)
-            self.state["last_equity_baseline_date"] = baseline_date
-            self.state["last_equity_baseline_at"] = iso_now()
-            self.state["equity_take_profit_triggered"] = False
-            self.state["equity_take_profit_triggered_at"] = ""
-            save_json(self.config_path, self.config)
-            self.event("info", f"已更新昨日合约总账户余额为 {equity:.2f} U，作为 {baseline_date} 的总资产止盈基准")
-            self.persist()
-        return equity
-
-    def daily_excel_report_loop(self) -> None:
-        while True:
-            try:
-                now = datetime.now().astimezone()
-                next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
-                time.sleep(max(1.0, (next_midnight - now).total_seconds()))
-                report_date = (datetime.now().astimezone().date() - timedelta(days=1)).isoformat()
-                baseline_date = datetime.now().astimezone().date().isoformat()
-                self.refresh_previous_day_equity_baseline(baseline_date)
-                if self.config.get("daily_excel_report_enabled", True):
-                    self.export_daily_realized_pnl_excel(report_date)
-            except Exception as exc:
-                self.event("error", f"每日维护任务失败：{exc}")
-                time.sleep(60)
-
     def build_square_open_post(self, signal: Signal, record: dict[str, Any]) -> str:
         execution_side = str(record.get("side") or signal.side)
         side = self.side_cn(execution_side)
@@ -1352,67 +1011,6 @@ class PaperBot:
         self.sync_exchange_state()
         return self.snapshot()
 
-    def equity_profit_from_previous_day(self) -> float:
-        base = fnum(self.config.get("previous_day_equity_usdt"))
-        if base <= 0:
-            return 0.0
-        return self.equity() - base
-
-    def equity_take_profit_reason(self) -> str:
-        if not self.config.get("equity_take_profit_enabled", False):
-            return ""
-        base = fnum(self.config.get("previous_day_equity_usdt"))
-        threshold = fnum(self.config.get("equity_take_profit_usdt"), 100.0)
-        if base <= 0 or threshold <= 0:
-            return ""
-        equity = self.equity()
-        profit = equity - base
-        if profit >= threshold:
-            return f"合约总资产 {equity:.2f} U - 昨日余额 {base:.2f} U = {profit:+.2f} U，达到总资产止盈阈值 {threshold:.2f} U"
-        return ""
-
-    def equity_take_profit_block_reason(self) -> str:
-        if not self.config.get("equity_take_profit_enabled", False):
-            return ""
-        if self.state.get("equity_take_profit_triggered"):
-            return "账户总资产止盈已触发，本轮不再开新仓"
-        return self.equity_take_profit_reason()
-
-    def enforce_equity_take_profit(self) -> bool:
-        reason = self.equity_take_profit_reason()
-        with self.lock:
-            already_triggered = bool(self.state.get("equity_take_profit_triggered"))
-            positions_snapshot = list(self.state.get("positions", []))
-        if not reason and not already_triggered:
-            return False
-        with self.lock:
-            if not self.state.get("equity_take_profit_triggered"):
-                self.state["equity_take_profit_triggered"] = True
-                self.state["equity_take_profit_triggered_at"] = iso_now()
-                self.event("risk", f"{reason}，停止新增开仓并提交全部平仓")
-                self.persist()
-            elif positions_snapshot:
-                self.event("risk", f"账户总资产止盈已触发，检测到仍有持仓 {len(positions_snapshot)} 笔，继续尝试全部平仓")
-                self.persist()
-            else:
-                return True
-        closed = 0
-        try:
-            positions = positions_snapshot
-            for pos in positions:
-                self.exchange_close_position(pos)
-                closed += 1
-            with self.lock:
-                self.event("trade", f"账户总资产止盈已触发，已提交 {self.exchange_label()} 全部平仓 {closed} 笔")
-                self.persist()
-            self.sync_exchange_state()
-        except Exception as exc:
-            with self.lock:
-                self.state["last_error"] = str(exc)
-                self.event("error", f"账户总资产止盈平仓失败：{exc}")
-                self.persist()
-        return True
-
     def sync_exchange_snapshot(self) -> dict[str, Any]:
         try:
             self.sync_exchange_state()
@@ -1460,7 +1058,6 @@ class PaperBot:
             self.state["events"] = []
             self.state["analyzer_cache"] = {}
             self.state["reconciled_close_ids"] = []
-            self.state["telegram_close_notified_ids"] = []
             self.state["last_error"] = ""
             self.analyzer_cache.clear()
             self.analyzer_inflight.clear()
@@ -1524,34 +1121,10 @@ class PaperBot:
             "old_rebound_short_confirm_min_score": float,
             "old_rebound_short_margin_per_trade_usdt": float,
             "old_rebound_short_leverage": int,
-            "high_pullback_short_enabled": str,
-            "high_pullback_short_max_candidates": int,
-            "high_pullback_short_24h_min_pct": float,
-            "high_pullback_short_24h_max_pct": float,
-            "high_pullback_short_min_drawdown_pct": float,
-            "high_pullback_short_max_drawdown_pct": float,
-            "high_pullback_short_min_low_distance_pct": float,
-            "high_pullback_short_15m_max_pct": float,
-            "high_pullback_short_1h_max_pct": float,
-            "high_pullback_short_volume_ratio_min": float,
-            "high_pullback_short_volume_ratio_max": float,
-            "high_pullback_short_taker_ratio_max": float,
-            "high_pullback_short_oi_1h_min_pct": float,
-            "high_pullback_short_funding_abs_max_pct": float,
-            "high_pullback_short_confirm_min_score": float,
-            "high_pullback_short_margin_per_trade_usdt": float,
-            "high_pullback_short_leverage": int,
             "kline_15m_limit": int,
             "kline_1h_limit": int,
             "max_open_positions": int,
             "max_exposure_pct": float,
-            "max_daily_profit_enabled": str,
-            "max_daily_profit_usdt": float,
-            "max_daily_loss_enabled": str,
-            "max_daily_loss_usdt": float,
-            "equity_take_profit_enabled": str,
-            "previous_day_equity_usdt": float,
-            "equity_take_profit_usdt": float,
             "signal_score_threshold": float,
             "strong_long_24h_min_change_pct": float,
             "strong_long_enabled": str,
@@ -1574,8 +1147,6 @@ class PaperBot:
             "reverse_orders_enabled": str,
             "blocked_symbols": str,
             "live_trading_enabled": str,
-            "telegram_hourly_status_enabled": str,
-            "telegram_hourly_status_interval_minutes": int,
             "square_publish_enabled": str,
             "square_publish_on_open": str,
         }
@@ -1584,7 +1155,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "max_daily_profit_enabled", "max_daily_loss_enabled", "equity_take_profit_enabled", "live_trading_enabled", "telegram_hourly_status_enabled", "analyzer_realtime_before_open", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled", "old_rebound_short_enabled", "high_pullback_short_enabled", "strong_long_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "live_trading_enabled", "analyzer_realtime_before_open", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled", "old_rebound_short_enabled", "strong_long_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -1603,17 +1174,14 @@ class PaperBot:
                         value = "ISOLATED"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "high_pullback_short_leverage", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "pre_start_max_candidates", "old_rebound_short_max_candidates", "high_pullback_short_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan", "telegram_hourly_status_interval_minutes"}:
+                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "pre_start_max_candidates", "old_rebound_short_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan"}:
                     value = max(1, int(value))
-                if key == "previous_day_equity_usdt":
-                    value = max(0.0, float(value))
                 if key in {
                     "margin_per_trade_usdt",
                     "pre_start_margin_per_trade_usdt",
                     "pre_start_take_profit_roi_pct",
                     "pre_start_stop_loss_roi_pct",
                     "old_rebound_short_margin_per_trade_usdt",
-                    "high_pullback_short_margin_per_trade_usdt",
                     "take_profit_roi_pct",
                     "stop_loss_roi_pct",
                     "signal_score_threshold",
@@ -1655,22 +1223,7 @@ class PaperBot:
                     "old_rebound_short_long_short_min",
                     "old_rebound_short_funding_abs_max_pct",
                     "old_rebound_short_confirm_min_score",
-                    "high_pullback_short_24h_min_pct",
-                    "high_pullback_short_24h_max_pct",
-                    "high_pullback_short_min_drawdown_pct",
-                    "high_pullback_short_max_drawdown_pct",
-                    "high_pullback_short_min_low_distance_pct",
-                    "high_pullback_short_15m_max_pct",
-                    "high_pullback_short_1h_max_pct",
-                    "high_pullback_short_volume_ratio_min",
-                    "high_pullback_short_volume_ratio_max",
-                    "high_pullback_short_taker_ratio_max",
-                    "high_pullback_short_funding_abs_max_pct",
-                    "high_pullback_short_confirm_min_score",
                     "max_exposure_pct",
-                    "max_daily_profit_usdt",
-                    "max_daily_loss_usdt",
-                    "equity_take_profit_usdt",
                 }:
                     value = max(0.01, float(value))
                 if key == "pre_start_oi_1h_min_pct":
@@ -1679,13 +1232,8 @@ class PaperBot:
                     value = float(value)
                 if key == "old_rebound_short_oi_1h_min_pct":
                     value = float(value)
-                if key == "high_pullback_short_oi_1h_min_pct":
-                    value = float(value)
                 self.config[key] = value
             save_json(self.config_path, self.config)
-            if any(key in patch for key in {"equity_take_profit_enabled", "previous_day_equity_usdt", "equity_take_profit_usdt"}):
-                self.state["equity_take_profit_triggered"] = False
-                self.state["equity_take_profit_triggered_at"] = ""
             current_mode = self.exchange_mode()
             self.state["mode"] = current_mode
             if current_mode != previous_mode:
@@ -1777,7 +1325,6 @@ class PaperBot:
                     self.event("error", f"{self.exchange_label()} 同步失败：{exc}")
                     self.persist()
                 return
-            equity_take_profit_active = self.enforce_equity_take_profit()
             with self.lock:
                 for pos in self.state.get("positions", []):
                     if pos.get("symbol") in price_map:
@@ -1791,19 +1338,13 @@ class PaperBot:
                     self.event("error", f"加密合约分类数据不可用，本轮只更新持仓行情、不生成新开仓信号：{self.crypto_classification_error}")
             else:
                 signals = self.build_signals(tickers, open_symbols)
-            if equity_take_profit_active:
-                equity_tp_reason = self.equity_take_profit_block_reason()
-                if equity_tp_reason:
-                    for signal in signals:
-                        if not signal.reject_reason:
-                            self.update_signal_decision(signal, equity_tp_reason, f"开仓前风控：{equity_tp_reason}")
             with self.lock:
                 self.state["candidates"] = [signal.__dict__ for signal in signals]
                 self.update_pending_open_signals(signals)
                 self.record_signal_review_scan(signals)
                 self.persist()
             set_scan_stage("open_positions")
-            opened = 0 if equity_take_profit_active or self.crypto_classification_error else self.open_from_signals(signals)
+            opened = 0 if self.crypto_classification_error else self.open_from_signals(signals)
             with self.lock:
                 if opened:
                     self.event("trade", f"本轮 {self.exchange_label()} 开仓 {opened} 笔")
@@ -2087,7 +1628,6 @@ class PaperBot:
         account_balance = self.get_account_balance_snapshot()
         with self.lock:
             if position_history is not None and (position_history or not closed_records):
-                self.notify_new_closed_trades(position_history)
                 self.state["trade_history"] = self.merge_trade_history(position_history, self.state.get("trade_history", []))
             self.state["account_equity_usdt"] = account_balance["equity_usdt"]
             self.state["available_balance_usdt"] = account_balance["available_balance_usdt"]
@@ -2461,7 +2001,6 @@ class PaperBot:
         }
         self.state.setdefault("trade_history", []).insert(0, row)
         self.mark_signal_review_closed(pos, row)
-        self.notify_new_closed_trades([row])
         self.state["trade_history"] = self.state["trade_history"][:200]
         reconciled = list(dict.fromkeys([close_id, *[str(item) for item in self.state.get("reconciled_close_ids", [])]]))
         self.state["reconciled_close_ids"] = reconciled[:500]
@@ -2595,7 +2134,6 @@ class PaperBot:
     def position_plan(self, signal: Signal, available: float) -> dict[str, Any]:
         is_pre_start = signal.signal_mode == "pre_start_long"
         is_old_rebound_short = signal.signal_mode == "old_rebound_short"
-        is_high_pullback_short = signal.signal_mode == "high_pullback_short"
         if is_pre_start:
             base_margin = float(self.config.get("pre_start_margin_per_trade_usdt", self.config.get("margin_per_trade_usdt", 9.0)))
             target_leverage = max(1, int(self.config.get("pre_start_leverage", self.config.get("leverage", 3))))
@@ -2604,10 +2142,6 @@ class PaperBot:
             base_margin = float(self.config.get("old_rebound_short_margin_per_trade_usdt", self.config.get("margin_per_trade_usdt", 9.0)))
             target_leverage = max(1, int(self.config.get("old_rebound_short_leverage", self.config.get("leverage", 3))))
             tier = "old_rebound_short_fixed"
-        elif is_high_pullback_short:
-            base_margin = float(self.config.get("high_pullback_short_margin_per_trade_usdt", self.config.get("margin_per_trade_usdt", 9.0)))
-            target_leverage = max(1, int(self.config.get("high_pullback_short_leverage", self.config.get("leverage", 3))))
-            tier = "high_pullback_short_fixed"
         else:
             base_margin = float(self.config.get("margin_per_trade_usdt", 9.0))
             target_leverage = max(1, int(self.config.get("leverage", 3)))
@@ -2946,8 +2480,6 @@ class PaperBot:
             return float(self.config.get("pre_start_market_confirm_min_score", 6.5))
         if signal_mode == "old_rebound_short":
             return float(self.config.get("old_rebound_short_confirm_min_score", 6.8))
-        if signal_mode == "high_pullback_short":
-            return float(self.config.get("high_pullback_short_confirm_min_score", 7.0))
         if side == "SHORT":
             return float(self.config.get("short_market_confirm_min_score", 7.5))
         return float(self.config.get("market_confirm_min_score", 7.0))
@@ -3449,84 +2981,6 @@ class PaperBot:
 
         score = max(0.0, min(10.0, score))
         threshold = float(self.config.get("old_rebound_short_confirm_min_score", 6.8))
-        if score >= 8.0:
-            label = "强确认"
-        elif score >= threshold:
-            label = "通过"
-        elif score >= 5.0:
-            label = "偏弱"
-        else:
-            label = "不足"
-        return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:8])}
-
-    def high_pullback_short_confirmation_score(
-        self,
-        change_24h: float,
-        change_1h: float,
-        short_move: float,
-        volume_ratio: float,
-        trend: str,
-        stats: dict[str, float],
-        price: float,
-        high_24h: float,
-        low_24h: float,
-    ) -> dict[str, Any]:
-        score = 0.0
-        reasons: list[str] = []
-        min_24h = float(self.config.get("high_pullback_short_24h_min_pct", 8.0))
-        max_24h = float(self.config.get("high_pullback_short_24h_max_pct", 60.0))
-        min_drawdown = float(self.config.get("high_pullback_short_min_drawdown_pct", 18.0))
-        max_drawdown = float(self.config.get("high_pullback_short_max_drawdown_pct", 45.0))
-        min_low_distance = float(self.config.get("high_pullback_short_min_low_distance_pct", 5.0))
-        max_15m = float(self.config.get("high_pullback_short_15m_max_pct", 0.3))
-        max_1h = float(self.config.get("high_pullback_short_1h_max_pct", 0.5))
-        min_volume = float(self.config.get("high_pullback_short_volume_ratio_min", 0.8))
-        max_volume = float(self.config.get("high_pullback_short_volume_ratio_max", 6.0))
-        max_taker = float(self.config.get("high_pullback_short_taker_ratio_max", 0.95))
-        min_oi = float(self.config.get("high_pullback_short_oi_1h_min_pct", -5.0))
-        max_funding = float(self.config.get("high_pullback_short_funding_abs_max_pct", 0.08))
-        drawdown = max(0.0, -pct(price, high_24h)) if high_24h > 0 and price > 0 else 0.0
-        low_distance = pct(price, low_24h) if low_24h > 0 and price > 0 else 999.0
-        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
-        oi_1h = fnum(stats.get("open_interest_1h_pct"))
-        funding = abs(fnum(stats.get("funding_rate_pct")))
-
-        if min_24h <= change_24h <= max_24h:
-            score += 1.0
-            reasons.append(f"24h仍上涨 {change_24h:+.1f}%")
-        if min_drawdown <= drawdown <= max_drawdown:
-            score += 1.5
-            reasons.append(f"高点回撤 {drawdown:.1f}%")
-        if low_distance >= min_low_distance:
-            score += 0.6
-            reasons.append(f"远离24h低点 {low_distance:.1f}%")
-        if short_move <= max_15m:
-            score += 1.1
-            reasons.append(f"15m回落/滞涨 {short_move:+.1f}%")
-        if change_1h <= max_1h:
-            score += 1.1
-            reasons.append(f"1h上攻衰竭 {change_1h:+.1f}%")
-        if trend == "down":
-            score += 1.0
-            reasons.append("短线趋势转下")
-        elif trend != "up":
-            score += 0.5
-            reasons.append("短线不再上推")
-        if min_volume <= volume_ratio <= max_volume and taker_ratio <= max_taker:
-            score += 0.7
-            reasons.append(f"量能配合回落 {volume_ratio:.1f}x")
-        if taker_ratio <= max_taker:
-            score += 1.2
-            reasons.append(f"主动卖出占优 {taker_ratio:.2f}")
-        if oi_1h >= min_oi:
-            score += 0.5
-            reasons.append(f"OI未快速撤退 {oi_1h:+.1f}%")
-        if funding <= max_funding:
-            score += 0.5
-            reasons.append(f"费率可接受 {funding:.3f}%")
-
-        score = max(0.0, min(10.0, score))
-        threshold = float(self.config.get("high_pullback_short_confirm_min_score", 7.0))
         if score >= 8.0:
             label = "强确认"
         elif score >= threshold:
@@ -4049,23 +3503,6 @@ class PaperBot:
             return f"老币反弹量能过热 {volume_ratio:.1f}x/{max_volume:.1f}x"
         return ""
 
-    def high_pullback_short_kline_reject_reason(self, short_move: float, change_1h: float, volume_ratio: float, trend: str) -> str:
-        max_15m = float(self.config.get("high_pullback_short_15m_max_pct", 0.3))
-        max_1h = float(self.config.get("high_pullback_short_1h_max_pct", 0.5))
-        min_volume = float(self.config.get("high_pullback_short_volume_ratio_min", 0.8))
-        max_volume = float(self.config.get("high_pullback_short_volume_ratio_max", 6.0))
-        if trend == "up" and short_move > 0 and change_1h > 0:
-            return "高位回落仍在短线推升"
-        if short_move > max_15m:
-            return f"高位回落15m未转弱 {short_move:.1f}%/{max_15m:.1f}%"
-        if change_1h > max_1h:
-            return f"高位回落1h未衰竭 {change_1h:.1f}%/{max_1h:.1f}%"
-        if volume_ratio < min_volume:
-            return f"高位回落量能不足 {volume_ratio:.1f}x/{min_volume:.1f}x"
-        if volume_ratio > max_volume:
-            return f"高位回落量能过热 {volume_ratio:.1f}x/{max_volume:.1f}x"
-        return ""
-
     def old_rebound_short_market_stats_reject_reason(self, stats: dict[str, float]) -> str:
         taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
         oi_1h = fnum(stats.get("open_interest_1h_pct"))
@@ -4083,21 +3520,6 @@ class PaperBot:
             return f"老币反弹资金费率过热 {funding:.3f}%/{max_funding:.3f}%"
         if long_short < min_long_short:
             return f"老币反弹多头拥挤不足 {long_short:.2f}/{min_long_short:.2f}"
-        return ""
-
-    def high_pullback_short_market_stats_reject_reason(self, stats: dict[str, float]) -> str:
-        taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
-        oi_1h = fnum(stats.get("open_interest_1h_pct"))
-        funding = abs(fnum(stats.get("funding_rate_pct")))
-        max_taker = float(self.config.get("high_pullback_short_taker_ratio_max", 0.95))
-        min_oi = float(self.config.get("high_pullback_short_oi_1h_min_pct", -5.0))
-        max_funding = float(self.config.get("high_pullback_short_funding_abs_max_pct", 0.08))
-        if taker_ratio > max_taker:
-            return f"高位回落主动卖出不足 {taker_ratio:.2f}/{max_taker:.2f}"
-        if oi_1h < min_oi:
-            return f"高位回落OI撤退过快 {oi_1h:+.1f}%/{min_oi:+.1f}%"
-        if funding > max_funding:
-            return f"高位回落费率过热 {funding:.3f}%/{max_funding:.3f}%"
         return ""
 
     def kline_short_metrics(self, symbol: str, fallback_price: float, change: float, old_rebound: bool = False, pre_start: bool = False) -> dict[str, Any]:
@@ -4191,7 +3613,6 @@ class PaperBot:
         max_candidates = int(self.config.get("max_candidates_per_scan", 18))
         pre_start_limit = int(self.config.get("pre_start_max_candidates", 8))
         old_rebound_limit = int(self.config.get("old_rebound_short_max_candidates", 8))
-        high_pullback_limit = int(self.config.get("high_pullback_short_max_candidates", 5))
         direction_mode = str(self.config.get("trade_direction_mode", "both"))
 
         def change_allowed(change: float) -> bool:
@@ -4213,43 +3634,7 @@ class PaperBot:
             symbol = str(item.get("symbol", "")).upper()
             return bool(symbol and self.stop_loss_cooldown_reason(symbol))
 
-        def high_pullback_metrics(item: dict[str, Any]) -> tuple[float, float]:
-            price = fnum(item.get("lastPrice"))
-            high = fnum(item.get("highPrice"))
-            low = fnum(item.get("lowPrice"))
-            drawdown = max(0.0, -pct(price, high)) if high > 0 and price > 0 else 0.0
-            low_distance = pct(price, low) if low > 0 and price > 0 else 999.0
-            return drawdown, low_distance
-
         pool: dict[str, dict[str, Any]] = {}
-        if self.config.get("high_pullback_short_enabled", False) and direction_mode != "long_only" and high_pullback_limit > 0:
-            hp_min_change = float(self.config.get("high_pullback_short_24h_min_pct", 8.0))
-            hp_max_change = float(self.config.get("high_pullback_short_24h_max_pct", 60.0))
-            hp_min_drawdown = float(self.config.get("high_pullback_short_min_drawdown_pct", 18.0))
-            hp_max_drawdown = float(self.config.get("high_pullback_short_max_drawdown_pct", 45.0))
-            hp_min_low_distance = float(self.config.get("high_pullback_short_min_low_distance_pct", 5.0))
-            high_pullback = []
-            for item in tickers:
-                if is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item):
-                    continue
-                change = fnum(item.get("priceChangePercent"))
-                volume = fnum(item.get("quoteVolume"))
-                drawdown, low_distance = high_pullback_metrics(item)
-                if (
-                    volume >= min_volume
-                    and hp_min_change <= change <= hp_max_change
-                    and hp_min_drawdown <= drawdown <= hp_max_drawdown
-                    and low_distance >= hp_min_low_distance
-                ):
-                    high_pullback.append((item, drawdown, low_distance))
-            high_pullback.sort(key=lambda row: (-row[1], -fnum(row[0].get("quoteVolume"))))
-            for item, drawdown, low_distance in high_pullback[:high_pullback_limit]:
-                pool[str(item.get("symbol", ""))] = {
-                    "item": item,
-                    "signal_mode": "high_pullback_short",
-                    "mode_reason": f"高位回落做空池；24h高点回撤 {drawdown:.1f}%，距24h低点 {low_distance:.1f}%",
-                }
-
         if self.config.get("old_rebound_short_enabled", False) and direction_mode != "long_only" and old_rebound_limit > 0:
             old_min_change = float(self.config.get("old_rebound_short_24h_min_pct", 8.0))
             old_max_change = float(self.config.get("old_rebound_short_24h_max_pct", 35.0))
@@ -4322,7 +3707,7 @@ class PaperBot:
         candidates = list(pool.values())
         candidates.sort(
             key=lambda row: (
-                0 if row.get("signal_mode") == "pre_start_long" else 1 if row.get("signal_mode") == "high_pullback_short" else 2 if row.get("signal_mode") == "old_rebound_short" else 3,
+                0 if row.get("signal_mode") == "pre_start_long" else 1 if row.get("signal_mode") == "old_rebound_short" else 2,
                 -fnum(row["item"].get("quoteVolume")),
                 -abs(fnum(row["item"].get("priceChangePercent"))),
             )
@@ -4332,8 +3717,6 @@ class PaperBot:
             extra_limit += pre_start_limit
         if self.config.get("old_rebound_short_enabled", False):
             extra_limit += old_rebound_limit
-        if self.config.get("high_pullback_short_enabled", False):
-            extra_limit += high_pullback_limit
         return candidates[: max_candidates + extra_limit]
 
     def build_signals(self, tickers: list[dict[str, Any]], open_symbols: set[str]) -> list[Signal]:
@@ -4351,7 +3734,6 @@ class PaperBot:
             signal_mode = str(candidate.get("signal_mode", "strong_momentum"))
             is_pre_start_long = signal_mode == "pre_start_long"
             is_old_rebound_short = signal_mode == "old_rebound_short"
-            is_high_pullback_short = signal_mode == "high_pullback_short"
             mode_reason = str(candidate.get("mode_reason", self.signal_mode_label(signal_mode)))
             symbol = item["symbol"]
             price = fnum(item.get("lastPrice"))
@@ -4370,7 +3752,7 @@ class PaperBot:
             short_score, short_reason = self.score_side("SHORT", change, short_move, volume_ratio, trend)
             if is_pre_start_long:
                 side, score, reason = "LONG", long_score, long_reason
-            elif is_old_rebound_short or is_high_pullback_short:
+            elif is_old_rebound_short:
                 side, score, reason = "SHORT", short_score, short_reason
             elif long_score >= short_score:
                 side, score, reason = "LONG", long_score, long_reason
@@ -4383,16 +3765,16 @@ class PaperBot:
                 reject = "已有持仓"
             elif self.blocked_symbol_reject_reason(symbol):
                 reject = self.blocked_symbol_reject_reason(symbol)
-            elif score < score_threshold and not (is_pre_start_long or is_old_rebound_short or is_high_pullback_short):
+            elif score < score_threshold and not (is_pre_start_long or is_old_rebound_short):
                 reject = f"分数 {score:.1f} 低于阈值 {score_threshold:.1f}"
             elif side == "LONG" and trend == "down" and not is_pre_start_long:
                 reject = "短线趋势反向"
-            elif side == "SHORT" and trend == "up" and not (is_old_rebound_short or is_high_pullback_short):
+            elif side == "SHORT" and trend == "up" and not is_old_rebound_short:
                 reject = "短线趋势反向"
             else:
                 reject = self.direction_mode_reject_reason(side)
 
-            if not reject and (enriched_count < enrich_limit or is_pre_start_long or is_old_rebound_short or is_high_pullback_short):
+            if not reject and (enriched_count < enrich_limit or is_pre_start_long or is_old_rebound_short):
                 if is_old_rebound_short:
                     metrics = self.kline_short_metrics(symbol, price, change, old_rebound=True)
                 elif is_pre_start_long:
@@ -4411,17 +3793,17 @@ class PaperBot:
                 short_score, short_reason = self.score_side("SHORT", change, short_move, volume_ratio, trend)
                 if is_pre_start_long:
                     side, score, reason = "LONG", long_score, long_reason
-                elif is_old_rebound_short or is_high_pullback_short:
+                elif is_old_rebound_short:
                     side, score, reason = "SHORT", short_score, short_reason
                 elif long_score >= short_score:
                     side, score, reason = "LONG", long_score, long_reason
                 else:
                     side, score, reason = "SHORT", short_score, short_reason
-                if score < score_threshold and not (is_pre_start_long or is_old_rebound_short or is_high_pullback_short):
+                if score < score_threshold and not (is_pre_start_long or is_old_rebound_short):
                     reject = f"分数 {score:.1f} 低于阈值 {score_threshold:.1f}"
                 elif side == "LONG" and trend == "down" and not is_pre_start_long:
                     reject = "短线趋势反向"
-                elif side == "SHORT" and trend == "up" and not (is_old_rebound_short or is_high_pullback_short):
+                elif side == "SHORT" and trend == "up" and not is_old_rebound_short:
                     reject = "短线趋势反向"
                 else:
                     reject = self.direction_mode_reject_reason(side)
@@ -4439,8 +3821,6 @@ class PaperBot:
                         high_24h=fnum(item.get("highPrice")), low_24h=fnum(item.get("lowPrice")),
                         current_price=fnum(item.get("lastPrice")),
                     )
-                if not reject and is_high_pullback_short:
-                    reject = self.high_pullback_short_kline_reject_reason(short_move, change_1h, volume_ratio, trend)
             priority = "高" if score >= 6 else "中" if score >= 4.5 else "低"
             market_stats = {
                 "open_interest_usdt": volume * 0.22,
@@ -4458,7 +3838,7 @@ class PaperBot:
             heat_level = "normal"
             if not reject:
                 try:
-                    if index >= 6 and not (is_pre_start_long or is_old_rebound_short or is_high_pullback_short):
+                    if index >= 6 and not (is_pre_start_long or is_old_rebound_short):
                         raise RuntimeError("skip slow derivatives enrichment")
                     market_stats = self.fetch_signal_market_stats(symbol, item)
                     market_stats["volume_1h_ratio"] = volume_1h_ratio
@@ -4468,8 +3848,6 @@ class PaperBot:
                     reject = self.pre_start_market_stats_reject_reason(market_stats)
                 if not reject and is_old_rebound_short:
                     reject = self.old_rebound_short_market_stats_reject_reason(market_stats)
-                if not reject and is_high_pullback_short:
-                    reject = self.high_pullback_short_market_stats_reject_reason(market_stats)
                 if not reject and side == "LONG" and self.config.get("long_structure_confirmation_enabled", False):
                     long_structure = self.long_structure_confirmation(change_4h, change_1h, short_move, trend, volume_ratio, market_stats)
                     if not long_structure.get("passed"):
@@ -4512,18 +3890,6 @@ class PaperBot:
                         market_stats,
                         metrics,
                     )
-                elif is_high_pullback_short:
-                    market_confirm = self.high_pullback_short_confirmation_score(
-                        change,
-                        change_1h,
-                        short_move,
-                        volume_ratio,
-                        trend,
-                        market_stats,
-                        price,
-                        fnum(item.get("highPrice")),
-                        fnum(item.get("lowPrice")),
-                    )
                 else:
                     market_confirm = self.market_confirmation_score(
                         side,
@@ -4542,8 +3908,6 @@ class PaperBot:
                 analyzer_confidence = confirm_score * 10
                 if is_old_rebound_short:
                     analyzer_direction = "老币反弹确认"
-                if is_high_pullback_short:
-                    analyzer_direction = "高位回落确认"
                 analyzer_reason = str(market_confirm.get("reason", ""))
                 if confirm_score < confirm_min:
                     reject = f"{analyzer_direction}分 {confirm_score:.1f} 低于 {confirm_min:.1f}"
@@ -4833,7 +4197,6 @@ class PaperBot:
             "trigger_reason": pos.get("trigger_reason"),
         }
         self.state.setdefault("trade_history", []).insert(0, row)
-        self.notify_new_closed_trades([row])
         self.state["trade_history"] = self.state["trade_history"][:200]
         self.event("trade", f"{pos['symbol']} {self.side_cn(pos['side'])} {reason}，PnL {pnl:+.2f} U")
 
@@ -4959,20 +4322,6 @@ class PaperBot:
         capacity = max(0, max_open - open_count)
         if capacity <= 0:
             return 0
-        equity_tp_reason = self.equity_take_profit_block_reason()
-        if equity_tp_reason:
-            self.event("risk", equity_tp_reason)
-            return 0
-        daily_pnl = self.daily_realized_pnl()
-        if self.config.get("max_daily_profit_enabled", True) and daily_pnl >= float(self.config.get("max_daily_profit_usdt", 30.0)):
-            self.event("risk", f"今日已实现盈利 {daily_pnl:+.2f} U，达到盈利停止开单阈值，本轮不再开新仓")
-            return 0
-        if self.config.get("max_daily_loss_enabled", True) and daily_pnl <= -float(self.config.get("max_daily_loss_usdt", 20.0)):
-            self.event("risk", f"今日已实现盈亏 {daily_pnl:+.2f} U，达到亏损停止开单阈值，本轮不再开新仓")
-            return 0
-        if self.config.get("max_daily_loss_enabled", False) and self.daily_realized_pnl() <= -float(self.config.get("max_daily_loss_usdt", 20.0)):
-            self.event("risk", "已触发单日最大亏损限制，本轮不再开新仓")
-            return 0
         try:
             exchange_symbols = self.get_exchange_symbols()
             market_exchange_symbols = self.get_market_exchange_symbols()
@@ -4984,6 +4333,10 @@ class PaperBot:
             if opened >= min(capacity, int(self.config.get("max_new_positions_per_scan", 2))):
                 break
             if signal.reject_reason or signal.price <= 0:
+                continue
+            if signal.signal_mode == "high_pullback_short":
+                reason = "高位回落做空策略已移除"
+                self.update_signal_decision(signal, reason, f"开仓前复核：{reason}")
                 continue
             if signal.signal_mode == "strong_momentum" and signal.side == "LONG" and not self.config.get("strong_long_enabled", True):
                 reason = "强波动池做多已关闭"
@@ -5066,7 +4419,6 @@ class PaperBot:
                     "trade",
                     f"{self.exchange_label()} 开仓 {signal.symbol} {self.side_cn(str(record.get('side') or signal.side))}，保证金 {record['margin_usdt']:.2f} U",
                 )
-                self.notify_open_position(signal, record)
                 self.publish_square_open_position_async(signal, record)
                 opened += 1
         return opened
@@ -5085,20 +4437,8 @@ class PaperBot:
         equity = max(0.01, self.equity())
         return (self.gross_exposure() + extra_notional) / equity * 100.0
 
-    def daily_realized_pnl(self) -> float:
-        return sum(fnum(trade.get("pnl_usdt")) for trade in self.today_closed_trades())
-
-    def today_closed_trades(self) -> list[dict[str, Any]]:
-        today = datetime.now().astimezone().date().isoformat()
-        closed = []
-        for trade in self.state.get("trade_history", []):
-            closed_dt = local_datetime(trade.get("closed_at"))
-            if closed_dt and closed_dt.date().isoformat() == today:
-                closed.append(trade)
-        return closed
-
     def refresh_trade_counters(self) -> None:
-        closed = self.today_closed_trades()
+        closed = self.state.get("trade_history", [])
         self.state["take_profit_count"] = sum(1 for trade in closed if fnum(trade.get("pnl_usdt")) > 0)
         self.state["stop_loss_count"] = sum(1 for trade in closed if fnum(trade.get("pnl_usdt")) < 0)
         self.state["realized_pnl_usdt"] = sum(fnum(trade.get("pnl_usdt")) for trade in closed)
@@ -5125,7 +4465,7 @@ class PaperBot:
         self.state["max_drawdown_pct"] = max(fnum(self.state.get("max_drawdown_pct")), drawdown)
 
     def trade_stats(self) -> dict[str, float]:
-        trades = self.today_closed_trades()
+        trades = self.state.get("trade_history", [])
         wins = [fnum(t.get("pnl_usdt")) for t in trades if fnum(t.get("pnl_usdt")) > 0]
         losses = [abs(fnum(t.get("pnl_usdt"))) for t in trades if fnum(t.get("pnl_usdt")) < 0]
         closed = len(trades)
@@ -5135,7 +4475,6 @@ class PaperBot:
             "closed_trades": closed,
             "win_rate_pct": len(wins) / closed * 100.0 if closed else 0.0,
             "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0),
-            "daily_realized_pnl_usdt": self.daily_realized_pnl(),
         }
 
     def snapshot(self) -> dict[str, Any]:

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import paper_dashboard_server as server
 
 
-class EquityTakeProfitRetryTest(unittest.TestCase):
+class RemovedFeatureCompatibilityTest(unittest.TestCase):
     def make_bot(self) -> server.PaperBot:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -14,30 +14,63 @@ class EquityTakeProfitRetryTest(unittest.TestCase):
         config_path = root / "config.json"
         state_path = root / "state.json"
         config_path.write_text(
-            '{"equity_take_profit_enabled": true, "previous_day_equity_usdt": 100, "equity_take_profit_usdt": 10}',
+            '{"equity_take_profit_enabled": true, "previous_day_equity_usdt": 100, '
+            '"equity_take_profit_usdt": 10, "max_daily_profit_enabled": true, '
+            '"max_daily_profit_usdt": 1, "max_daily_loss_enabled": true, '
+            '"max_daily_loss_usdt": 1, "high_pullback_short_enabled": true, '
+            '"telegram_enabled": true, "daily_excel_report_enabled": true}',
             encoding="utf-8",
         )
-        bot = server.PaperBot(config_path, state_path)
-        bot.config["equity_take_profit_enabled"] = True
-        bot.config["previous_day_equity_usdt"] = 100.0
-        bot.config["equity_take_profit_usdt"] = 10.0
+        return server.PaperBot(config_path, state_path)
+
+    def test_legacy_account_limits_do_not_close_positions_or_stop_scanning(self):
+        bot = self.make_bot()
         bot.state["exchange_account_mode"] = bot.exchange_mode()
         bot.state["account_equity_usdt"] = 120.0
         bot.state["positions"] = [{"symbol": "BTCUSDT", "side": "LONG", "quantity": 0.01}]
-        return bot
-
-    def test_retries_full_close_after_equity_take_profit_was_already_triggered(self):
-        bot = self.make_bot()
-        calls = []
-        bot.exchange_close_position = lambda pos: calls.append(dict(pos))
+        bot.exchange_close_position = lambda pos: self.fail("removed account TP must not close a position")
+        bot.fetch_tickers = lambda: [{"symbol": "BTCUSDT", "lastPrice": "100"}]
+        bot.update_signal_future_returns = lambda price_map: None
         bot.sync_exchange_state = lambda: None
+        bot.build_signals = lambda tickers, open_symbols: []
+        bot.update_pending_open_signals = lambda signals: None
+        bot.record_signal_review_scan = lambda signals: None
+        bot.collect_pending_open_signals = lambda: []
+        calls = []
+        bot.open_from_signals = lambda signals: calls.append(len(signals)) or 0
+        bot.scan_once()
+        self.assertEqual(len(bot.state["positions"]), 1)
+        self.assertEqual(calls, [0])
 
-        self.assertTrue(bot.enforce_equity_take_profit())
-        self.assertEqual(len(calls), 1)
+    def test_legacy_settings_are_not_exposed_in_active_config(self):
+        bot = self.make_bot()
+        for key in (
+            "high_pullback_short_enabled", "equity_take_profit_enabled", "previous_day_equity_usdt",
+            "equity_take_profit_usdt", "max_daily_profit_enabled", "max_daily_loss_enabled",
+            "telegram_enabled", "daily_excel_report_enabled",
+        ):
+            self.assertNotIn(key, bot.config)
 
-        bot.state["positions"] = [{"symbol": "BTCUSDT", "side": "LONG", "quantity": 0.01}]
-        self.assertTrue(bot.enforce_equity_take_profit())
-        self.assertEqual(len(calls), 2)
+    def test_stats_cover_recorded_trades_instead_of_only_today(self):
+        bot = self.make_bot()
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "closed_at": "2020-01-01T00:00:00+00:00", "pnl_usdt": 5},
+            {"symbol": "ETHUSDT", "closed_at": server.iso_now(), "pnl_usdt": -2},
+        ]
+        snapshot = bot.snapshot()
+        self.assertEqual(snapshot["state"]["realized_pnl_usdt"], 3)
+        self.assertEqual(snapshot["metrics"]["win_rate_pct"], 50)
+        self.assertNotIn("daily_realized_pnl_usdt", snapshot["metrics"])
+
+    def test_removed_high_pullback_signal_is_rejected_before_order(self):
+        bot = self.make_bot()
+        signal = ReverseOrdersTest().make_signal()
+        signal.signal_mode = "high_pullback_short"
+        bot.get_exchange_symbols = lambda: {signal.symbol: {"symbol": signal.symbol}}
+        bot.get_market_exchange_symbols = lambda: {signal.symbol: {"underlyingType": "COIN", "contractType": "PERPETUAL"}}
+        bot.exchange_open_position = lambda *args: self.fail("removed pool must not submit an order")
+        self.assertEqual(bot.open_from_signals([signal]), 0)
+        self.assertIn("已移除", signal.reject_reason)
 
 
 class HedgeModeCloseOrderTest(unittest.TestCase):
@@ -372,7 +405,7 @@ class ClosedTradeCooldownTest(unittest.TestCase):
         self.assertEqual(bot.config["stop_loss_cooldown_minutes"], 15)
 
 
-class EquityTakeProfitScanTest(unittest.TestCase):
+class MarketScanTest(unittest.TestCase):
     def make_bot(self) -> server.PaperBot:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -387,7 +420,6 @@ class EquityTakeProfitScanTest(unittest.TestCase):
         bot.state["positions"] = [{"symbol": "AAPLUSDT"}]
         bot.config["pre_start_long_enabled"] = True
         bot.config["old_rebound_short_enabled"] = True
-        bot.config["high_pullback_short_enabled"] = True
         ticker_payload = [
             {"symbol": "BTCUSDT", "lastPrice": "100", "priceChangePercent": "10", "quoteVolume": "50000000"},
             {"symbol": "AAPLUSDT", "lastPrice": "200", "priceChangePercent": "10", "quoteVolume": "50000000"},
@@ -459,64 +491,6 @@ class EquityTakeProfitScanTest(unittest.TestCase):
 
         self.assertEqual(bot.open_from_signals([signal]), 0)
         self.assertIn("非加密货币合约", signal.reject_reason)
-
-    def test_scan_still_refreshes_candidates_when_equity_take_profit_is_triggered(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        root = Path(tmp.name)
-        config_path = root / "config.json"
-        state_path = root / "state.json"
-        config_path.write_text('{"equity_take_profit_enabled": true}', encoding="utf-8")
-        bot = server.PaperBot(config_path, state_path)
-        bot.state["running"] = True
-        bot.state["equity_take_profit_triggered"] = True
-        bot.fetch_tickers = lambda: [{"symbol": "BTCUSDT", "lastPrice": "100", "priceChangePercent": "10", "quoteVolume": "50000000"}]
-        bot.update_signal_future_returns = lambda price_map: None
-        bot.sync_exchange_state = lambda: None
-        bot.build_signals = lambda tickers, open_symbols: [
-            server.Signal(
-                symbol="BTCUSDT",
-                side="LONG",
-                score=6.0,
-                price=100.0,
-                quote_volume=50000000.0,
-                change_24h_pct=10.0,
-                change_4h_pct=0.0,
-                change_1h_pct=0.0,
-                short_move_pct=0.0,
-                volume_ratio=1.0,
-                open_interest_usdt=0.0,
-                open_interest_24h_pct=0.0,
-                open_interest_4h_pct=0.0,
-                open_interest_1h_pct=0.0,
-                funding_rate_pct=0.0,
-                long_short_ratio=1.0,
-                volume_4h_ratio=1.0,
-                taker_long_short_ratio=1.0,
-                oi_volume_ratio=0.0,
-                signal_mode="strong_momentum",
-                signal_heat_level="normal",
-                market_regime_score=10.0,
-                market_regime_label="",
-                market_regime_reason="",
-                risk_level="",
-                analyzer_direction="市场确认",
-                analyzer_confidence_pct=80.0,
-                analyzer_reason="",
-                trigger_reason="test",
-                reject_reason="",
-                decision_summary="待开仓",
-                decision_steps=[],
-                priority="高",
-            )
-        ]
-
-        bot.scan_once()
-
-        self.assertEqual(len(bot.state.get("candidates", [])), 1)
-        self.assertEqual(bot.state["candidates"][0]["symbol"], "BTCUSDT")
-        self.assertIn("止盈", bot.state["candidates"][0]["reject_reason"])
-
 
 class LongStructureConfirmationTest(unittest.TestCase):
     def make_bot(self) -> server.PaperBot:
@@ -882,7 +856,6 @@ class KlineShortMetricsTest(unittest.TestCase):
         bot.fetch_tickers = lambda: [{"symbol": "FREEUSDT", "lastPrice": "10", "priceChangePercent": "-12", "quoteVolume": "50000000"}]
         bot.update_signal_future_returns = lambda price_map: None
         bot.sync_exchange_state = lambda: None
-        bot.enforce_equity_take_profit = lambda: False
         bot.build_signals = lambda tickers, open_symbols: []
         bot.update_pending_open_signals = lambda signals: None
         bot.record_signal_review_scan = lambda signals: None
@@ -1181,58 +1154,6 @@ class KlineShortMetricsTest(unittest.TestCase):
         self.assertTrue(candidates)
         self.assertNotIn("old_rebound_short", {candidate["signal_mode"] for candidate in candidates})
 
-    def test_high_pullback_short_candidates_are_added_when_enabled(self):
-        bot = self.make_bot()
-        bot.config["high_pullback_short_enabled"] = True
-        bot.config["high_pullback_short_max_candidates"] = 5
-        bot.config["trade_direction_mode"] = "short_only"
-
-        candidates = bot.build_candidate_pool(
-            [
-                {
-                    "symbol": "PULLUSDT",
-                    "lastPrice": "1.10",
-                    "highPrice": "1.50",
-                    "lowPrice": "0.90",
-                    "priceChangePercent": "18",
-                    "quoteVolume": "50000000",
-                },
-                {
-                    "symbol": "FLATPUUSDT",
-                    "lastPrice": "1.42",
-                    "highPrice": "1.50",
-                    "lowPrice": "0.90",
-                    "priceChangePercent": "18",
-                    "quoteVolume": "50000000",
-                },
-            ]
-        )
-
-        high_pullback = next(candidate for candidate in candidates if candidate["item"]["symbol"] == "PULLUSDT")
-        self.assertEqual(high_pullback["signal_mode"], "high_pullback_short")
-        self.assertNotIn("FLATPUUSDT", {candidate["item"]["symbol"] for candidate in candidates})
-
-    def test_high_pullback_short_skips_candidates_too_close_to_24h_low(self):
-        bot = self.make_bot()
-        bot.config["high_pullback_short_enabled"] = True
-        bot.config["high_pullback_short_min_low_distance_pct"] = 5.0
-        bot.config["trade_direction_mode"] = "short_only"
-
-        candidates = bot.build_candidate_pool(
-            [
-                {
-                    "symbol": "LOWTAILUSDT",
-                    "lastPrice": "0.93",
-                    "highPrice": "1.50",
-                    "lowPrice": "0.90",
-                    "priceChangePercent": "18",
-                    "quoteVolume": "50000000",
-                }
-            ]
-        )
-
-        self.assertNotIn("LOWTAILUSDT", {candidate["item"]["symbol"] for candidate in candidates})
-
     def test_strong_short_candidates_can_be_disabled(self):
         bot = self.make_bot()
         bot.config["strong_short_enabled"] = False
@@ -1300,27 +1221,6 @@ class KlineShortMetricsTest(unittest.TestCase):
         bot.update_settings({"strong_long_enabled": "false"})
         self.assertFalse(bot.config["strong_long_enabled"])
         self.assertTrue(bot.config["strong_short_enabled"])
-
-    def test_high_pullback_short_has_priority_over_old_rebound_short_for_same_symbol(self):
-        bot = self.make_bot()
-        bot.config["high_pullback_short_enabled"] = True
-        bot.config["old_rebound_short_enabled"] = True
-
-        candidates = bot.build_candidate_pool(
-            [
-                {
-                    "symbol": "OVERLAPUSDT",
-                    "lastPrice": "1.10",
-                    "highPrice": "1.50",
-                    "lowPrice": "0.90",
-                    "priceChangePercent": "18",
-                    "quoteVolume": "25000000",
-                }
-            ]
-        )
-
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0]["signal_mode"], "high_pullback_short")
 
     def test_blocked_symbols_are_filtered_before_candidate_pool(self):
         bot = self.make_bot()
@@ -2029,19 +1929,6 @@ class RemovedStrategyControlsTest(unittest.TestCase):
         self.assertEqual(plan["target_leverage"], 2)
         self.assertEqual(plan["tier"], "old_rebound_short_fixed")
 
-    def test_position_plan_uses_high_pullback_short_margin_and_leverage(self):
-        bot = self.make_bot(
-            '{"margin_per_trade_usdt": 9, "leverage": 5, "high_pullback_short_margin_per_trade_usdt": 2.5, "high_pullback_short_leverage": 2}'
-        )
-        signal = self.make_signal()
-        signal.signal_mode = "high_pullback_short"
-
-        plan = bot.position_plan(signal, available=20.0)
-
-        self.assertEqual(plan["margin_usdt"], 2.5)
-        self.assertEqual(plan["target_leverage"], 2)
-        self.assertEqual(plan["tier"], "high_pullback_short_fixed")
-
     def test_pre_start_margin_and_leverage_can_be_updated(self):
         bot = self.make_bot("{}")
 
@@ -2057,14 +1944,6 @@ class RemovedStrategyControlsTest(unittest.TestCase):
 
         self.assertEqual(bot.config["old_rebound_short_margin_per_trade_usdt"], 4.5)
         self.assertEqual(bot.config["old_rebound_short_leverage"], 3)
-
-    def test_high_pullback_short_margin_and_leverage_can_be_updated(self):
-        bot = self.make_bot("{}")
-
-        bot.update_settings({"high_pullback_short_margin_per_trade_usdt": 2.5, "high_pullback_short_leverage": 2})
-
-        self.assertEqual(bot.config["high_pullback_short_margin_per_trade_usdt"], 2.5)
-        self.assertEqual(bot.config["high_pullback_short_leverage"], 2)
 
     def test_removed_strategy_controls_are_ignored_by_settings_update(self):
         bot = self.make_bot(

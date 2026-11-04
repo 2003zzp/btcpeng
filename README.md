@@ -155,8 +155,6 @@ Use Binance USD-M Futures Testnet keys only.
 BINANCE_API_KEY=your_futures_testnet_key
 BINANCE_API_SECRET=your_futures_testnet_secret
 BINANCE_TESTNET=true
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-TELEGRAM_CHAT_ID=your_telegram_chat_id
 ```
 
 ## Risk Defaults
