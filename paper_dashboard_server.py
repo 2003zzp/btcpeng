@@ -9,7 +9,6 @@ orders only to Binance USD-M Futures Testnet when signals pass the risk gate.
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import hashlib
 import hmac
 import http.client
@@ -40,9 +39,6 @@ CONFIG_PATH = ROOT / "paper_dashboard_config.json"
 STATE_PATH = ROOT / "data" / "paper_dashboard_state.json"
 SIGNAL_REVIEW_PATH = ROOT / "data" / "signal_review.jsonl"
 SIGNAL_REVIEW_STATE_PATH = ROOT / "data" / "signal_review_state.json"
-FAST_CONFIRM_PATH = ROOT / "fast_signal_confirmer.py"
-FAST_CONFIRM_MODULE: Any | None = None
-FAST_CONFIRM_SOURCE = "fast_signal_confirmer_v2"
 SQUARE_POST_SKILL_DIR = Path(os.environ.get("BINANCE_SQUARE_SKILL_DIR", r"C:\Users\Administrator\.codex\skills\square-post"))
 RETRYABLE_HTTP_EXCEPTIONS = (
     TimeoutError,
@@ -77,7 +73,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "trade_direction_mode": "both",
     "reverse_orders_enabled": False,
     "signal_score_threshold": 4.0,
-    "confirmation_mode": "market_score",
     "market_confirm_min_score": 7.0,
     "short_market_confirm_min_score": 7.5,
     "short_max_24h_high_drawdown_pct": 75.0,
@@ -87,15 +82,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "long_structure_min_score": 2.5,
     "market_regime_filter_enabled": True,
     "market_regime_min_score": 4.5,
-    "analyzer_confirmation_enabled": True,
-    "analyzer_min_confidence_pct": 90.0,
-    "analyzer_timeout_sec": 12.0,
-    "analyzer_cache_ttl_sec": 60,
-    "analyzer_failed_cache_ttl_sec": 120,
-    "analyzer_realtime_before_open": True,
-    "analyzer_max_workers": 2,
-    "pending_open_queue_enabled": True,
-    "pending_open_queue_ttl_sec": 180,
     "max_candidates_per_scan": 18,
     "pre_start_long_enabled": False,
     "pre_start_max_candidates": 8,
@@ -384,18 +370,6 @@ def deep_update(target: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     return target
 
 
-def load_fast_confirmer() -> Any:
-    global FAST_CONFIRM_MODULE
-    if FAST_CONFIRM_MODULE is not None:
-        return FAST_CONFIRM_MODULE
-    if not FAST_CONFIRM_PATH.exists():
-        raise RuntimeError(f"找不到快速确认脚本：{FAST_CONFIRM_PATH}")
-    import fast_signal_confirmer
-
-    FAST_CONFIRM_MODULE = fast_signal_confirmer
-    return FAST_CONFIRM_MODULE
-
-
 def load_dotenv(path: Path) -> None:
     if not path.exists():
         return
@@ -526,19 +500,6 @@ class PaperBot:
         self.market_exchange_symbols_cache: dict[str, Any] = {"symbols": {}, "synced_at_ms": 0}
         self.crypto_symbols: set[str] = set()
         self.crypto_classification_error = ""
-        self.analyzer_cache: dict[str, dict[str, Any]] = dict(self.state.get("analyzer_cache", {}))
-        stale_errors = [
-            symbol
-            for symbol, result in self.analyzer_cache.items()
-            if result.get("source") != FAST_CONFIRM_SOURCE or "分析器超时" in str(result.get("reason", ""))
-        ]
-        for symbol in stale_errors:
-            self.analyzer_cache.pop(symbol, None)
-            self.state.get("analyzer_cache", {}).pop(symbol, None)
-        self.analyzer_inflight: set[str] = set()
-        self.analyzer_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, int(self.config.get("analyzer_max_workers", 2)))
-        )
 
     def load_config(self) -> dict[str, Any]:
         config = json.loads(json.dumps(DEFAULT_CONFIG))
@@ -552,6 +513,11 @@ class PaperBot:
                 "previous_day_equity_usdt", "telegram_enabled",
                 "telegram_hourly_status_enabled", "telegram_hourly_status_interval_minutes",
                 "daily_excel_report_enabled", "daily_excel_report_path",
+                "confirmation_mode", "analyzer_confirmation_enabled",
+                "analyzer_min_confidence_pct", "analyzer_timeout_sec",
+                "analyzer_cache_ttl_sec", "analyzer_failed_cache_ttl_sec",
+                "analyzer_realtime_before_open", "analyzer_max_workers",
+                "pending_open_queue_enabled", "pending_open_queue_ttl_sec",
             }:
                 config.pop(key)
         if config.get("pre_start_take_profit_roi_pct") is None:
@@ -586,7 +552,7 @@ class PaperBot:
         state.setdefault("positions", [])
         state.setdefault("exchange_open_positions", [])
         state.setdefault("reconciled_close_ids", [])
-        state.setdefault("pending_open_signals", {})
+        state.pop("pending_open_signals", None)
         state.setdefault("stop_loss_cooldown_overrides", {})
         for key in (
             "last_hourly_status_report_at", "telegram_close_notified_ids",
@@ -597,7 +563,10 @@ class PaperBot:
             state.pop(key, None)
         if self.exchange_mode() in {"binance_futures_testnet", "binance_futures_live"}:
             state["positions"] = []
-        state.setdefault("candidates", [])
+        state["candidates"] = [
+            item for item in state.get("candidates", [])
+            if str(item.get("analyzer_direction", "")) not in {"做多", "做空", "观望", "等待", "错误", "关闭"}
+        ]
         state.setdefault("trade_history", [])
         state.setdefault("open_order_history", [])
         open_records = [item for item in state.get("trade_history", []) if item.get("close_reason") == "Binance Testnet 开仓记录"]
@@ -619,7 +588,7 @@ class PaperBot:
             and not str(item.get("id", "")).startswith(f"{self.exchange_mode()}-income-")
         ]
         state.setdefault("events", [])
-        state.setdefault("analyzer_cache", {})
+        state.pop("analyzer_cache", None)
         state.setdefault("last_error", "")
         return state
 
@@ -830,9 +799,9 @@ class PaperBot:
         execution_side = str(record.get("side") or signal.side)
         side = self.side_cn(execution_side)
         side_view = "\u770b\u591a" if execution_side == "LONG" else "\u770b\u7a7a"
-        analyzer_text = "-"
+        confirm_text = "-"
         if signal.analyzer_direction:
-            analyzer_text = f"{signal.analyzer_direction} {signal.analyzer_confidence_pct:.1f}%"
+            confirm_text = f"{signal.analyzer_direction} {signal.analyzer_confidence_pct / 10:.1f}/10"
         mode_text = self.signal_mode_label(signal.signal_mode)
         tier_label = {
             "excellent": "\u9ad8\u8d28\u91cf\u4fe1\u53f7\uff0c\u6309\u5f3a\u5316\u4ed3\u5904\u7406",
@@ -857,31 +826,31 @@ class PaperBot:
             [
                 f"${square_symbol} \u8fd9\u6ce2\u6211\u504f{side_view}\uff0c\u5148\u8bb0\u5f55\u4e00\u7b14{side}\u5355\u3002",
                 f"\u5165\u573a\uff1a{entry}\uff5c\u6b62\u76c8\uff1a{take_profit}\uff5c\u6b62\u635f\uff1a{stop_price}",
-                f"\u4fe1\u53f7\uff1a{mode_text}\uff5c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff5c\u786e\u8ba4 {analyzer_text}",
+                f"\u4fe1\u53f7\uff1a{mode_text}\uff5c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff5c\u786e\u8ba4 {confirm_text}",
                 f"\u7406\u7531\uff1a{reason}",
             ],
             [
                 f"${square_symbol} \u8fd9\u91cc\u5f00\u59cb\u6709\u70b9\u610f\u601d\u4e86\uff0c\u6211\u73b0\u5728\u504f{side_view}\u3002",
                 f"\u8fd9\u5355\u770b\u7684\u662f\u77ed\u7ebf\u5ef6\u7eed\uff0c\u5165\u573a {entry}\uff0c\u9632\u5b88 {stop_price}\uff0c\u76ee\u6807\u5148\u770b {take_profit}\u3002",
-                f"{mode_text}\uff0c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff0c\u786e\u8ba4 {analyzer_text}\u3002",
+                f"{mode_text}\uff0c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff0c\u786e\u8ba4 {confirm_text}\u3002",
                 f"\u89e6\u53d1\u70b9\uff1a{reason}",
             ],
             [
                 f"${square_symbol} \u5f53\u524d{side_view}\u7ed3\u6784\u6bd4\u8f83\u987a\uff0c\u8bb0\u5f55\u4e00\u7b14{side}\u5355\u3002",
-                f"\u6a21\u5f0f\uff1a{mode_text}\uff5c\u7cfb\u7edf\u5206\uff1a{signal.score:.2f}\uff5c\u786e\u8ba4\uff1a{analyzer_text}",
+                f"\u6a21\u5f0f\uff1a{mode_text}\uff5c\u7cfb\u7edf\u5206\uff1a{signal.score:.2f}\uff5c\u786e\u8ba4\uff1a{confirm_text}",
                 f"\u70b9\u4f4d\uff1a\u5165\u573a {entry}\uff0c\u6b62\u76c8 {take_profit}\uff0c\u6b62\u635f {stop_price}",
                 f"\u4e3b\u8981\u903b\u8f91\uff1a{reason}",
             ],
             [
                 f"${square_symbol} \u6ce2\u52a8\u8d77\u6765\u4e86\uff0c\u8fd9\u79cd\u7968\u6211\u53ea\u770b\u8282\u594f\uff0c\u4e0d\u604b\u6218\u3002",
                 f"\u65b9\u5411\uff1a{side_view}\uff5c\u5165\u573a\uff1a{entry}\uff5c\u6b62\u76c8\uff1a{take_profit}\uff5c\u6b62\u635f\uff1a{stop_price}",
-                f"\u4fe1\u53f7\u5171\u632f\uff1a{mode_text}\uff0c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff0c\u786e\u8ba4 {analyzer_text}",
+                f"\u4fe1\u53f7\u5171\u632f\uff1a{mode_text}\uff0c\u7cfb\u7edf\u5206 {signal.score:.2f}\uff0c\u786e\u8ba4 {confirm_text}",
                 f"\u5982\u679c\u653e\u91cf\u4e0d\u80fd\u5ef6\u7eed\uff0c\u5c31\u6309\u6b62\u635f\u7eaa\u5f8b\u5904\u7406\u3002",
             ],
             [
                 f"${square_symbol} \u7ed9\u5230\u4e00\u7b14{side}\u673a\u4f1a\uff0c\u6211\u5148\u8ddf\u968f\u4fe1\u53f7\u8bb0\u5f55\u3002",
                 f"\u5165\u573a {entry}\uff0c\u6b62\u76c8 {take_profit}\uff0c\u6b62\u635f {stop_price}\u3002",
-                f"\u4f9d\u636e\uff1a{reason}\uff1b\u4e8c\u6b21\u786e\u8ba4 {analyzer_text}\u3002",
+                f"\u4f9d\u636e\uff1a{reason}\uff1b\u5e02\u573a\u786e\u8ba4 {confirm_text}\u3002",
             ],
         ]
         lines = templates[template_index]
@@ -1061,11 +1030,8 @@ class PaperBot:
             self.state["trade_history"] = []
             self.state["open_order_history"] = []
             self.state["events"] = []
-            self.state["analyzer_cache"] = {}
             self.state["reconciled_close_ids"] = []
             self.state["last_error"] = ""
-            self.analyzer_cache.clear()
-            self.analyzer_inflight.clear()
             self.event("info", "测试数据已清空，已重新开始。")
             self.persist()
         return {"ok": True, **self.snapshot()}
@@ -1137,7 +1103,6 @@ class PaperBot:
             "strong_long_enabled": str,
             "strong_short_enabled": str,
             "margin_type": str,
-            "confirmation_mode": str,
             "market_confirm_min_score": float,
             "short_market_confirm_min_score": float,
             "short_max_24h_high_drawdown_pct": float,
@@ -1147,8 +1112,6 @@ class PaperBot:
             "long_structure_min_score": float,
             "market_regime_filter_enabled": str,
             "market_regime_min_score": float,
-            "analyzer_min_confidence_pct": float,
-            "analyzer_realtime_before_open": str,
             "max_new_positions_per_scan": int,
             "trade_direction_mode": str,
             "reverse_orders_enabled": str,
@@ -1162,7 +1125,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "live_trading_enabled", "analyzer_realtime_before_open", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled", "old_rebound_short_enabled", "strong_long_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "live_trading_enabled", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled", "old_rebound_short_enabled", "strong_long_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -1171,10 +1134,6 @@ class PaperBot:
                     value = str(value)
                     if value not in {"both", "long_only", "short_only"}:
                         value = "both"
-                if key == "confirmation_mode":
-                    value = str(value)
-                    if value not in {"market_score", "analyzer"}:
-                        value = "market_score"
                 if key == "margin_type":
                     value = str(value).upper()
                     if value not in {"ISOLATED", "CROSSED"}:
@@ -1210,7 +1169,6 @@ class PaperBot:
                     "short_structure_min_score",
                     "long_structure_min_score",
                     "market_regime_min_score",
-                    "analyzer_min_confidence_pct",
                     "pre_start_24h_min_pct",
                     "pre_start_24h_max_pct",
                     "pre_start_15m_min_pct",
@@ -1351,7 +1309,6 @@ class PaperBot:
                 signals = self.build_signals(tickers, open_symbols)
             with self.lock:
                 self.state["candidates"] = [signal.__dict__ for signal in signals]
-                self.update_pending_open_signals(signals)
                 self.record_signal_review_scan(signals)
                 self.persist()
             set_scan_stage("open_positions")
@@ -1363,19 +1320,13 @@ class PaperBot:
             if opened:
                 self.sync_exchange_state()
         finally:
-            pending_signals: list[Signal] = []
             with self.lock:
                 self.update_risk_state()
                 self.state["scan_in_progress"] = False
                 self.state["scan_stage"] = "idle"
                 self.state["last_scan_finished_at"] = iso_now()
                 self.state["last_scan_duration_sec"] = round(time.monotonic() - started, 2)
-                if not self.crypto_classification_error:
-                    pending_signals = self.collect_pending_open_signals()
                 self.persist()
-            pending_opened = self.open_from_signals(pending_signals) if pending_signals and not self.crypto_classification_error else 0
-            if pending_opened:
-                self.sync_exchange_state()
 
     def fetch_tickers(self) -> list[dict[str, Any]]:
         timeout = float(self.config.get("request_timeout_sec", 6))
@@ -3007,268 +2958,6 @@ class PaperBot:
             label = "不足"
         return {"score": round(score, 1), "label": label, "reason": " / ".join(reasons[:8])}
 
-    def analyzer_confirmation(self, symbol: str, system_side: str = "", signal_mode: str = "") -> dict[str, Any]:
-        if not self.config.get("analyzer_confirmation_enabled", True):
-            return {"direction": "关闭", "confidence": 0.0, "reason": "分析器确认未启用"}
-        now = time.time()
-        cached = self.analyzer_cache.get(symbol)
-        ttl = max(30, int(self.config.get("analyzer_cache_ttl_sec", 300)))
-        if cached and now - fnum(cached.get("time")) <= ttl:
-            return cached
-        failed_ttl = max(ttl, int(self.config.get("analyzer_failed_cache_ttl_sec", 120)))
-        if cached and now - fnum(cached.get("time")) <= failed_ttl:
-            direction = str(cached.get("direction", "等待"))
-            confidence = fnum(cached.get("confidence"))
-            min_confidence = self.analyzer_min_confidence_for_mode(signal_mode)
-            if direction in {"错误", "观望"} or confidence <= min_confidence:
-                return cached
-            if system_side and self.analyzer_reject_reason(system_side, cached, signal_mode):
-                return cached
-        self.enqueue_analyzer(symbol)
-        return {"direction": "等待", "confidence": 0.0, "reason": "分析器后台分析中"}
-
-    def enqueue_analyzer(self, symbol: str) -> None:
-        if symbol in self.analyzer_inflight:
-            return
-        self.analyzer_inflight.add(symbol)
-        self.analyzer_executor.submit(self.run_analyzer_job, symbol)
-
-    def analyze_symbol_now(self, symbol: str) -> dict[str, Any]:
-        confirmer = load_fast_confirmer()
-        analyzer_config = confirmer.load_config(self.config_path)
-        analyzer_config["request_timeout_sec"] = min(
-            4.0,
-            float(self.config.get("request_timeout_sec", 6)),
-        )
-        analysis = analyzer_config.setdefault("analysis", {})
-        analysis["request_timeout_sec"] = min(
-            4.0,
-            float(self.config.get("request_timeout_sec", 6)),
-        )
-        analysis.setdefault("kline_intervals", ["15m", "1h", "4h"])
-        analysis.setdefault("kline_limit", 180)
-        fast_result = confirmer.analyze_symbol_fast(analyzer_config, symbol)
-        return {
-            "time": time.time(),
-            "source": FAST_CONFIRM_SOURCE,
-            "direction": fast_result["direction"],
-            "confidence": float(fast_result["confidence"]),
-            "reason": fast_result["reason"],
-            "long_score": float(fast_result["long_score"]),
-            "short_score": float(fast_result["short_score"]),
-        }
-
-    def save_analyzer_result(self, symbol: str, result: dict[str, Any]) -> None:
-        self.analyzer_cache[symbol] = result
-        self.state.setdefault("analyzer_cache", {})[symbol] = result
-        for candidate in self.state.get("candidates", []):
-            if candidate.get("symbol") == symbol:
-                candidate["analyzer_direction"] = result.get("direction", "等待")
-                candidate["analyzer_confidence_pct"] = round(fnum(result.get("confidence")), 1)
-                candidate["analyzer_reason"] = result.get("reason", "")
-                updated_reject = self.analyzer_reject_reason(
-                    str(candidate.get("side", "")),
-                    result,
-                    str(candidate.get("signal_mode", "")),
-                )
-                current_reject = str(candidate.get("reject_reason", ""))
-                if current_reject == "等待分析器确认" or current_reject.startswith("分析器"):
-                    candidate["reject_reason"] = updated_reject
-                    candidate["decision_summary"] = self.decision_summary(updated_reject)
-                    self.sync_candidate_decision_steps(candidate)
-        self.try_open_pending_signal(symbol, result)
-        self.persist()
-
-    def run_analyzer_job(self, symbol: str) -> None:
-        try:
-            result = self.analyze_symbol_now(symbol)
-        except Exception as exc:
-            result = {
-                "time": time.time(),
-                "source": FAST_CONFIRM_SOURCE,
-                "direction": "错误",
-                "confidence": 0.0,
-                "reason": str(exc),
-                "long_score": 0.0,
-                "short_score": 0.0,
-            }
-        with self.lock:
-            self.analyzer_inflight.discard(symbol)
-            self.save_analyzer_result(symbol, result)
-
-    @staticmethod
-    def analyzer_side(direction: str) -> str:
-        if direction == "做多":
-            return "LONG"
-        if direction == "做空":
-            return "SHORT"
-        return ""
-
-    def analyzer_min_confidence_for_mode(self, signal_mode: str = "") -> float:
-        return float(self.config.get("analyzer_min_confidence_pct", 90.0))
-
-    def analyzer_reject_reason(self, system_side: str, result: dict[str, Any], signal_mode: str = "") -> str:
-        direction = str(result.get("direction", "等待"))
-        confidence = fnum(result.get("confidence"))
-        reason = str(result.get("reason", ""))
-        analyzer_side = self.analyzer_side(direction)
-        min_confidence = self.analyzer_min_confidence_for_mode(signal_mode)
-        if direction == "等待":
-            return "等待分析器确认"
-        if direction == "错误":
-            return f"分析器确认失败：{reason}"
-        if analyzer_side != system_side:
-            return f"分析器{direction}，与系统{self.side_cn(system_side)}不一致"
-        if confidence <= min_confidence:
-            return f"分析器置信度 {confidence:.1f}% 未超过 {min_confidence:.0f}%"
-        return ""
-
-    def refresh_candidate_analyzer_cache(self) -> None:
-        now = time.time()
-        ttl = max(30, int(self.config.get("analyzer_cache_ttl_sec", 300)))
-        failed_ttl = max(ttl, int(self.config.get("analyzer_failed_cache_ttl_sec", 120)))
-        for candidate in self.state.get("candidates", []):
-            symbol = str(candidate.get("symbol", ""))
-            result = self.analyzer_cache.get(symbol)
-            if not result:
-                continue
-            if result.get("source") != FAST_CONFIRM_SOURCE:
-                continue
-            age = now - fnum(result.get("time"))
-            cached_reject = self.analyzer_reject_reason(
-                str(candidate.get("side", "")),
-                result,
-                str(candidate.get("signal_mode", "")),
-            )
-            valid_ttl = failed_ttl if cached_reject else ttl
-            if age > valid_ttl:
-                continue
-            candidate["analyzer_direction"] = result.get("direction", "等待")
-            candidate["analyzer_confidence_pct"] = round(fnum(result.get("confidence")), 1)
-            candidate["analyzer_reason"] = result.get("reason", "")
-            reject = str(candidate.get("reject_reason", ""))
-            if reject == "等待分析器确认" or reject.startswith("分析器"):
-                candidate["reject_reason"] = cached_reject
-                self.sync_candidate_decision_steps(candidate)
-
-    def update_pending_open_signals(self, signals: list[Signal]) -> None:
-        if not self.config.get("pending_open_queue_enabled", True):
-            self.state["pending_open_signals"] = {}
-            return
-        ttl = max(30, int(self.config.get("pending_open_queue_ttl_sec", 180)))
-        now = time.time()
-        pending = dict(self.state.get("pending_open_signals", {}))
-        for symbol, item in list(pending.items()):
-            if now - fnum(item.get("queued_at")) > ttl:
-                pending.pop(symbol, None)
-        for signal in signals:
-            if signal.reject_reason != "等待分析器确认":
-                continue
-            if signal.price <= 0:
-                continue
-            pending[signal.symbol] = {
-                "queued_at": now,
-                "signal": signal.__dict__,
-            }
-        self.state["pending_open_signals"] = pending
-
-    def signal_from_dict(self, payload: dict[str, Any]) -> Signal:
-        fields = Signal.__dataclass_fields__
-        data = {name: payload.get(name) for name in fields}
-        numeric_defaults = {
-            "score": 0.0,
-            "price": 0.0,
-            "quote_volume": 0.0,
-            "change_24h_pct": 0.0,
-            "change_4h_pct": 0.0,
-            "change_1h_pct": 0.0,
-            "short_move_pct": 0.0,
-            "volume_ratio": 1.0,
-            "open_interest_usdt": 0.0,
-            "open_interest_24h_pct": 0.0,
-            "open_interest_4h_pct": 0.0,
-            "open_interest_1h_pct": 0.0,
-            "funding_rate_pct": 0.0,
-            "long_short_ratio": 1.0,
-            "volume_4h_ratio": 0.0,
-            "taker_long_short_ratio": 1.0,
-            "oi_volume_ratio": 0.0,
-            "market_regime_score": 10.0,
-            "analyzer_confidence_pct": 0.0,
-            "planned_stop_price": 0.0,
-            "planned_take_profit_price": 0.0,
-        }
-        for key, default in numeric_defaults.items():
-            data[key] = fnum(data.get(key), default)
-        for key in fields:
-            if key == "decision_steps":
-                data[key] = list(data.get(key) or [])
-            elif data.get(key) is None:
-                data[key] = ""
-        return Signal(**data)
-
-    def try_open_pending_signal(self, symbol: str, analyzer_result: dict[str, Any]) -> None:
-        if not self.config.get("pending_open_queue_enabled", True):
-            return
-        pending = self.state.setdefault("pending_open_signals", {})
-        item = pending.get(symbol)
-        if not item:
-            return
-        queued_at = fnum(item.get("queued_at"))
-        ttl = max(30, int(self.config.get("pending_open_queue_ttl_sec", 180)))
-        if time.time() - queued_at > ttl:
-            pending.pop(symbol, None)
-            return
-        signal_payload = item.get("signal") if isinstance(item, dict) else None
-        if not isinstance(signal_payload, dict):
-            pending.pop(symbol, None)
-            return
-        signal = self.signal_from_dict(signal_payload)
-        reject = self.analyzer_reject_reason(signal.side, analyzer_result, signal.signal_mode)
-        if reject:
-            if reject != "等待分析器确认":
-                pending.pop(symbol, None)
-            return
-        pending[symbol] = item
-
-    def collect_pending_open_signals(self) -> list[Signal]:
-        if not self.config.get("pending_open_queue_enabled", True):
-            self.state["pending_open_signals"] = {}
-            return []
-        pending = self.state.setdefault("pending_open_signals", {})
-        ready: list[Signal] = []
-        for symbol in list(pending.keys()):
-            result = self.analyzer_cache.get(symbol)
-            if not result:
-                continue
-            item = pending.get(symbol)
-            queued_at = fnum(item.get("queued_at")) if isinstance(item, dict) else 0.0
-            ttl = max(30, int(self.config.get("pending_open_queue_ttl_sec", 180)))
-            if time.time() - queued_at > ttl:
-                pending.pop(symbol, None)
-                continue
-            signal_payload = item.get("signal") if isinstance(item, dict) else None
-            if not isinstance(signal_payload, dict):
-                pending.pop(symbol, None)
-                continue
-            signal = self.signal_from_dict(signal_payload)
-            reject = self.analyzer_reject_reason(signal.side, result, signal.signal_mode)
-            if reject:
-                if reject != "等待分析器确认":
-                    pending.pop(symbol, None)
-                continue
-            signal.reject_reason = ""
-            signal.decision_summary = self.decision_summary("")
-            signal.analyzer_direction = str(result.get("direction", signal.analyzer_direction))
-            signal.analyzer_confidence_pct = round(fnum(result.get("confidence")), 1)
-            signal.analyzer_reason = str(result.get("reason", signal.analyzer_reason))
-            signal.decision_steps.append(
-                f"待开仓队列：分析器结果返回，{signal.analyzer_direction} {signal.analyzer_confidence_pct:.1f}%，尝试补开"
-            )
-            ready.append(signal)
-            pending.pop(symbol, None)
-        return ready
-
     def demo_tickers(self) -> list[dict[str, Any]]:
         symbols = ["BLESSUSDT", "BEATUSDT", "SAHARAUSDT", "VELVETUSDT", "OPNUSDT", "EPICUSDT", "ZKJUSDT"]
         minute = int(time.time() // 60)
@@ -3891,9 +3580,7 @@ class PaperBot:
             analyzer_confidence = 0.0
             analyzer_reason = ""
             market_confirm = {"score": 0.0, "label": "未计算", "reason": ""}
-            should_update_analyzer = not reject or reject == "已有持仓"
-            confirmation_mode = str(self.config.get("confirmation_mode", "market_score"))
-            if should_update_analyzer and not reject and (confirmation_mode == "market_score" or is_pre_start_long):
+            if not reject:
                 if is_pre_start_long:
                     market_confirm = self.pre_start_volume_confirmation_score(metrics["pre_start_volume"])
                 elif is_old_rebound_short:
@@ -3927,20 +3614,6 @@ class PaperBot:
                 analyzer_reason = str(market_confirm.get("reason", ""))
                 if confirm_score < confirm_min:
                     reject = f"{analyzer_direction}分 {confirm_score:.1f} 低于 {confirm_min:.1f}"
-            elif should_update_analyzer and confirmation_mode == "analyzer" and self.config.get("analyzer_confirmation_enabled", True):
-                original_reject = reject
-                try:
-                    analyzer_result = self.analyzer_confirmation(symbol, side, signal_mode)
-                    analyzer_direction = str(analyzer_result.get("direction", "观望"))
-                    analyzer_confidence = fnum(analyzer_result.get("confidence"))
-                    analyzer_reason = str(analyzer_result.get("reason", ""))
-                    if not original_reject:
-                        reject = self.analyzer_reject_reason(side, analyzer_result, signal_mode)
-                except Exception as exc:
-                    analyzer_direction = "错误"
-                    analyzer_reason = str(exc)
-                    if not original_reject:
-                        reject = f"分析器确认失败：{exc}"
             if is_pre_start_long and not reject:
                 if not self.config.get("pre_start_volume_auto_trade_enabled", False):
                     reject = "持续放量观察模式：信号达标，不自动开仓"
@@ -3961,17 +3634,13 @@ class PaperBot:
                 change,
                 volume,
                 reject,
-                analyzer_direction,
-                analyzer_confidence,
-                analyzer_reason,
             )
             decision_steps.insert(-1, f"候选模式：{self.signal_mode_label(signal_mode)}，{mode_reason}")
             decision_steps.insert(-1, f"市场环境：{market_regime.get('label')} {fnum(market_regime.get('score')):.1f}/10，{market_regime.get('reason') or '-'}")
-            if confirmation_mode == "market_score" or is_pre_start_long:
-                decision_steps.insert(
-                    -1,
-                    f"市场确认：{market_confirm.get('label')} {fnum(market_confirm.get('score')):.1f}/10，{market_confirm.get('reason') or '-'}",
-                )
+            decision_steps.insert(
+                -1,
+                f"市场确认：{market_confirm.get('label')} {fnum(market_confirm.get('score')):.1f}/10，{market_confirm.get('reason') or '-'}",
+            )
             signals.append(
                 Signal(
                     symbol=symbol,
@@ -4098,32 +3767,8 @@ class PaperBot:
         else:
             signal.decision_steps[-1] = f"最终结论：{signal.decision_summary}"
 
-    def sync_candidate_decision_steps(self, candidate: dict[str, Any]) -> None:
-        steps = candidate.get("decision_steps")
-        if not isinstance(steps, list):
-            return
-        direction = str(candidate.get("analyzer_direction", "未分析"))
-        confidence = fnum(candidate.get("analyzer_confidence_pct"))
-        reason = str(candidate.get("analyzer_reason", ""))
-        analyzer_step = f"分析器：{direction} {confidence:.1f}%，{reason or '-'}"
-        replaced = False
-        for index, step in enumerate(steps):
-            if str(step).startswith("分析器："):
-                steps[index] = analyzer_step
-                replaced = True
-                break
-        if not replaced:
-            insert_at = max(0, len(steps) - 1)
-            steps.insert(insert_at, analyzer_step)
-        summary = self.decision_summary(str(candidate.get("reject_reason", "")))
-        candidate["decision_summary"] = summary
-        if steps and str(steps[-1]).startswith("最终结论："):
-            steps[-1] = f"最终结论：{summary}"
-        else:
-            steps.append(f"最终结论：{summary}")
-
     def decision_summary(self, reject: str) -> str:
-        return reject or "通过候选筛选，等待开仓前实时确认"
+        return reject or "通过候选筛选，待开仓风控"
 
     def base_decision_steps(
         self,
@@ -4135,9 +3780,6 @@ class PaperBot:
         change: float,
         volume: float,
         reject: str,
-        analyzer_direction: str,
-        analyzer_confidence: float,
-        analyzer_reason: str,
     ) -> list[str]:
         steps = [
             f"候选来源：24h涨跌 {change:+.2f}%，成交额 {volume:.0f} U",
@@ -4150,10 +3792,6 @@ class PaperBot:
         mode_reason = self.direction_mode_reject_reason(side)
         if mode_reason:
             steps.append(f"方向模式：{mode_reason}")
-        if analyzer_direction and analyzer_direction != "未分析":
-            steps.append(f"分析器：{analyzer_direction} {analyzer_confidence:.1f}%，{analyzer_reason or '-'}")
-        else:
-            steps.append("分析器：未进入或等待二次确认")
         steps.append(f"最终结论：{self.decision_summary(reject)}")
         return steps
 
@@ -4394,30 +4032,6 @@ class PaperBot:
                 self.update_signal_decision(signal, reason, f"开仓前复核：{reason}")
                 self.event("risk", f"{signal.symbol} {reason}，跳过")
                 continue
-            if (
-                str(self.config.get("confirmation_mode", "market_score")) == "analyzer"
-                and self.config.get("analyzer_confirmation_enabled", True)
-                and self.config.get("analyzer_realtime_before_open", True)
-            ):
-                try:
-                    realtime_result = self.analyze_symbol_now(signal.symbol)
-                    with self.lock:
-                        self.save_analyzer_result(signal.symbol, realtime_result)
-                    reject = self.analyzer_reject_reason(signal.side, realtime_result, signal.signal_mode)
-                    if reject:
-                        self.update_signal_decision(signal, reject, f"开仓前实时确认：{reject}")
-                        self.event("risk", f"{signal.symbol} 开仓前实时确认未通过：{reject}")
-                        continue
-                    signal.analyzer_direction = str(realtime_result.get("direction", signal.analyzer_direction))
-                    signal.analyzer_confidence_pct = round(fnum(realtime_result.get("confidence")), 1)
-                    signal.analyzer_reason = str(realtime_result.get("reason", signal.analyzer_reason))
-                    signal.decision_steps.append(
-                        f"开仓前实时确认：{signal.analyzer_direction} {signal.analyzer_confidence_pct:.1f}%，通过"
-                    )
-                except Exception as exc:
-                    self.update_signal_decision(signal, f"开仓前实时确认失败：{exc}", f"开仓前实时确认失败：{exc}")
-                    self.event("error", f"{signal.symbol} 开仓前实时确认失败：{exc}")
-                    continue
             try:
                 record = self.exchange_open_position(signal, symbol_info)
             except Exception as exc:
@@ -4495,7 +4109,6 @@ class PaperBot:
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
-            self.refresh_candidate_analyzer_cache()
             self.refresh_trade_counters()
             positions = self.state.get("positions", [])
             unrealized = sum(fnum(pos.get("unrealized_pnl_usdt")) for pos in positions)

@@ -33,9 +33,7 @@ class RemovedFeatureCompatibilityTest(unittest.TestCase):
         bot.update_signal_future_returns = lambda price_map: None
         bot.sync_exchange_state = lambda: None
         bot.build_signals = lambda tickers, open_symbols: []
-        bot.update_pending_open_signals = lambda signals: None
         bot.record_signal_review_scan = lambda signals: None
-        bot.collect_pending_open_signals = lambda: []
         calls = []
         bot.open_from_signals = lambda signals: calls.append(len(signals)) or 0
         bot.scan_once()
@@ -71,6 +69,67 @@ class RemovedFeatureCompatibilityTest(unittest.TestCase):
         bot.exchange_open_position = lambda *args: self.fail("removed pool must not submit an order")
         self.assertEqual(bot.open_from_signals([signal]), 0)
         self.assertIn("已移除", signal.reject_reason)
+
+
+class RemovedAnalyzerCompatibilityTest(unittest.TestCase):
+    def make_bot(self) -> server.PaperBot:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        state_path = root / "state.json"
+        config_path.write_text(
+            '{"confirmation_mode":"analyzer","analyzer_min_confidence_pct":90,'
+            '"analyzer_realtime_before_open":true,"pending_open_queue_enabled":true}',
+            encoding="utf-8",
+        )
+        state_path.write_text(
+            '{"pending_open_signals":{"OLDUSDT":{"queued_at":1,"signal":{}}},'
+            '"analyzer_cache":{"OLDUSDT":{"direction":"做多","confidence":99}},'
+            '"candidates":[{"symbol":"OLDUSDT","analyzer_direction":"做多",'
+            '"analyzer_confidence_pct":95},{"symbol":"NEWUSDT",'
+            '"analyzer_direction":"市场确认","analyzer_confidence_pct":70}]}',
+            encoding="utf-8",
+        )
+        return server.PaperBot(config_path, state_path)
+
+    def test_old_analyzer_settings_and_pending_orders_cannot_survive_upgrade(self):
+        bot = self.make_bot()
+
+        self.assertNotIn("confirmation_mode", bot.config)
+        self.assertNotIn("analyzer_min_confidence_pct", bot.config)
+        self.assertNotIn("analyzer_realtime_before_open", bot.config)
+        self.assertNotIn("pending_open_queue_enabled", bot.config)
+        self.assertNotIn("pending_open_signals", bot.state)
+        self.assertNotIn("analyzer_cache", bot.state)
+        self.assertEqual([row["symbol"] for row in bot.state["candidates"]], ["NEWUSDT"])
+
+    def test_old_analyzer_mode_uses_market_confirmation_instead(self):
+        bot = self.make_bot()
+        bot.config["market_regime_filter_enabled"] = False
+        bot.config["short_structure_confirmation_enabled"] = False
+        bot.kline_short_metrics = lambda symbol, price, change: {
+            "short_move": -2.0, "change_1h": -2.0, "change_4h": -4.0,
+            "volume_ratio": 2.0, "trend": "down", "price": price, "enriched": True,
+        }
+        bot.fetch_signal_market_stats = lambda symbol, item: {
+            "open_interest_usdt": 1000000.0, "open_interest_24h_pct": -5.0,
+            "open_interest_4h_pct": -4.0, "open_interest_1h_pct": 3.0,
+            "funding_rate_pct": 0.0, "long_short_ratio": 1.6,
+            "volume_4h_ratio": 2.0, "taker_long_short_ratio": 0.8,
+            "oi_volume_ratio": 0.1,
+        }
+        bot.market_confirmation_score = lambda *args: {"score": 2.0, "label": "不足", "reason": "量价不足"}
+        bot.analyzer_confirmation = lambda *args: self.fail("旧分析器不能影响新信号")
+
+        signals = bot.build_signals(
+            [{"symbol": "DROPUSDT", "lastPrice": "91", "priceChangePercent": "-12", "quoteVolume": "50000000"}],
+            set(),
+        )
+
+        self.assertEqual(len(signals), 1)
+        self.assertIn("市场确认分", signals[0].reject_reason)
+        self.assertEqual(signals[0].analyzer_confidence_pct, 20.0)
 
 
 class HedgeModeCloseOrderTest(unittest.TestCase):
@@ -262,7 +321,6 @@ class PreStartProtectionRoiTest(unittest.TestCase):
                     self.assertEqual(calls[1][1]["workingType"], "MARK_PRICE")
                     self.assertEqual(calls[2][1]["workingType"], "CONTRACT_PRICE")
                     reloaded = server.PaperBot(bot.config_path, bot.state_path)
-                    self.addCleanup(reloaded.analyzer_executor.shutdown, wait=False)
                     self.assertEqual(reloaded.config["take_profit_trigger_price_type"], "CONTRACT_PRICE")
                     self.assertEqual(reloaded.config["stop_loss_trigger_price_type"], "MARK_PRICE")
 
@@ -930,7 +988,6 @@ class KlineShortMetricsTest(unittest.TestCase):
         bot.update_signal_future_returns = lambda price_map: None
         bot.sync_exchange_state = lambda: None
         bot.build_signals = lambda tickers, open_symbols: []
-        bot.update_pending_open_signals = lambda signals: None
         bot.record_signal_review_scan = lambda signals: None
         bot.open_from_signals = lambda signals: 0
         bot.update_risk_state = lambda: None

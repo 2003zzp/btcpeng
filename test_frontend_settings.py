@@ -22,6 +22,15 @@ class InputNameParser(HTMLParser):
 
 
 class FrontendSettingsTest(unittest.TestCase):
+    def test_analyzer_confidence_controls_are_not_exposed(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+        parser.feed(html)
+
+        self.assertNotIn("confirmation_mode", parser.select_names)
+        self.assertNotIn("analyzer_min_confidence_pct", parser.input_names)
+        self.assertNotIn("analyzer_realtime_before_open", parser.input_names)
+
     def test_pre_start_has_independent_initial_profit_and_loss_roi_controls(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         parser = InputNameParser()

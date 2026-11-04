@@ -126,7 +126,6 @@ function normalizeSettingsLabels() {
   }
   const toggles = {
     old_rebound_short_enabled: "启用老币反弹做空池",
-    analyzer_realtime_before_open: "启用分析器二次确认",
     take_profit_cooldown_enabled: "启用止盈冷静期",
     market_regime_filter_enabled: "启用市场环境过滤",
     long_structure_confirmation_enabled: "启用做多结构确认",
@@ -152,12 +151,6 @@ function normalizeSettingsLabels() {
     }
     text.textContent = textValue;
   }
-  const realtimeLabel = els.form?.elements?.analyzer_realtime_before_open?.closest("label");
-  if (realtimeLabel) {
-    realtimeLabel.title = "开启后，候选通过后下单前会再次实时跑分析器；关闭后，只使用候选阶段已经通过的分析器结果，开仓更快。";
-  }
-
-
   const preStartLongLabel = els.form?.elements?.pre_start_long_enabled?.closest("label");
   if (preStartLongLabel) {
     preStartLongLabel.title = "只开启候选观察。以最近4根已收盘15m成交额持续放大、价格推进和主动买入为信号。";
@@ -191,10 +184,6 @@ function normalizeSettingsLabels() {
     if (label) label.title = "所有策略池共用，只影响以后新开的保护单。标记价和最新价是触发依据；触发后按市价平仓，实际成交价可能不同。";
   }
 
-  const confirmationModeLabel = els.form?.elements?.confirmation_mode?.closest("label");
-  if (confirmationModeLabel) {
-    confirmationModeLabel.title = "市场确认分使用趋势、动量、量能、OI、资金费率、多空比和主动成交替代黑盒置信度；分析器置信度则切回原来的脚本确认。";
-  }
   const systemScoreLabel = els.form?.elements?.signal_score_threshold?.closest("label");
   if (systemScoreLabel) {
     systemScoreLabel.title = "强波动池系统分最低门槛，默认4.0。调高会减少候选继续进入真实K线、结构分和市场确认分；调低会更激进。";
@@ -563,7 +552,7 @@ function chartRows(rows) {
     fullSymbol: row.symbol || "",
     side: row.side || "",
     score: Number(row.score || 0),
-    confidence: Number(row.analyzer_confidence_pct || 0),
+    confirmScore: Number(row.analyzer_confidence_pct || 0) / 10,
     price: Number(row.change_24h_pct || 0),
     price4h: Number(row.change_4h_pct || 0),
     price1h: Number(row.change_1h_pct || 0),
@@ -636,7 +625,7 @@ function drawMomentumChart(rows) {
       h: chartH,
       html: tooltipRows(d.fullSymbol || d.symbol, [
         ["方向/总分", `${d.side || "-"} / ${d.score.toFixed(1)}`],
-        ["分析置信度", `${d.confidence.toFixed(1)}%`, d.confidence > 90 ? "positive" : "negative"],
+        ["市场确认分", `${d.confirmScore.toFixed(1)}/10`],
         ["24h涨跌", signedPct(d.price), signedClass(d.price)],
         ["4h / 1h", `${signedPct(d.price4h)} / ${signedPct(d.price1h)}`],
         ["OI规模", compactUsd(d.oiValue)],
@@ -805,26 +794,19 @@ function renderCharts(rows) {
   drawRiskChart(rows);
 }
 
-function candidateNextAction(row, confidenceThreshold) {
+function candidateNextAction(row) {
   const reject = String(row.reject_reason || "");
   const summary = String(row.decision_summary || "");
   const decisionText = `${reject} ${summary}`;
-  const confidence = Number(row.analyzer_confidence_pct || 0);
-  const analyzerDirection = row.analyzer_direction || "";
 
   if (summary.includes("已提交") || reject.includes("已提交")) return "已提交";
-  if (analyzerDirection === "市场确认" && !reject) return "风控下单";
-  if (reject.includes("等待分析器")) return "等待分析器";
+  if (!reject || reject === "待开仓") return "风控下单";
   if (reject.includes("已有持仓")) return "已有持仓";
   if (reject.includes("禁止开仓")) return "禁开跳过";
   if (reject.includes("冷静期")) return "冷静期";
   if (decisionText.includes("今日") || decisionText.includes("敞口") || decisionText.includes("持仓上限")) return "风控拦截";
   if (decisionText.includes("结构破坏")) return "结构过滤";
-  if (reject.includes("市场确认分")) return "市场确认不足";
-  if (reject.includes("方向") || reject.includes("观望") || reject.includes("置信度") || reject.includes("分析器")) return "分析器拒绝";
-  if (!reject && analyzerDirection && confidence > confidenceThreshold) return "风控下单";
-  if (reject === "待开仓" && analyzerDirection && confidence > confidenceThreshold) return "风控下单";
-  if (!analyzerDirection || confidence <= 0) return "等待分析器";
+  if (reject.includes("确认分")) return "市场确认不足";
   return "继续观察";
 }
 
@@ -879,22 +861,13 @@ function candidateConfirmThreshold(row) {
   return Number(config.market_confirm_min_score || 7);
 }
 
-function candidateConfirmDisplay(row, confidenceThreshold) {
-  const config = currentState?.config || {};
-  const confirmationMode = String(config.confirmation_mode || "market_score");
+function candidateConfirmDisplay(row) {
   const value = Number(row.analyzer_confidence_pct || 0);
-  if (confirmationMode === "market_score") {
-    const threshold = candidateConfirmThreshold(row);
-    return {
-      text: `${(value / 10).toFixed(1)}/10`,
-      passed: value >= threshold * 10,
-      title: `确认分阈值 ${threshold.toFixed(1)}/10`,
-    };
-  }
+  const threshold = candidateConfirmThreshold(row);
   return {
-    text: `${value.toFixed(1)}%`,
-    passed: value > confidenceThreshold,
-    title: `分析器阈值 ${confidenceThreshold.toFixed(1)}%`,
+    text: `${(value / 10).toFixed(1)}/10`,
+    passed: value >= threshold * 10,
+    title: `确认分阈值 ${threshold.toFixed(1)}/10`,
   };
 }
 
@@ -928,11 +901,10 @@ function renderCandidates(rows) {
       const decisionText = row.decision_summary || reject;
       const riskCls = row.risk_level === "危险" ? "risk-high" : row.risk_level === "注意" ? "risk-watch" : "risk-ok";
       const modeBadge = candidateModeBadge(row);
-      const confidenceThreshold = Number(currentState?.config?.analyzer_min_confidence_pct || 90);
       const regimeScore = Number(row.market_regime_score || 0);
       const regimeText = row.market_regime_label ? `${row.market_regime_label} ${regimeScore.toFixed(1)}` : "-";
-      const nextAction = candidateNextAction(row, confidenceThreshold);
-      const confirmDisplay = candidateConfirmDisplay(row, confidenceThreshold);
+      const nextAction = candidateNextAction(row);
+      const confirmDisplay = candidateConfirmDisplay(row);
       const primaryScore = candidatePrimaryScore(row);
       return `
         <tr>
@@ -998,7 +970,11 @@ function renderHistory(rows) {
 function strategyReasonDisplay(row) {
   const strategyParts = [];
   if (Number(row.strategy_score || row.score || 0) > 0) strategyParts.push(`分 ${Number(row.strategy_score || row.score || 0).toFixed(1)}`);
-  if (row.analyzer_direction) strategyParts.push(`${row.analyzer_direction} ${Number(row.analyzer_confidence_pct || 0).toFixed(1)}%`);
+  if (["市场确认", "持续放量确认", "老币反弹确认"].includes(row.analyzer_direction)) {
+    strategyParts.push(`${row.analyzer_direction} ${(Number(row.analyzer_confidence_pct || 0) / 10).toFixed(1)}/10`);
+  } else if (["做多", "做空", "观望"].includes(row.analyzer_direction)) {
+    strategyParts.push(`历史确认：${row.analyzer_direction}`);
+  }
   if (row.decision_summary) strategyParts.push(row.decision_summary);
   const text = strategyParts.join(" / ") || row.trigger_reason || "-";
   const title = Array.isArray(row.decision_steps) && row.decision_steps.length ? row.decision_steps.join("\n") : text;
