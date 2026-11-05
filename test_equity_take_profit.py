@@ -703,14 +703,14 @@ class LongStructureConfirmationTest(unittest.TestCase):
         bot.update_settings(
             {
                 "pre_start_long_enabled": "true",
-                "pre_start_max_candidates": 6,
+                "shared_pool_max_candidates": 6,
                 "pre_start_24h_min_pct": 2.0,
                 "pre_start_market_confirm_min_score": 6.8,
             }
         )
 
         self.assertTrue(bot.config["pre_start_long_enabled"])
-        self.assertEqual(bot.config["pre_start_max_candidates"], 6)
+        self.assertEqual(bot.config["shared_pool_max_candidates"], 6)
         self.assertEqual(bot.config["pre_start_24h_min_pct"], 2.0)
         self.assertEqual(bot.config["pre_start_market_confirm_min_score"], 6.8)
 
@@ -720,15 +720,15 @@ class LongStructureConfirmationTest(unittest.TestCase):
         bot.update_settings(
             {
                 "old_rebound_short_enabled": "true",
-                "old_rebound_short_max_candidates": 5,
-                "old_rebound_short_24h_min_pct": 8.0,
+                "shared_pool_max_candidates": 5,
+                "shared_pool_24h_min_pct": 8.0,
                 "old_rebound_short_confirm_min_score": 6.9,
             }
         )
 
         self.assertTrue(bot.config["old_rebound_short_enabled"])
-        self.assertEqual(bot.config["old_rebound_short_max_candidates"], 5)
-        self.assertEqual(bot.config["old_rebound_short_24h_min_pct"], 8.0)
+        self.assertEqual(bot.config["shared_pool_max_candidates"], 5)
+        self.assertEqual(bot.config["shared_pool_24h_min_pct"], 8.0)
         self.assertEqual(bot.config["old_rebound_short_confirm_min_score"], 6.9)
 
 
@@ -1236,7 +1236,7 @@ class KlineShortMetricsTest(unittest.TestCase):
     def test_pre_start_long_candidates_are_added_when_enabled(self):
         bot = self.make_bot()
         bot.config["pre_start_long_enabled"] = True
-        bot.config["pre_start_max_candidates"] = 8
+        bot.config["shared_pool_max_candidates"] = 8
 
         candidates = bot.build_candidate_pool(
             [
@@ -1261,7 +1261,7 @@ class KlineShortMetricsTest(unittest.TestCase):
     def test_old_rebound_short_candidates_are_added_when_enabled(self):
         bot = self.make_bot()
         bot.config["old_rebound_short_enabled"] = True
-        bot.config["old_rebound_short_max_candidates"] = 4
+        bot.config["shared_pool_max_candidates"] = 4
 
         candidates = bot.build_candidate_pool(
             [
@@ -1767,6 +1767,94 @@ class PreStartVolumeStrategyTest(unittest.TestCase):
         (root / "config.json").write_text("{}", encoding="utf-8")
         return server.PaperBot(root / "config.json", root / "state.json")
 
+    def test_shared_pool_has_one_candidate_and_no_volume_ceiling(self):
+        bot = self.make_bot()
+        bot.config.update({"old_rebound_short_enabled": True, "pre_start_long_enabled": True,
+                           "shared_pool_max_candidates": 1, "shared_pool_24h_min_pct": 1,
+                           "shared_pool_24h_max_pct": 100, "shared_pool_min_quote_volume_usdt": 5_000_000,
+                           "shared_pool_priority": "old_rebound_short"})
+        rows = bot.build_candidate_pool([
+            {"symbol": "OLDUSDT", "lastPrice": "10", "priceChangePercent": "20", "quoteVolume": "200000000"},
+        ])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["signal_modes"], ["old_rebound_short", "pre_start_long"])
+
+    def test_shared_pool_checks_second_strategy_only_after_first_rejects(self):
+        bot = self.make_bot()
+        bot.config.update({"old_rebound_short_enabled": True, "pre_start_long_enabled": True,
+                           "pre_start_volume_auto_trade_enabled": True,
+                           "shared_pool_priority": "old_rebound_short", "market_regime_filter_enabled": False,
+                           "short_structure_confirmation_enabled": False})
+        bot.market_regime_score = lambda *_: {"score": 10.0, "label": "顺风", "reason": "test"}
+        calls = []
+
+        def metrics(symbol, price, change, old_rebound=False, pre_start=False):
+            calls.append("short" if old_rebound else "long")
+            return {"price": price, "short_move": -0.5, "change_1h": -0.5,
+                    "change_4h": -1, "volume_ratio": 1.5, "volume_1h_ratio": 1,
+                    "trend": "neutral", "pre_start_volume": {"valid": True}}
+
+        bot.kline_short_metrics = metrics
+        bot.fetch_signal_market_stats = lambda *_: {
+            "open_interest_usdt": 1_000_000, "open_interest_24h_pct": 1,
+            "open_interest_4h_pct": 1, "open_interest_1h_pct": 1,
+            "funding_rate_pct": 0, "long_short_ratio": 1.5,
+            "volume_4h_ratio": 1, "taker_long_short_ratio": .9,
+            "oi_volume_ratio": .1, "funding_rate_available": True,
+            "open_interest_1h_available": True,
+        }
+        bot.old_rebound_short_market_stats_reject_reason = lambda *_: ""
+        bot.pre_start_market_stats_reject_reason = lambda *_: ""
+        bot.pre_start_volume_reject_reason = lambda *_: ""
+        bot.old_rebound_short_confirmation_score = lambda *_: {"score": 8, "label": "通过", "reason": "test"}
+        bot.pre_start_volume_confirmation_score = lambda *_: {"score": 8, "label": "通过", "reason": "test"}
+        ticker = {"symbol": "OLDUSDT", "lastPrice": "10", "highPrice": "12", "lowPrice": "8",
+                  "priceChangePercent": "20", "quoteVolume": "200000000"}
+
+        bot.old_rebound_short_kline_reject_reason = lambda *_args, **_kwargs: ""
+        signals = bot.build_signals([ticker], set())
+        self.assertEqual(len(signals), 1)
+        signal = signals[0]
+        self.assertEqual((signal.signal_mode, signal.reject_reason, calls), ("old_rebound_short", "", ["short"]))
+
+        calls.clear()
+        bot.old_rebound_short_kline_reject_reason = lambda *_args, **_kwargs: "15m未破位"
+        signal = bot.build_signals([ticker], set())[0]
+        self.assertEqual((signal.signal_mode, signal.reject_reason, calls), ("pre_start_long", "", ["short", "long"]))
+
+        calls.clear()
+        bot.config["shared_pool_priority"] = "pre_start_long"
+        signal = bot.build_signals([ticker], set())[0]
+        self.assertEqual((signal.signal_mode, signal.reject_reason, calls), ("pre_start_long", "", ["long"]))
+
+        calls.clear()
+        bot.config["shared_pool_priority"] = "old_rebound_short"
+        bot.pre_start_volume_reject_reason = lambda *_: "15m未持续放量"
+        signal = bot.build_signals([ticker], set())[0]
+        self.assertEqual(calls, ["short", "long"])
+        self.assertIn("15m未破位", signal.reject_reason)
+        self.assertIn("15m未持续放量", signal.reject_reason)
+
+    def test_shared_pool_settings_replace_legacy_candidate_keys(self):
+        bot = self.make_bot()
+        bot.update_settings({
+            "shared_pool_max_candidates": 12,
+            "shared_pool_24h_min_pct": -2,
+            "shared_pool_24h_max_pct": 100,
+            "shared_pool_min_quote_volume_usdt": 8_000_000,
+            "shared_pool_priority": "pre_start_long",
+            "old_rebound_short_max_quote_volume_usdt": 90_000_000,
+        })
+        self.assertEqual(bot.config["shared_pool_priority"], "pre_start_long")
+        self.assertEqual(bot.config["shared_pool_max_candidates"], 12)
+        self.assertEqual(bot.config["shared_pool_24h_min_pct"], -2)
+        self.assertEqual(bot.config["shared_pool_min_quote_volume_usdt"], 8_000_000)
+        self.assertNotIn("old_rebound_short_max_quote_volume_usdt", bot.config)
+
+        with self.assertRaisesRegex(ValueError, "下限不能高于上限"):
+            bot.update_settings({"shared_pool_24h_min_pct": 110})
+        self.assertEqual(bot.config["shared_pool_24h_min_pct"], -2)
+
     @staticmethod
     def candle(close: float, volume: float, buy_share: float = .56, close_time: int = 0) -> list[object]:
         return [0, str(close * .998), str(close * 1.005), str(close * .995), str(close), "0",
@@ -1858,7 +1946,7 @@ class PreStartVolumeStrategyTest(unittest.TestCase):
         bot = self.make_bot()
         bot.config["pre_start_long_enabled"] = True
         bot.config["pre_start_volume_auto_trade_enabled"] = True
-        bot.config["pre_start_max_candidates"] = 1
+        bot.config["shared_pool_max_candidates"] = 1
         tickers = [
             {"symbol": "FRESHUSDT", "lastPrice": "1", "priceChangePercent": "8", "quoteVolume": "10000000"},
             {"symbol": "BUSYUSDT", "lastPrice": "1", "priceChangePercent": "8", "quoteVolume": "200000000"},
@@ -1937,14 +2025,14 @@ class PreStartVolumeStrategyTest(unittest.TestCase):
         bot = self.make_bot()
         bot.update_settings({
             "pre_start_volume_auto_trade_enabled": "true",
-            "pre_start_volume_24h_min_pct": -8,
-            "pre_start_volume_24h_min_usdt": 8_000_000,
+            "shared_pool_24h_min_pct": -8,
+            "shared_pool_min_quote_volume_usdt": 8_000_000,
             "pre_start_volume_15m_min_usdt": 350_000,
             "pre_start_volume_relative_min": 1.4,
             "pre_start_volume_growth_min": 1.15,
             "pre_start_volume_taker_min": 1.1,
         })
-        self.assertEqual(bot.config["pre_start_volume_24h_min_pct"], -8)
+        self.assertEqual(bot.config["shared_pool_24h_min_pct"], -8)
         self.assertTrue(bot.config["pre_start_volume_auto_trade_enabled"])
         self.assertEqual(bot.config["pre_start_volume_15m_min_usdt"], 350_000)
 

@@ -85,12 +85,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "market_regime_filter_enabled": True,
     "market_regime_min_score": 4.5,
     "max_candidates_per_scan": 18,
+    "shared_pool_max_candidates": 8,
+    "shared_pool_24h_min_pct": 1.0,
+    "shared_pool_24h_max_pct": 100.0,
+    "shared_pool_min_quote_volume_usdt": 5_000_000.0,
+    "shared_pool_priority": "old_rebound_short",
     "pre_start_long_enabled": False,
-    "pre_start_max_candidates": 8,
     "pre_start_volume_auto_trade_enabled": False,
-    "pre_start_volume_24h_min_pct": -5.0,
-    "pre_start_volume_24h_max_pct": 20.0,
-    "pre_start_volume_24h_min_usdt": 5_000_000.0,
     "pre_start_volume_15m_min_usdt": 250_000.0,
     "pre_start_volume_relative_min": 1.25,
     "pre_start_volume_growth_min": 1.1,
@@ -113,11 +114,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pre_start_take_profit_roi_pct": None,
     "pre_start_stop_loss_roi_pct": None,
     "old_rebound_short_enabled": False,
-    "old_rebound_short_max_candidates": 8,
-    "old_rebound_short_24h_min_pct": 8.0,
-    "old_rebound_short_24h_max_pct": 35.0,
-    "old_rebound_short_min_quote_volume_usdt": 5_000_000,
-    "old_rebound_short_max_quote_volume_usdt": 80_000_000,
     "old_rebound_short_min_history_days": 365,
     "old_rebound_short_15m_max_pct": 0.3,
     "old_rebound_short_1h_max_pct": 0.5,
@@ -527,6 +523,11 @@ class PaperBot:
                 "analyzer_cache_ttl_sec", "analyzer_failed_cache_ttl_sec",
                 "analyzer_realtime_before_open", "analyzer_max_workers",
                 "pending_open_queue_enabled", "pending_open_queue_ttl_sec",
+                "pre_start_max_candidates", "pre_start_volume_24h_min_pct",
+                "pre_start_volume_24h_max_pct", "pre_start_volume_24h_min_usdt",
+                "old_rebound_short_max_candidates", "old_rebound_short_24h_min_pct",
+                "old_rebound_short_24h_max_pct", "old_rebound_short_min_quote_volume_usdt",
+                "old_rebound_short_max_quote_volume_usdt",
             }:
                 config.pop(key)
         if config.get("pre_start_take_profit_roi_pct") is None:
@@ -1062,12 +1063,13 @@ class PaperBot:
             "scan_interval_sec": int,
             "max_scan_runtime_sec": int,
             "max_candidates_per_scan": int,
+            "shared_pool_max_candidates": int,
+            "shared_pool_24h_min_pct": float,
+            "shared_pool_24h_max_pct": float,
+            "shared_pool_min_quote_volume_usdt": float,
+            "shared_pool_priority": str,
             "pre_start_long_enabled": str,
-            "pre_start_max_candidates": int,
             "pre_start_volume_auto_trade_enabled": str,
-            "pre_start_volume_24h_min_pct": float,
-            "pre_start_volume_24h_max_pct": float,
-            "pre_start_volume_24h_min_usdt": float,
             "pre_start_volume_15m_min_usdt": float,
             "pre_start_volume_relative_min": float,
             "pre_start_volume_growth_min": float,
@@ -1090,11 +1092,6 @@ class PaperBot:
             "pre_start_take_profit_roi_pct": float,
             "pre_start_stop_loss_roi_pct": float,
             "old_rebound_short_enabled": str,
-            "old_rebound_short_max_candidates": int,
-            "old_rebound_short_24h_min_pct": float,
-            "old_rebound_short_24h_max_pct": float,
-            "old_rebound_short_min_quote_volume_usdt": float,
-            "old_rebound_short_max_quote_volume_usdt": float,
             "old_rebound_short_min_history_days": int,
             "old_rebound_short_15m_max_pct": float,
             "old_rebound_short_1h_max_pct": float,
@@ -1134,6 +1131,10 @@ class PaperBot:
             "square_publish_on_open": str,
         }
         with self.lock:
+            shared_min = float(patch.get("shared_pool_24h_min_pct", self.config["shared_pool_24h_min_pct"]))
+            shared_max = float(patch.get("shared_pool_24h_max_pct", self.config["shared_pool_24h_max_pct"]))
+            if shared_min > shared_max:
+                raise ValueError("双策略24h涨幅下限不能高于上限")
             previous_mode = self.exchange_mode()
             for key, caster in allowed.items():
                 if key not in patch:
@@ -1147,6 +1148,8 @@ class PaperBot:
                     value = str(value)
                     if value not in {"both", "long_only", "short_only"}:
                         value = "both"
+                if key == "shared_pool_priority" and value not in {"old_rebound_short", "pre_start_long"}:
+                    value = "old_rebound_short"
                 if key == "margin_type":
                     value = str(value).upper()
                     if value not in {"ISOLATED", "CROSSED"}:
@@ -1157,7 +1160,7 @@ class PaperBot:
                         value = "MARK_PRICE"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "pre_start_max_candidates", "old_rebound_short_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan"}:
+                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "shared_pool_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan"}:
                     value = max(1, int(value))
                 if key in {
                     "margin_per_trade_usdt",
@@ -1172,8 +1175,8 @@ class PaperBot:
                     "market_confirm_min_score",
                     "short_market_confirm_min_score",
                     "pre_start_market_confirm_min_score",
-                    "pre_start_volume_24h_max_pct",
-                    "pre_start_volume_24h_min_usdt",
+                    "shared_pool_24h_max_pct",
+                    "shared_pool_min_quote_volume_usdt",
                     "pre_start_volume_15m_min_usdt",
                     "pre_start_volume_relative_min",
                     "pre_start_volume_growth_min",
@@ -1193,10 +1196,6 @@ class PaperBot:
                     "pre_start_taker_ratio_min",
                     "pre_start_funding_abs_max_pct",
                     "pre_start_long_short_max",
-                    "old_rebound_short_24h_min_pct",
-                    "old_rebound_short_24h_max_pct",
-                    "old_rebound_short_min_quote_volume_usdt",
-                    "old_rebound_short_max_quote_volume_usdt",
                     "old_rebound_short_15m_max_pct",
                     "old_rebound_short_1h_max_pct",
                     "old_rebound_short_volume_ratio_min",
@@ -1210,7 +1209,7 @@ class PaperBot:
                     value = max(0.01, float(value))
                 if key == "pre_start_oi_1h_min_pct":
                     value = float(value)
-                if key == "pre_start_volume_24h_min_pct":
+                if key == "shared_pool_24h_min_pct":
                     value = float(value)
                 if key == "old_rebound_short_oi_1h_min_pct":
                     value = float(value)
@@ -2914,8 +2913,8 @@ class PaperBot:
         score = 0.0
         reasons: list[str] = []
         live_metrics = live_metrics or {}
-        min_24h = float(self.config.get("old_rebound_short_24h_min_pct", 8.0))
-        max_24h = float(self.config.get("old_rebound_short_24h_max_pct", 35.0))
+        min_24h = float(self.config.get("shared_pool_24h_min_pct", 1.0))
+        max_24h = float(self.config.get("shared_pool_24h_max_pct", 100.0))
         max_15m = float(self.config.get("old_rebound_short_15m_max_pct", 0.3))
         max_1h = float(self.config.get("old_rebound_short_1h_max_pct", 0.5))
         min_volume = float(self.config.get("old_rebound_short_volume_ratio_min", 0.8))
@@ -3355,8 +3354,7 @@ class PaperBot:
         strong_long_enabled = bool(self.config.get("strong_long_enabled", True))
         strong_short_enabled = bool(self.config.get("strong_short_enabled", True))
         max_candidates = int(self.config.get("max_candidates_per_scan", 18))
-        pre_start_limit = int(self.config.get("pre_start_max_candidates", 8))
-        old_rebound_limit = int(self.config.get("old_rebound_short_max_candidates", 8))
+        shared_limit = int(self.config.get("shared_pool_max_candidates", 8))
         direction_mode = str(self.config.get("trade_direction_mode", "both"))
 
         def change_allowed(change: float) -> bool:
@@ -3378,57 +3376,40 @@ class PaperBot:
             symbol = str(item.get("symbol", "")).upper()
             return bool(symbol and self.stop_loss_cooldown_reason(symbol))
 
-        # 同一币只进一个池；优先级为老币反弹、持续放量、强波动。
+        # 两个方向策略共用候选名单；每个币只占一个候选名额。
         pool: dict[str, dict[str, Any]] = {}
-        if self.config.get("old_rebound_short_enabled", False) and direction_mode != "long_only" and old_rebound_limit > 0:
-            old_min_change = float(self.config.get("old_rebound_short_24h_min_pct", 8.0))
-            old_max_change = float(self.config.get("old_rebound_short_24h_max_pct", 35.0))
-            old_min_volume = float(self.config.get("old_rebound_short_min_quote_volume_usdt", 5_000_000))
-            old_max_volume = float(self.config.get("old_rebound_short_max_quote_volume_usdt", 80_000_000))
-            old_rebound = []
-            for item in tickers:
-                if is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item):
-                    continue
-                change = fnum(item.get("priceChangePercent"))
-                volume = fnum(item.get("quoteVolume"))
-                if old_min_change <= change <= old_max_change and old_min_volume <= volume <= old_max_volume:
-                    old_rebound.append(item)
-            old_rebound.sort(
-                key=lambda x: (
-                    -fnum(x.get("priceChangePercent")),
-                    fnum(x.get("quoteVolume")),
+        modes = []
+        if self.config.get("old_rebound_short_enabled", False) and direction_mode != "long_only":
+            modes.append("old_rebound_short")
+        if self.config.get("pre_start_long_enabled", False) and direction_mode != "short_only":
+            modes.append("pre_start_long")
+        if modes and shared_limit > 0:
+            priority = str(self.config.get("shared_pool_priority", "old_rebound_short"))
+            modes.sort(key=lambda mode: mode != priority)
+            min_change = float(self.config.get("shared_pool_24h_min_pct", 1.0))
+            max_change = float(self.config.get("shared_pool_24h_max_pct", 100.0))
+            min_shared_volume = float(self.config.get("shared_pool_min_quote_volume_usdt", 5_000_000))
+            shared = [
+                item for item in tickers
+                if not (is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item))
+                and min_change <= fnum(item.get("priceChangePercent")) <= max_change
+                and fnum(item.get("quoteVolume")) >= min_shared_volume
+                and not (
+                    modes == ["pre_start_long"]
+                    and not self.config.get("pre_start_volume_auto_trade_enabled", False)
+                    and (str(item.get("symbol", "")) in watchlist or (
+                        fnum(item.get("quoteVolume")) >= min_volume
+                        and change_allowed(fnum(item.get("priceChangePercent")))
+                    ))
                 )
-            )
-            for item in old_rebound[:old_rebound_limit]:
-                symbol = str(item.get("symbol", ""))
-                if symbol in pool:
-                    continue
-                pool[symbol] = {"item": item, "signal_mode": "old_rebound_short", "mode_reason": "老币反弹衰竭做空池"}
-
-        if self.config.get("pre_start_long_enabled", False) and direction_mode != "short_only" and pre_start_limit > 0:
-            min_24h = float(self.config.get("pre_start_volume_24h_min_pct", -5.0))
-            max_24h = float(self.config.get("pre_start_volume_24h_max_pct", 20.0))
-            min_volume_24h = float(self.config.get("pre_start_volume_24h_min_usdt", 5_000_000))
-            pre_start = []
-            for item in tickers:
-                symbol = str(item.get("symbol", ""))
-                if symbol in pool or is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item):
-                    continue
-                change = fnum(item.get("priceChangePercent"))
-                volume = fnum(item.get("quoteVolume"))
-                if not self.config.get("pre_start_volume_auto_trade_enabled", False) and (
-                    symbol in watchlist or (volume >= min_volume and change_allowed(change))
-                ):
-                    continue
-                if volume >= min_volume_24h and min_24h <= change <= max_24h:
-                    pre_start.append(item)
-            pre_start.sort(key=lambda row: (fnum(row.get("quoteVolume")), str(row.get("symbol", ""))))
-            if pre_start:
-                start = int(self.state.get("scan_count", 0)) * pre_start_limit % len(pre_start)
-                rotated = pre_start[start:] + pre_start[:start]
-                for item in rotated[:pre_start_limit]:
+            ]
+            shared.sort(key=lambda row: (fnum(row.get("quoteVolume")), str(row.get("symbol", ""))))
+            if shared:
+                start = int(self.state.get("scan_count", 0)) * shared_limit % len(shared)
+                for item in (shared[start:] + shared[:start])[:shared_limit]:
                     pool[str(item.get("symbol", ""))] = {
-                        "item": item, "signal_mode": "pre_start_long", "mode_reason": "持续放量启动做多观察池"
+                        "item": item, "signal_mode": modes[0], "signal_modes": list(modes),
+                        "mode_reason": "老币反弹衰竭做空池" if modes[0] == "old_rebound_short" else "持续放量启动做多观察池",
                     }
 
         strong = []
@@ -3457,25 +3438,59 @@ class PaperBot:
                 -abs(fnum(row["item"].get("priceChangePercent"))),
             )
         )
-        extra_limit = 0
-        if self.config.get("pre_start_long_enabled", False):
-            extra_limit += pre_start_limit
-        if self.config.get("old_rebound_short_enabled", False):
-            extra_limit += old_rebound_limit
-        return candidates[: max_candidates + extra_limit]
+        return candidates[: max_candidates + (shared_limit if modes else 0)]
 
-    def build_signals(self, tickers: list[dict[str, Any]], open_symbols: set[str]) -> list[Signal]:
-        """先粗算系统分；强波动池达标且有额度才补 K 线，另两池独立验 K 线，再逐关确认。"""
+    def build_signals(
+        self,
+        tickers: list[dict[str, Any]],
+        open_symbols: set[str],
+        _candidate_override: dict[str, Any] | None = None,
+        _market_regimes: tuple[dict[str, Any], dict[str, Any]] | None = None,
+    ) -> list[Signal]:
+        """共享候选按优先级逐策略验证；强波动池仍先粗分后补 K 线。"""
         signals: list[Signal] = []
-        crypto_tickers = [item for item in tickers if item.get("_crypto_candidate_allowed") is not False]
-        long_regime = self.market_regime_score("LONG", crypto_tickers)
-        short_regime = self.market_regime_score("SHORT", crypto_tickers)
-        candidates = self.build_candidate_pool(tickers)
+        if _market_regimes is None:
+            crypto_tickers = [item for item in tickers if item.get("_crypto_candidate_allowed") is not False]
+            long_regime = self.market_regime_score("LONG", crypto_tickers)
+            short_regime = self.market_regime_score("SHORT", crypto_tickers)
+        else:
+            long_regime, short_regime = _market_regimes
+        candidates = [_candidate_override] if _candidate_override is not None else self.build_candidate_pool(tickers)
         enrich_limit = int(self.config.get("max_kline_enriched_candidates", 8))
         if enrich_limit <= 0:
             enrich_limit = min(len(candidates), 8)
         enriched_count = 0
         for index, candidate in enumerate(candidates):
+            modes = candidate.get("signal_modes", [])
+            if len(modes) > 1 and candidate["item"]["symbol"] not in open_symbols:
+                attempts: list[Signal] = []
+                for mode in modes:
+                    mode_candidate = {
+                        **candidate, "signal_mode": mode,
+                        "mode_reason": "老币反弹衰竭做空池" if mode == "old_rebound_short" else "持续放量启动做多观察池",
+                    }
+                    mode_candidate.pop("signal_modes", None)
+                    result = self.build_signals(
+                        tickers, open_symbols, mode_candidate, (long_regime, short_regime)
+                    )[0]
+                    attempts.append(result)
+                    if not result.reject_reason:
+                        break
+                selected = attempts[-1]
+                if len(attempts) > 1:
+                    first = attempts[0]
+                    selected.decision_steps.insert(
+                        0, f"优先验证{self.signal_mode_label(first.signal_mode)}未通过：{first.reject_reason}；继续验证{self.signal_mode_label(selected.signal_mode)}"
+                    )
+                    if selected.reject_reason:
+                        selected.reject_reason = (
+                            f"{self.signal_mode_label(first.signal_mode)}：{first.reject_reason}；"
+                            f"{self.signal_mode_label(selected.signal_mode)}：{selected.reject_reason}"
+                        )
+                        selected.decision_summary = self.decision_summary(selected.reject_reason)
+                signals.append(selected)
+                enriched_count += len(attempts)
+                continue
             item = candidate["item"]
             signal_mode = str(candidate.get("signal_mode", "strong_momentum"))
             is_pre_start_long = signal_mode == "pre_start_long"

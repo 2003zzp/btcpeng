@@ -44,11 +44,27 @@ class FrontendSettingsTest(unittest.TestCase):
         parser.feed(html)
         self.assertTrue({
             "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled",
-            "pre_start_volume_24h_min_pct", "pre_start_volume_24h_max_pct",
-            "pre_start_volume_24h_min_usdt", "pre_start_volume_15m_min_usdt",
+            "pre_start_volume_15m_min_usdt",
             "pre_start_volume_relative_min", "pre_start_volume_growth_min",
             "pre_start_volume_taker_min",
         }.issubset(parser.input_names))
+
+    def test_directional_pools_share_candidate_controls(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+        parser.feed(html)
+        self.assertTrue({
+            "shared_pool_max_candidates", "shared_pool_24h_min_pct",
+            "shared_pool_24h_max_pct", "shared_pool_min_quote_volume_usdt",
+        }.issubset(parser.input_names))
+        self.assertIn("shared_pool_priority", parser.select_names)
+        self.assertFalse({
+            "pre_start_max_candidates", "pre_start_volume_24h_min_pct",
+            "pre_start_volume_24h_max_pct", "pre_start_volume_24h_min_usdt",
+            "old_rebound_short_max_candidates", "old_rebound_short_24h_min_pct",
+            "old_rebound_short_24h_max_pct", "old_rebound_short_min_quote_volume_usdt",
+            "old_rebound_short_max_quote_volume_usdt",
+        } & parser.input_names)
 
     def test_settings_form_exposes_system_score_threshold(self):
         html = Path("web/index.html").read_text(encoding="utf-8")

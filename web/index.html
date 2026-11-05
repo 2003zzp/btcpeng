@@ -240,6 +240,29 @@
               候选币数量
               <input name="max_candidates_per_scan" type="number" min="1" step="1" />
             </label>
+            <label>
+              双策略候选数
+              <input name="shared_pool_max_candidates" type="number" min="1" max="100" step="1" />
+            </label>
+            <label>
+              双策略24h涨幅下限 (%)
+              <input name="shared_pool_24h_min_pct" type="number" min="-100" max="1000" step="0.1" />
+            </label>
+            <label>
+              双策略24h涨幅上限 (%)
+              <input name="shared_pool_24h_max_pct" type="number" min="-100" max="1000" step="0.1" />
+            </label>
+            <label>
+              双策略24h最低成交额 (U)
+              <input name="shared_pool_min_quote_volume_usdt" type="number" min="0" step="100000" />
+            </label>
+            <label>
+              双策略优先验证
+              <select name="shared_pool_priority">
+                <option value="old_rebound_short">老币反弹做空优先</option>
+                <option value="pre_start_long">持续放量做多优先</option>
+              </select>
+            </label>
             <label class="settings-check">
               <input name="pre_start_long_enabled" type="checkbox" />
               <span>启用持续放量做多观察池</span>
@@ -247,22 +270,6 @@
             <label class="settings-check" title="默认只观察候选信号。允许自动开仓前需关闭全局反向订单。">
               <input name="pre_start_volume_auto_trade_enabled" type="checkbox" />
               <span>允许持续放量池自动开仓</span>
-            </label>
-            <label>
-              预启动候选数
-              <input name="pre_start_max_candidates" type="number" min="1" max="30" step="1" />
-            </label>
-            <label>
-              24h涨幅下限 (%)
-              <input name="pre_start_volume_24h_min_pct" type="number" min="-50" max="50" step="0.1" />
-            </label>
-            <label>
-              24h涨幅上限 (%)
-              <input name="pre_start_volume_24h_max_pct" type="number" min="0" max="100" step="0.1" />
-            </label>
-            <label>
-              24h最低成交额 (U)
-              <input name="pre_start_volume_24h_min_usdt" type="number" min="100000" step="100000" />
             </label>
             <label>
               15m单根最低成交额 (U)
@@ -298,28 +305,8 @@
               <span>启用老币反弹做空池</span>
             </label>
             <label>
-              老币反弹候选数
-              <input name="old_rebound_short_max_candidates" type="number" min="1" max="30" step="1" />
-            </label>
-            <label>
-              老币反弹24h下限 (%)
-              <input name="old_rebound_short_24h_min_pct" type="number" min="0" max="200" step="0.1" />
-            </label>
-            <label>
-              老币反弹24h上限 (%)
-              <input name="old_rebound_short_24h_max_pct" type="number" min="0" max="300" step="0.1" />
-            </label>
-            <label>
               老币最少历史天数
               <input name="old_rebound_short_min_history_days" type="number" min="0" max="1500" step="1" />
-            </label>
-            <label>
-              老币最小成交额 (U)
-              <input name="old_rebound_short_min_quote_volume_usdt" type="number" min="0" step="100000" />
-            </label>
-            <label>
-              老币最大成交额 (U)
-              <input name="old_rebound_short_max_quote_volume_usdt" type="number" min="0" step="100000" />
             </label>
             <label>
               老币15m转弱上限 (%)

@@ -93,10 +93,10 @@ function normalizeSettingsLabels() {
     take_profit_trigger_price_type: "止盈触发价格",
     stop_loss_trigger_price_type: "止损触发价格",
     max_candidates_per_scan: "候选币数量",
-    pre_start_max_candidates: "持续放量候选数",
-    pre_start_volume_24h_min_pct: "24h涨幅下限 (%)",
-    pre_start_volume_24h_max_pct: "24h涨幅上限 (%)",
-    pre_start_volume_24h_min_usdt: "24h最低成交额 (U)",
+    shared_pool_max_candidates: "双策略候选数",
+    shared_pool_24h_min_pct: "双策略24h涨幅下限 (%)",
+    shared_pool_24h_max_pct: "双策略24h涨幅上限 (%)",
+    shared_pool_min_quote_volume_usdt: "双策略24h最低成交额 (U)",
     pre_start_volume_15m_min_usdt: "15m单根最低成交额 (U)",
     pre_start_volume_relative_min: "15m相对放量下限 (x)",
     pre_start_volume_growth_min: "后两根/前两根量比 (x)",
@@ -154,6 +154,10 @@ function normalizeSettingsLabels() {
   const preStartLongLabel = els.form?.elements?.pre_start_long_enabled?.closest("label");
   if (preStartLongLabel) {
     preStartLongLabel.title = "只开启候选观察。以最近4根已收盘15m成交额持续放大、价格推进和主动买入为信号。";
+  }
+  const poolPriorityLabel = els.form?.elements?.shared_pool_priority?.closest("label");
+  if (poolPriorityLabel) {
+    poolPriorityLabel.title = "两个策略都开启时，同一个候选先验证选中的策略；未通过才验证另一个。每个币每轮最多开一单，不会同时开多空。";
   }
   const volumeTradeLabel = els.form?.elements?.pre_start_volume_auto_trade_enabled?.closest("label");
   if (volumeTradeLabel) {
