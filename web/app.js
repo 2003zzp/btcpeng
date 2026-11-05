@@ -83,9 +83,10 @@ function normalizeSettingsLabels() {
     margin_per_trade_usdt: "基础开仓保证金 (U)",
     leverage: "最高杠杆上限",
     reverse_orders_enabled: "开启反向订单",
-    margin_type: "仓位模式",
+    margin_type: "默认仓位模式（强波动池）",
     pre_start_margin_per_trade_usdt: "预启动保证金 (U)",
     pre_start_leverage: "预启动杠杆上限",
+    pre_start_margin_type: "预启动仓位模式",
     pre_start_take_profit_roi_pct: "预启动初始止盈 ROI (%)",
     pre_start_stop_loss_roi_pct: "预启动初始止损 ROI (%)",
     take_profit_roi_pct: "初始止盈 ROI (%)",
@@ -181,7 +182,11 @@ function normalizeSettingsLabels() {
   }
   const marginTypeLabel = els.form?.elements?.margin_type?.closest("label");
   if (marginTypeLabel) {
-    marginTypeLabel.title = "全局仓位模式。逐仓风险隔离更强；全仓会共用账户保证金，适合你明确想统一切换时使用。";
+    marginTypeLabel.title = "强波动池使用此模式；老币反弹和预启动池有自己的仓位模式。全仓会共用账户保证金。";
+  }
+  for (const name of ["pre_start_margin_type", "old_rebound_short_margin_type"]) {
+    const label = els.form?.elements?.[name]?.closest("label");
+    if (label) label.title = "只影响该策略池以后新开的订单。全仓共用账户保证金；币安通常不允许直接改变已有持仓币种的仓位模式。";
   }
   for (const name of ["take_profit_trigger_price_type", "stop_loss_trigger_price_type"]) {
     const label = els.form?.elements?.[name]?.closest("label");

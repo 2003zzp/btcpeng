@@ -123,6 +123,8 @@ class FrontendSettingsTest(unittest.TestCase):
         parser.feed(html)
 
         self.assertIn("margin_type", parser.select_names)
+        self.assertIn("pre_start_margin_type", parser.select_names)
+        self.assertIn("old_rebound_short_margin_type", parser.select_names)
 
     def test_settings_form_exposes_independent_protection_trigger_selectors(self):
         html = Path("web/index.html").read_text(encoding="utf-8")

@@ -172,6 +172,84 @@ class MarginTypeSettingTest(unittest.TestCase):
         self.assertEqual(calls[1][1], "/fapi/v1/leverage")
         self.assertEqual(calls[1][2]["leverage"], 5)
 
+    def test_pool_modes_inherit_global_when_missing_and_can_be_saved_separately(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        config_path.write_text('{"margin_type": "CROSSED"}', encoding="utf-8")
+        bot = server.PaperBot(config_path, root / "state.json")
+        self.assertEqual(bot.config["pre_start_margin_type"], "CROSSED")
+        self.assertEqual(bot.config["old_rebound_short_margin_type"], "CROSSED")
+
+        bot.update_settings({"pre_start_margin_type": "ISOLATED", "old_rebound_short_margin_type": "CROSSED"})
+        self.assertEqual(bot.config["pre_start_margin_type"], "ISOLATED")
+        self.assertEqual(bot.config["old_rebound_short_margin_type"], "CROSSED")
+        self.assertEqual(bot.config["margin_type"], "CROSSED")
+
+    def test_order_sets_each_pool_margin_type_before_entry(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config_path = root / "config.json"
+        config_path.write_text(
+            '{"margin_type": "ISOLATED", "pre_start_margin_type": "CROSSED", '
+            '"old_rebound_short_margin_type": "ISOLATED"}', encoding="utf-8"
+        )
+        bot = server.PaperBot(config_path, root / "state.json")
+        bot.get_available_balance = lambda: 100.0
+        bot.exposure_pct = lambda extra_notional=0.0: 0.0
+        calls = []
+
+        def request(method, path, payload):
+            calls.append((path, payload))
+            return {}
+
+        def order(method, path, payload, side):
+            calls.append((path, payload))
+            return {"orderId": "entry"} if path == "/fapi/v1/order" else {"algoId": "protection"}
+
+        bot.signed_exchange_request = request
+        bot.signed_exchange_request_position_aware = order
+        symbol_info = {"filters": [
+            {"filterType": "LOT_SIZE", "stepSize": "0.001"},
+            {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+        ]}
+        for mode, expected in (
+            ("pre_start_long", "CROSSED"),
+            ("old_rebound_short", "ISOLATED"),
+            ("strong_momentum", "ISOLATED"),
+        ):
+            calls.clear()
+            signal = ReverseOrdersTest().make_signal()
+            signal.signal_mode = mode
+            record = bot.exchange_open_position(signal, symbol_info)
+            self.assertEqual(calls[0][0], "/fapi/v1/marginType")
+            self.assertEqual(calls[0][1]["marginType"], expected)
+            self.assertEqual(record["margin_type"], expected)
+
+        bot.config["margin_type"] = "CROSSED"
+        calls.clear()
+        signal = ReverseOrdersTest().make_signal()
+        signal.signal_mode = "old_rebound_short"
+        bot.exchange_open_position(signal, symbol_info)
+        self.assertEqual(calls[0][1]["marginType"], "ISOLATED")
+
+    def test_rejected_margin_mode_stops_before_market_entry(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "config.json").write_text('{"pre_start_margin_type": "CROSSED"}', encoding="utf-8")
+        bot = server.PaperBot(root / "config.json", root / "state.json")
+        bot.get_available_balance = lambda: 100.0
+        bot.signed_exchange_request = lambda method, path, payload: (_ for _ in ()).throw(RuntimeError("mode rejected"))
+        bot.signed_exchange_request_position_aware = lambda *_: self.fail("market order must not be sent")
+        signal = ReverseOrdersTest().make_signal()
+        signal.signal_mode = "pre_start_long"
+
+        with self.assertRaisesRegex(RuntimeError, "mode rejected"):
+            bot.exchange_open_position(signal, {"filters": []})
+
 
 class ReverseOrdersTest(unittest.TestCase):
     def make_bot(self) -> server.PaperBot:
@@ -231,7 +309,7 @@ class ReverseOrdersTest(unittest.TestCase):
         bot = self.make_bot()
         bot.config["reverse_orders_enabled"] = True
         bot.get_available_balance = lambda: 100.0
-        bot.ensure_exchange_settings = lambda symbol, target_leverage: target_leverage
+        bot.ensure_exchange_settings = lambda symbol, target_leverage, target_margin_type=None: target_leverage
         bot.exposure_pct = lambda extra_notional=0.0: 0.0
         calls = []
 
@@ -279,7 +357,7 @@ class PreStartProtectionRoiTest(unittest.TestCase):
 
     def prepare_order(self, bot: server.PaperBot):
         bot.get_available_balance = lambda: 100.0
-        bot.ensure_exchange_settings = lambda symbol, target_leverage: 4
+        bot.ensure_exchange_settings = lambda symbol, target_leverage, target_margin_type=None: 4
         bot.exposure_pct = lambda extra_notional=0.0: 0.0
         calls = []
         def submit(method, path, params, side):
@@ -452,7 +530,7 @@ class PreStartProtectionRoiTest(unittest.TestCase):
     def test_pre_start_stop_rounded_to_zero_is_rejected_before_entry(self):
         bot = self.make_bot('{"pre_start_stop_loss_roi_pct": 50}')
         calls, info = self.prepare_order(bot)
-        bot.ensure_exchange_settings = lambda symbol, target_leverage: 1
+        bot.ensure_exchange_settings = lambda symbol, target_leverage, target_margin_type=None: 1
         info["filters"][1]["tickSize"] = "0.01"
         signal = ReverseOrdersTest().make_signal()
         signal.signal_mode = "pre_start_long"

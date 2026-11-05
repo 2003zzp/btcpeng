@@ -172,7 +172,7 @@
               <span>开启反向订单</span>
             </label>
             <label>
-              仓位模式
+              默认仓位模式（强波动池）
               <select name="margin_type">
                 <option value="ISOLATED">逐仓</option>
                 <option value="CROSSED">全仓</option>
@@ -185,6 +185,13 @@
             <label>
               预启动杠杆 (1-20X)
               <input name="pre_start_leverage" type="number" min="1" max="20" step="1" />
+            </label>
+            <label>
+              预启动仓位模式
+              <select name="pre_start_margin_type">
+                <option value="ISOLATED">逐仓</option>
+                <option value="CROSSED">全仓</option>
+              </select>
             </label>
             <label>
               预启动初始止盈 ROI (%)
@@ -201,6 +208,13 @@
             <label>
               老币反弹杠杆 (1-20X)
               <input name="old_rebound_short_leverage" type="number" min="1" max="20" step="1" />
+            </label>
+            <label>
+              老币反弹仓位模式
+              <select name="old_rebound_short_margin_type">
+                <option value="ISOLATED">逐仓</option>
+                <option value="CROSSED">全仓</option>
+              </select>
             </label>
             <label>
               止盈 ROI (%)

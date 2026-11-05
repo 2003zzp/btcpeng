@@ -111,6 +111,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pre_start_market_confirm_min_score": 6.5,
     "pre_start_margin_per_trade_usdt": 3.0,
     "pre_start_leverage": 2,
+    "pre_start_margin_type": None,
     "pre_start_take_profit_roi_pct": None,
     "pre_start_stop_loss_roi_pct": None,
     "old_rebound_short_enabled": False,
@@ -131,6 +132,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "old_rebound_short_confirm_min_score": 6.8,
     "old_rebound_short_margin_per_trade_usdt": 3.0,
     "old_rebound_short_leverage": 2,
+    "old_rebound_short_margin_type": None,
     "max_kline_enriched_candidates": 8,
     "kline_15m_limit": 40,
     "kline_1h_limit": 10,
@@ -534,6 +536,11 @@ class PaperBot:
             config["pre_start_take_profit_roi_pct"] = float(config["take_profit_roi_pct"])
         if config.get("pre_start_stop_loss_roi_pct") is None:
             config["pre_start_stop_loss_roi_pct"] = float(config["stop_loss_roi_pct"])
+        global_margin_type = str(config.get("margin_type", "ISOLATED")).upper()
+        config["margin_type"] = global_margin_type if global_margin_type in {"ISOLATED", "CROSSED"} else "ISOLATED"
+        for key in ("pre_start_margin_type", "old_rebound_short_margin_type"):
+            margin_type = str(config.get(key) or config["margin_type"]).upper()
+            config[key] = margin_type if margin_type in {"ISOLATED", "CROSSED"} else config["margin_type"]
         for key in ("take_profit_trigger_price_type", "stop_loss_trigger_price_type"):
             value = str(config.get(key, "MARK_PRICE")).upper()
             config[key] = value if value in {"MARK_PRICE", "CONTRACT_PRICE"} else "MARK_PRICE"
@@ -1089,6 +1096,7 @@ class PaperBot:
             "pre_start_market_confirm_min_score": float,
             "pre_start_margin_per_trade_usdt": float,
             "pre_start_leverage": int,
+            "pre_start_margin_type": str,
             "pre_start_take_profit_roi_pct": float,
             "pre_start_stop_loss_roi_pct": float,
             "old_rebound_short_enabled": str,
@@ -1104,6 +1112,7 @@ class PaperBot:
             "old_rebound_short_confirm_min_score": float,
             "old_rebound_short_margin_per_trade_usdt": float,
             "old_rebound_short_leverage": int,
+            "old_rebound_short_margin_type": str,
             "kline_15m_limit": int,
             "kline_1h_limit": int,
             "max_open_positions": int,
@@ -1150,10 +1159,10 @@ class PaperBot:
                         value = "both"
                 if key == "shared_pool_priority" and value not in {"old_rebound_short", "pre_start_long"}:
                     value = "old_rebound_short"
-                if key == "margin_type":
+                if key in {"margin_type", "pre_start_margin_type", "old_rebound_short_margin_type"}:
                     value = str(value).upper()
                     if value not in {"ISOLATED", "CROSSED"}:
-                        value = "ISOLATED"
+                        value = self.config["margin_type"] if key != "margin_type" else "ISOLATED"
                 if key in {"take_profit_trigger_price_type", "stop_loss_trigger_price_type"}:
                     value = str(value).upper()
                     if value not in {"MARK_PRICE", "CONTRACT_PRICE"}:
@@ -2081,10 +2090,14 @@ class PaperBot:
                 return self.signed_exchange_request(method, path, payload)
             raise
 
-    def ensure_exchange_settings(self, symbol: str, target_leverage: int | None = None) -> int:
-        """开仓前设置全局逐仓/全仓模式与该币杠杆；不支持目标杠杆则逐级降低。"""
+    def ensure_exchange_settings(
+        self, symbol: str, target_leverage: int | None = None, target_margin_type: str | None = None
+    ) -> int:
+        """开仓前按策略设置逐仓/全仓与杠杆；不支持目标杠杆则逐级降低。"""
         futures = self.exchange_config()
-        margin_type = str(futures.get("margin_type", "ISOLATED")).upper()
+        margin_type = str(target_margin_type or futures.get("margin_type", "ISOLATED")).upper()
+        if margin_type not in {"ISOLATED", "CROSSED"}:
+            raise ValueError(f"不支持的仓位模式：{margin_type}")
         try:
             self.signed_exchange_request(
                 "POST",
@@ -2113,6 +2126,13 @@ class PaperBot:
                     raise
         raise RuntimeError(f"{symbol} 无法设置杠杆：{last_error}")
 
+    def margin_type_for_signal(self, signal: Signal) -> str:
+        key = {
+            "pre_start_long": "pre_start_margin_type",
+            "old_rebound_short": "old_rebound_short_margin_type",
+        }.get(signal.signal_mode, "margin_type")
+        return str(self.config.get(key) or self.config.get("margin_type", "ISOLATED")).upper()
+
     def position_plan(self, signal: Signal, available: float) -> dict[str, Any]:
         """按信号所属池选择保证金和杠杆，最终保证金不超过账户可用余额。"""
         is_pre_start = signal.signal_mode == "pre_start_long"
@@ -2135,6 +2155,7 @@ class PaperBot:
         return {
             "margin_usdt": margin,
             "target_leverage": target_leverage,
+            "margin_type": self.margin_type_for_signal(signal),
             "margin_multiplier": 1.0,
             "tier": tier,
             "reason": reason,
@@ -2160,7 +2181,12 @@ class PaperBot:
             signal.decision_steps.append(
                 f"反向订单：原策略{self.side_cn(original_side)}，实际开{self.side_cn(execution_side)}"
             )
-        leverage = float(self.ensure_exchange_settings(signal.symbol, int(sizing.get("target_leverage", self.config.get("leverage", 3)))))
+        margin_type = str(sizing.get("margin_type") or self.margin_type_for_signal(signal)).upper()
+        leverage = float(self.ensure_exchange_settings(
+            signal.symbol,
+            int(sizing.get("target_leverage", self.config.get("leverage", 3))),
+            target_margin_type=margin_type,
+        ))
         notional = margin * leverage * float(futures.get("quantity_safety_factor", 0.98))
         if self.exposure_pct(extra_notional=notional) > float(self.config.get("max_exposure_pct", 65.0)):
             self.event("risk", "仓位敞口达到上限，本轮停止新增持仓")
@@ -2263,6 +2289,7 @@ class PaperBot:
             "take_profit_algo_id": take_order.get("algoId"),
             "quantity": qty_text,
             "margin_usdt": margin,
+            "margin_type": margin_type,
             "leverage": leverage,
             "sizing_tier": sizing.get("tier"),
             "sizing_margin_multiplier": sizing.get("margin_multiplier"),
