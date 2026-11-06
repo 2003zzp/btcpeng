@@ -105,6 +105,7 @@ function normalizeSettingsLabels() {
     pre_start_oi_1h_min_pct: "预启动OI 1h下限 (%)",
     pre_start_funding_abs_max_pct: "预启动资金费率上限 (%)",
     pre_start_market_confirm_min_score: "持续放量确认分阈值",
+    old_rebound_short_min_low_distance_pct: "老币距24h低点最小距离 (%)",
     signal_score_threshold: "系统分阈值",
     strong_long_24h_min_change_pct: "强波动做多24h涨幅下限 (%)",
     strong_long_enabled: "启用强波动池做多",

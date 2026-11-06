@@ -1103,6 +1103,7 @@ class PaperBot:
             "old_rebound_short_min_history_days": int,
             "old_rebound_short_15m_max_pct": float,
             "old_rebound_short_1h_max_pct": float,
+            "old_rebound_short_min_low_distance_pct": float,
             "old_rebound_short_volume_ratio_min": float,
             "old_rebound_short_volume_ratio_max": float,
             "old_rebound_short_taker_ratio_max": float,
@@ -1222,6 +1223,8 @@ class PaperBot:
                     value = float(value)
                 if key == "old_rebound_short_oi_1h_min_pct":
                     value = float(value)
+                if key == "old_rebound_short_min_low_distance_pct":
+                    value = max(0.0, float(value))
                 self.config[key] = value
             save_json(self.config_path, self.config)
             current_mode = self.exchange_mode()
@@ -3242,7 +3245,8 @@ class PaperBot:
         location_price = current_price if current_price > 0 else price
         if high_24h > 0 and max(0.0, -pct(location_price, high_24h)) >= float(self.config.get("old_rebound_short_max_high_drawdown_pct", 35.0)):
             return "老币反弹距24h高点回撤过深，禁止追空"
-        if low_24h > 0 and pct(location_price, low_24h) <= float(self.config.get("old_rebound_short_min_low_distance_pct", 5.0)):
+        min_low_distance = float(self.config.get("old_rebound_short_min_low_distance_pct", 5.0))
+        if min_low_distance > 0 and low_24h > 0 and pct(location_price, low_24h) <= min_low_distance:
             return "老币反弹太靠近24h低点，禁止追空"
         if current_price > 0 and pct(current_price, price) < min_15m:
             return "老币反弹15m实时跌幅过深，禁止追空"

@@ -322,6 +322,10 @@
               老币最少历史天数
               <input name="old_rebound_short_min_history_days" type="number" min="0" max="1500" step="1" />
             </label>
+            <label title="当前价相对24小时最低价的距离；低于或等于阈值不新开空。设置0可关闭此过滤。">
+              老币距24h低点最小距离 (%)
+              <input name="old_rebound_short_min_low_distance_pct" type="number" min="0" max="1000" step="0.1" />
+            </label>
             <label>
               老币15m转弱上限 (%)
               <input name="old_rebound_short_15m_max_pct" type="number" min="-50" max="50" step="0.1" />

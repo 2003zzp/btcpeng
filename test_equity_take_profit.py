@@ -905,6 +905,22 @@ class KlineShortMetricsTest(unittest.TestCase):
         config_path.write_text('{"max_kline_enriched_candidates": 2}', encoding="utf-8")
         return server.PaperBot(config_path, state_path)
 
+    def test_old_rebound_24h_low_distance_can_be_configured_and_disabled(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
+        bot.update_settings({"old_rebound_short_min_low_distance_pct": 10})
+        reason = bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics,
+            high_24h=12.0, low_24h=9.2, current_price=10.0)
+        self.assertIn("24h低点", reason)
+        self.assertEqual(bot.config["old_rebound_short_min_low_distance_pct"], 10)
+        bot.update_settings({"old_rebound_short_min_low_distance_pct": 0})
+        self.assertEqual(bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics,
+            high_24h=12.0, low_24h=10.0, current_price=10.0), "")
+
     def kline(self, close: float, quote_volume: float = 1000.0, close_time: int = 0) -> list[object]:
         return [0, "0", "0", "0", str(close), "0", close_time, str(quote_volume)]
 
