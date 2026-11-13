@@ -92,6 +92,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "shared_pool_24h_max_pct": 100.0,
     "shared_pool_min_quote_volume_usdt": 5_000_000.0,
     "shared_pool_priority": "old_rebound_short",
+    "old_rebound_whitelist_enabled": False,
+    "old_rebound_whitelist_symbols": [],
     "pre_start_long_enabled": False,
     "pre_start_volume_auto_trade_enabled": False,
     "pre_start_volume_15m_min_usdt": 250_000.0,
@@ -563,6 +565,9 @@ class PaperBot:
         for key in ("take_profit_trigger_price_type", "stop_loss_trigger_price_type"):
             value = str(config.get(key, "MARK_PRICE")).upper()
             config[key] = value if value in {"MARK_PRICE", "CONTRACT_PRICE"} else "MARK_PRICE"
+        config["old_rebound_whitelist_symbols"] = normalize_symbol_list(
+            config.get("old_rebound_whitelist_symbols", []), str(config.get("quote_asset", "USDT"))
+        )
         for key in ("tradfi_min_24h_change_pct", "tradfi_max_4h_change_pct",
                     "tradfi_min_15m_quote_volume_usdt", "tradfi_max_spread_pct",
                     "tradfi_min_depth_multiple"):
@@ -634,6 +639,7 @@ class PaperBot:
             and not str(item.get("id", "")).startswith(f"{self.exchange_mode()}-income-")
         ]
         state.setdefault("events", [])
+        state.setdefault("old_rebound_whitelist_suppressed", [])
         state.pop("analyzer_cache", None)
         state.setdefault("last_error", "")
         return state
@@ -1103,6 +1109,7 @@ class PaperBot:
             "shared_pool_24h_max_pct": float,
             "shared_pool_min_quote_volume_usdt": float,
             "shared_pool_priority": str,
+            "old_rebound_whitelist_enabled": str,
             "pre_start_long_enabled": str,
             "pre_start_volume_auto_trade_enabled": str,
             "pre_start_volume_15m_min_usdt": float,
@@ -1193,7 +1200,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "live_trading_enabled", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled", "old_rebound_short_enabled", "strong_long_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled", "tradfi_enabled", "tradfi_auto_trade_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "live_trading_enabled", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "old_rebound_whitelist_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled", "old_rebound_short_enabled", "strong_long_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled", "tradfi_enabled", "tradfi_auto_trade_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -3006,6 +3013,7 @@ class PaperBot:
         trend: str,
         stats: dict[str, float],
         live_metrics: dict[str, Any] | None = None,
+        symbol: str = "",
     ) -> dict[str, Any]:
         """老币反弹池专用确认分：收盘 K 线定方向，实时 K 线只加减辅助分。"""
         score = 0.0
@@ -3023,9 +3031,10 @@ class PaperBot:
         min_long_short = float(self.config.get("old_rebound_short_long_short_min", 1.2))
         taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
 
-        if min_24h <= change_24h <= max_24h:
+        if min_24h <= change_24h <= max_24h or self.is_old_rebound_whitelisted(symbol):
             score += 1.0
-            reasons.append(f"老币24h反弹 {change_24h:+.1f}%")
+            reasons.append(f"老币24h反弹 {change_24h:+.1f}%" if min_24h <= change_24h <= max_24h
+                           else f"老币24h白名单豁免 {change_24h:+.1f}%")
         if short_move <= max_15m:
             score += 1.3
             reasons.append(f"15m开始转弱 {short_move:+.1f}%")
@@ -3532,8 +3541,70 @@ class PaperBot:
             ))
         return signals
 
+    def is_old_rebound_whitelisted(self, symbol: str) -> bool:
+        return (bool(self.config.get("old_rebound_whitelist_enabled", False))
+                and symbol in self.config.get("old_rebound_whitelist_symbols", []))
+
+    def update_old_rebound_whitelist(self, action: str, symbol: str) -> None:
+        quote = str(self.config.get("quote_asset", "USDT"))
+        normalized = normalize_symbol_list(symbol, quote)
+        if action not in {"add", "remove"} or len(normalized) != 1:
+            raise ValueError("白名单操作或币种无效")
+        target = normalized[0]
+        if not all(char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" for char in target):
+            raise ValueError("白名单币种只能包含英文字母和数字")
+        with self.lock:
+            symbols = list(self.config.get("old_rebound_whitelist_symbols", []))
+            suppressed = set(self.state.get("old_rebound_whitelist_suppressed", []))
+            if action == "add":
+                if target not in symbols:
+                    symbols.append(target)
+                suppressed.discard(target)
+            else:
+                symbols = [item for item in symbols if item != target]
+                suppressed.add(target)
+            self.config["old_rebound_whitelist_symbols"] = symbols
+            self.state["old_rebound_whitelist_suppressed"] = sorted(suppressed)
+            save_json(self.config_path, self.config)
+            self.persist()
+
+    def refresh_old_rebound_whitelist(self, tickers: list[dict[str, Any]]) -> None:
+        if (not self.config.get("old_rebound_whitelist_enabled", False)
+                or not self.config.get("old_rebound_short_enabled", False)
+                or self.config.get("trade_direction_mode") == "long_only"):
+            return
+        with self.lock:
+            symbols = list(self.config.get("old_rebound_whitelist_symbols", []))
+            suppressed = set(self.state.get("old_rebound_whitelist_suppressed", []))
+            blocked = set(normalize_symbol_list(self.config.get("blocked_symbols", []),
+                                                str(self.config.get("quote_asset", "USDT"))))
+            minimum_volume = float(self.config.get("shared_pool_min_quote_volume_usdt", 5_000_000))
+            original_symbols = list(symbols)
+            original_suppressed = set(suppressed)
+            for item in tickers:
+                symbol = str(item.get("symbol", "")).upper()
+                change = fnum(item.get("priceChangePercent"), float("nan"))
+                if not symbol or not math.isfinite(change):
+                    continue
+                if change < 50:
+                    suppressed.discard(symbol)
+                    continue
+                if (change <= 50 or symbol in symbols or symbol in suppressed
+                        or item.get("_crypto_candidate_allowed") is False or symbol in blocked
+                        or self.stop_loss_cooldown_reason(symbol)
+                        or fnum(item.get("quoteVolume")) < minimum_volume):
+                    continue
+                symbols.append(symbol)
+            if symbols != original_symbols:
+                self.config["old_rebound_whitelist_symbols"] = symbols
+                save_json(self.config_path, self.config)
+            if suppressed != original_suppressed:
+                self.state["old_rebound_whitelist_suppressed"] = sorted(suppressed)
+                self.persist()
+
     def build_candidate_pool(self, tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """用 24h 滚动行情粗筛三类池，先排除禁开、冷却和非加密合约。"""
+        self.refresh_old_rebound_whitelist(tickers)
         watchlist = {str(item).upper() for item in self.config.get("manual_watchlist", [])}
         blocked = set(normalize_symbol_list(self.config.get("blocked_symbols", []), str(self.config.get("quote_asset", "USDT"))))
         min_volume = float(self.config.get("min_quote_volume_usdt", 0))
@@ -3577,27 +3648,34 @@ class PaperBot:
             min_change = float(self.config.get("shared_pool_24h_min_pct", 1.0))
             max_change = float(self.config.get("shared_pool_24h_max_pct", 100.0))
             min_shared_volume = float(self.config.get("shared_pool_min_quote_volume_usdt", 5_000_000))
-            shared = [
-                item for item in tickers
-                if not (is_non_crypto_candidate(item) or is_blocked_candidate(item) or is_cooldown_candidate(item))
-                and min_change <= fnum(item.get("priceChangePercent")) <= max_change
-                and fnum(item.get("quoteVolume")) >= min_shared_volume
-                and not (
-                    modes == ["pre_start_long"]
-                    and not self.config.get("pre_start_volume_auto_trade_enabled", False)
-                    and (str(item.get("symbol", "")) in watchlist or (
-                        fnum(item.get("quoteVolume")) >= min_volume
-                        and change_allowed(fnum(item.get("priceChangePercent")))
-                    ))
-                )
-            ]
-            shared.sort(key=lambda row: (fnum(row.get("quoteVolume")), str(row.get("symbol", ""))))
+            shared = []
+            for item in tickers:
+                if (is_non_crypto_candidate(item) or is_blocked_candidate(item)
+                        or is_cooldown_candidate(item) or fnum(item.get("quoteVolume")) < min_shared_volume):
+                    continue
+                change = fnum(item.get("priceChangePercent"), float("nan"))
+                if not math.isfinite(change):
+                    continue
+                in_range = min_change <= change <= max_change
+                item_modes = [mode for mode in modes if in_range or (
+                    mode == "old_rebound_short" and self.is_old_rebound_whitelisted(str(item.get("symbol", "")))
+                )]
+                if not item_modes:
+                    continue
+                if (item_modes == ["pre_start_long"]
+                        and not self.config.get("pre_start_volume_auto_trade_enabled", False)
+                        and (str(item.get("symbol", "")) in watchlist or (
+                            fnum(item.get("quoteVolume")) >= min_volume and change_allowed(change)
+                        ))):
+                    continue
+                shared.append((item, item_modes))
+            shared.sort(key=lambda row: (fnum(row[0].get("quoteVolume")), str(row[0].get("symbol", ""))))
             if shared:
                 start = int(self.state.get("scan_count", 0)) * shared_limit % len(shared)
-                for item in (shared[start:] + shared[:start])[:shared_limit]:
+                for item, item_modes in (shared[start:] + shared[:start])[:shared_limit]:
                     pool[str(item.get("symbol", ""))] = {
-                        "item": item, "signal_mode": modes[0], "signal_modes": list(modes),
-                        "mode_reason": "老币反弹衰竭做空池" if modes[0] == "old_rebound_short" else "持续放量启动做多观察池",
+                        "item": item, "signal_mode": item_modes[0], "signal_modes": item_modes,
+                        "mode_reason": "老币反弹衰竭做空池" if item_modes[0] == "old_rebound_short" else "持续放量启动做多观察池",
                     }
 
         strong = []
@@ -3837,6 +3915,7 @@ class PaperBot:
                         trend,
                         market_stats,
                         metrics,
+                        symbol,
                     )
                 else:
                     market_confirm = self.market_confirmation_score(
@@ -4293,6 +4372,13 @@ class PaperBot:
                 if signal.signal_model != "sustained_volume_v1":
                     self.update_signal_decision(signal, "旧预启动策略信号已失效", "开仓前复核：旧策略信号不允许补开")
                     continue
+            if signal.signal_mode == "old_rebound_short":
+                min_change = float(self.config.get("shared_pool_24h_min_pct", 1.0))
+                max_change = float(self.config.get("shared_pool_24h_max_pct", 100.0))
+                if not min_change <= signal.change_24h_pct <= max_change and not self.is_old_rebound_whitelisted(signal.symbol):
+                    reason = "老币反弹24h涨幅超出区间且不在白名单"
+                    self.update_signal_decision(signal, reason, f"开仓前复核：{reason}")
+                    continue
             blocked_reason = self.blocked_symbol_reject_reason(signal.symbol)
             if blocked_reason:
                 self.update_signal_decision(signal, blocked_reason, f"开仓前复核：{blocked_reason}")
@@ -4331,6 +4417,11 @@ class PaperBot:
                 self.event("error", f"{signal.symbol} {self.exchange_label()} 开仓失败：{exc}")
                 continue
             if record:
+                if signal.signal_mode == "old_rebound_short" and signal.symbol in self.config.get("old_rebound_whitelist_symbols", []):
+                    try:
+                        self.update_old_rebound_whitelist("remove", signal.symbol)
+                    except Exception as exc:
+                        self.event("error", f"{signal.symbol} 开仓后移出老币白名单失败：{exc}")
                 signal.reject_reason = ""
                 signal.decision_summary = f"已提交 {self.exchange_label()} 开仓"
                 signal.decision_steps.append(f"下单结果：已开仓，订单 {record.get('entry_order_id') or '-'}")
@@ -4472,6 +4563,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/settings":
                 self.write_json(BOT.update_settings(self.read_json_body()))
+                return
+            if self.path == "/api/old-rebound-whitelist":
+                body = self.read_json_body()
+                BOT.update_old_rebound_whitelist(str(body.get("action", "")), str(body.get("symbol", "")))
+                self.write_json(BOT.snapshot())
                 return
             if self.path == "/api/clear-cooldown":
                 body = self.read_json_body()

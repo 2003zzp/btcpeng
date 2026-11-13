@@ -24,6 +24,9 @@
   scanDurationText: document.querySelector("#scanDurationText"),
   candidateRows: document.querySelector("#candidateRows"),
   cooldownRows: document.querySelector("#cooldownRows"),
+  oldReboundWhitelistInput: document.querySelector("#oldReboundWhitelistInput"),
+  oldReboundWhitelistAdd: document.querySelector("#oldReboundWhitelistAdd"),
+  oldReboundWhitelistItems: document.querySelector("#oldReboundWhitelistItems"),
   positionRows: document.querySelector("#positionRows"),
   historyRows: document.querySelector("#historyRows"),
   eventLog: document.querySelector("#eventLog"),
@@ -98,6 +101,7 @@ function normalizeSettingsLabels() {
     shared_pool_24h_min_pct: "双策略24h涨幅下限 (%)",
     shared_pool_24h_max_pct: "双策略24h涨幅上限 (%)",
     shared_pool_min_quote_volume_usdt: "双策略24h最低成交额 (U)",
+    old_rebound_whitelist_enabled: "启用老币反弹涨幅白名单",
     pre_start_volume_15m_min_usdt: "15m单根最低成交额 (U)",
     pre_start_volume_relative_min: "15m相对放量下限 (x)",
     pre_start_volume_growth_min: "后两根/前两根量比 (x)",
@@ -467,6 +471,7 @@ function render(payload) {
     }
   }
 
+  renderOldReboundWhitelist(config.old_rebound_whitelist_symbols || []);
   renderCandidates(state.candidates || []);
   renderCooldowns(state.stop_loss_cooldowns || []);
   renderPositions(state.positions || []);
@@ -840,6 +845,18 @@ function candidateNextAction(row) {
   return "继续观察";
 }
 
+function renderOldReboundWhitelist(symbols) {
+  if (!els.oldReboundWhitelistItems) return;
+  if (!symbols.length) {
+    els.oldReboundWhitelistItems.innerHTML = `<span class="old-whitelist-empty">白名单为空</span>`;
+    return;
+  }
+  els.oldReboundWhitelistItems.innerHTML = symbols.map((value) => {
+    const symbol = escapeHtml(value);
+    return `<span class="old-whitelist-symbol">${symbol}<button type="button" data-old-whitelist-remove="${symbol}" title="移除 ${symbol}" aria-label="移除 ${symbol}">×</button></span>`;
+  }).join("");
+}
+
 function renderCooldowns(rows) {
   if (!els.cooldownRows) return;
   if (!rows.length) {
@@ -1125,6 +1142,42 @@ els.cooldownRows?.addEventListener("click", async (event) => {
     currentState = await api("/api/clear-cooldown", {
       method: "POST",
       body: JSON.stringify({ symbol }),
+    });
+    render(currentState);
+    return currentState;
+  });
+});
+
+els.oldReboundWhitelistAdd?.addEventListener("click", async () => {
+  const symbol = els.oldReboundWhitelistInput.value.trim();
+  if (!symbol) {
+    showToast("请先输入币种", "error");
+    return;
+  }
+  await runAction(els.oldReboundWhitelistAdd, "正在添加白名单...", "已加入老币反弹白名单", async () => {
+    currentState = await api("/api/old-rebound-whitelist", {
+      method: "POST", body: JSON.stringify({ action: "add", symbol }),
+    });
+    els.oldReboundWhitelistInput.value = "";
+    render(currentState);
+    return currentState;
+  });
+});
+
+els.oldReboundWhitelistInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    els.oldReboundWhitelistAdd.click();
+  }
+});
+
+els.oldReboundWhitelistItems?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-old-whitelist-remove]");
+  if (!button) return;
+  const symbol = button.dataset.oldWhitelistRemove;
+  await runAction(button, `正在移除 ${symbol}...`, `已移除 ${symbol}`, async () => {
+    currentState = await api("/api/old-rebound-whitelist", {
+      method: "POST", body: JSON.stringify({ action: "remove", symbol }),
     });
     render(currentState);
     return currentState;

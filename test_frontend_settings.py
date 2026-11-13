@@ -22,6 +22,15 @@ class InputNameParser(HTMLParser):
 
 
 class FrontendSettingsTest(unittest.TestCase):
+    def test_old_rebound_whitelist_has_toggle_and_per_symbol_controls(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+        parser.feed(html)
+        self.assertIn("old_rebound_whitelist_enabled", parser.input_names)
+        self.assertIn('id="oldReboundWhitelistInput"', html)
+        self.assertIn('id="oldReboundWhitelistAdd"', html)
+        self.assertIn('id="oldReboundWhitelistItems"', html)
+
     def test_tradfi_pool_controls_are_exposed(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         parser = InputNameParser()

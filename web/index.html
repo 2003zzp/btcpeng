@@ -318,6 +318,17 @@
               <input name="old_rebound_short_enabled" type="checkbox" />
               <span>启用老币反弹做空池</span>
             </label>
+            <label class="settings-check settings-wide" title="仅豁免老币反弹池的24h涨幅上下限，其他候选和开仓条件照常执行。">
+              <input name="old_rebound_whitelist_enabled" type="checkbox" />
+              <span>启用老币反弹涨幅白名单</span>
+            </label>
+            <div class="settings-wide old-whitelist-editor">
+              <div class="old-whitelist-entry">
+                <input id="oldReboundWhitelistInput" type="text" placeholder="输入币种，如 BTCUSDT" aria-label="添加老币反弹白名单币种" />
+                <button id="oldReboundWhitelistAdd" class="old-whitelist-add" type="button" title="添加币种" aria-label="添加币种">+</button>
+              </div>
+              <div id="oldReboundWhitelistItems" class="old-whitelist-items" aria-live="polite"></div>
+            </div>
             <label>
               老币最少历史天数
               <input name="old_rebound_short_min_history_days" type="number" min="0" max="1500" step="1" />
