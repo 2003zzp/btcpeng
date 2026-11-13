@@ -156,9 +156,17 @@
           <span>☷</span>
           <h2>参数实时调节面板</h2>
         </div>
+        <div id="settingsTabs" class="settings-tabs" role="tablist" aria-label="参数分类">
+          <button id="settingsTabExecution" class="settings-tab" type="button" role="tab" aria-controls="settingsExecution" aria-selected="true" tabindex="0" data-settings-tab>交易执行</button>
+          <button id="settingsTabStrategy" class="settings-tab" type="button" role="tab" aria-controls="settingsStrategy" aria-selected="false" tabindex="-1" data-settings-tab>加密策略</button>
+          <button id="settingsTabTradfi" class="settings-tab" type="button" role="tab" aria-controls="settingsTradfi" aria-selected="false" tabindex="-1" data-settings-tab>股票 TradFi</button>
+          <button id="settingsTabConfirmation" class="settings-tab" type="button" role="tab" aria-controls="settingsConfirmation" aria-selected="false" tabindex="-1" data-settings-tab>确认过滤</button>
+          <button id="settingsTabRisk" class="settings-tab" type="button" role="tab" aria-controls="settingsRisk" aria-selected="false" tabindex="-1" data-settings-tab>风险控制</button>
+        </div>
         <form id="settingsForm" class="settings-grid">
-          <fieldset class="settings-group settings-group--full">
+          <fieldset id="settingsExecution" class="settings-group settings-group--full" role="tabpanel" aria-labelledby="settingsTabExecution" tabindex="0">
             <legend>交易执行</legend>
+            <h3 class="settings-subsection">强波动与全局执行</h3>
             <label>
               开仓保证金 (U)
               <input name="margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
@@ -178,6 +186,7 @@
                 <option value="CROSSED">全仓</option>
               </select>
             </label>
+            <h3 class="settings-subsection">持续放量仓位</h3>
             <label>
               预启动保证金 (U)
               <input name="pre_start_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
@@ -201,6 +210,7 @@
               预启动初始止损 ROI (%)
               <input name="pre_start_stop_loss_roi_pct" type="number" min="1" step="0.1" />
             </label>
+            <h3 class="settings-subsection">老币反弹仓位</h3>
             <label>
               老币反弹保证金 (U)
               <input name="old_rebound_short_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
@@ -216,6 +226,7 @@
                 <option value="CROSSED">全仓</option>
               </select>
             </label>
+            <h3 class="settings-subsection">全局保护单</h3>
             <label>
               止盈 ROI (%)
               <input name="take_profit_roi_pct" type="number" min="1" step="1" />
@@ -238,14 +249,16 @@
                 <option value="CONTRACT_PRICE">最新价</option>
               </select>
             </label>
+            <h3 class="settings-subsection">账户模式</h3>
             <label class="settings-check">
               <input name="live_trading_enabled" type="checkbox" />
               <span>启动实盘交易</span>
             </label>
           </fieldset>
 
-          <fieldset class="settings-group settings-group--full">
+          <fieldset id="settingsStrategy" class="settings-group settings-group--full" role="tabpanel" aria-labelledby="settingsTabStrategy" tabindex="0" hidden>
             <legend>筛选策略</legend>
+            <h3 class="settings-subsection">扫描与共享候选</h3>
             <label>
               扫描间隔 (秒)
               <input name="scan_interval_sec" type="number" min="2" step="1" />
@@ -277,6 +290,7 @@
                 <option value="pre_start_long">持续放量做多优先</option>
               </select>
             </label>
+            <h3 class="settings-subsection">持续放量做多</h3>
             <label class="settings-check">
               <input name="pre_start_long_enabled" type="checkbox" />
               <span>启用持续放量做多观察池</span>
@@ -313,6 +327,7 @@
               预启动确认分阈值
               <input name="pre_start_market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
             </label>
+            <h3 class="settings-subsection">老币反弹做空</h3>
             <label class="settings-check">
               <input name="old_rebound_short_enabled" type="checkbox" />
               <span>启用老币反弹做空池</span>
@@ -376,6 +391,7 @@
               老币反弹确认分阈值
               <input name="old_rebound_short_confirm_min_score" type="number" min="0" max="10" step="0.1" />
             </label>
+            <h3 class="settings-subsection">全局交易边界</h3>
             <label>
               交易方向
               <select name="trade_direction_mode">
@@ -390,8 +406,9 @@
             </label>
           </fieldset>
 
-          <fieldset class="settings-group settings-group--full">
+          <fieldset id="settingsTradfi" class="settings-group settings-group--full" role="tabpanel" aria-labelledby="settingsTabTradfi" tabindex="0" hidden>
             <legend>股票 TradFi 多空</legend>
+            <h3 class="settings-subsection">开关与方向</h3>
             <label class="settings-check">
               <input name="tradfi_enabled" type="checkbox" />
               <span>启用股票 TradFi 候选池</span>
@@ -407,6 +424,7 @@
                 <option value="LONG">先做多，没过再做空</option>
               </select>
             </label>
+            <h3 class="settings-subsection">候选与量价</h3>
             <label>
               TradFi 候选数
               <input name="tradfi_max_candidates" type="number" min="1" max="30" step="1" />
@@ -427,6 +445,7 @@
               TradFi 15m 最低成交额 (U)
               <input name="tradfi_min_15m_quote_volume_usdt" type="number" min="0.01" step="any" />
             </label>
+            <h3 class="settings-subsection">盘口质量</h3>
             <label title="开仓前实时盘口的买一卖一价差上限。">
               TradFi 最大盘口价差 (%)
               <input name="tradfi_max_spread_pct" type="number" min="0.01" step="0.01" />
@@ -435,6 +454,7 @@
               TradFi 最小盘口深度 (x)
               <input name="tradfi_min_depth_multiple" type="number" min="1" step="0.1" />
             </label>
+            <h3 class="settings-subsection">仓位与退出</h3>
             <label>
               TradFi 保证金 (U)
               <input name="tradfi_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
@@ -460,8 +480,9 @@
             </label>
           </fieldset>
 
-          <fieldset class="settings-group settings-group--full">
+          <fieldset id="settingsConfirmation" class="settings-group settings-group--full" role="tabpanel" aria-labelledby="settingsTabConfirmation" tabindex="0" hidden>
             <legend>确认过滤</legend>
+            <h3 class="settings-subsection">系统分与强波动</h3>
             <label>
               系统分阈值
               <input name="signal_score_threshold" type="number" min="0" max="10" step="0.1" />
@@ -478,6 +499,7 @@
               <input name="strong_short_enabled" type="checkbox" />
               <span>启用强波动池做空</span>
             </label>
+            <h3 class="settings-subsection">市场确认</h3>
             <label>
               市场确认分阈值
               <input name="market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
@@ -490,6 +512,7 @@
               做空最大回撤限制 (%)
               <input name="short_max_24h_high_drawdown_pct" type="number" min="1" max="99" step="0.1" />
             </label>
+            <h3 class="settings-subsection">K线与结构</h3>
             <label>
               15m K线根数
               <input name="kline_15m_limit" type="number" min="2" max="200" step="1" />
@@ -506,6 +529,7 @@
               做空结构最低分
               <input name="short_structure_min_score" type="number" min="0" max="6" step="0.1" />
             </label>
+            <h3 class="settings-subsection">环境过滤开关</h3>
             <label>
               市场环境最低分
               <input name="market_regime_min_score" type="number" min="0" max="10" step="0.1" />
@@ -524,8 +548,9 @@
             </label>
           </fieldset>
 
-          <fieldset class="settings-group settings-group--full settings-group--risk">
+          <fieldset id="settingsRisk" class="settings-group settings-group--full settings-group--risk" role="tabpanel" aria-labelledby="settingsTabRisk" tabindex="0" hidden>
             <legend>风险控制</legend>
+            <h3 class="settings-subsection">仓位与敞口</h3>
             <label>
               最大持仓数
               <input name="max_open_positions" type="number" min="1" step="1" />
@@ -534,6 +559,7 @@
               最大仓位敞口 (%)
               <input name="max_exposure_pct" type="number" min="1" step="1" />
             </label>
+            <h3 class="settings-subsection">冷却与发布</h3>
             <label>
               冷却时间 (分钟)
               <input name="stop_loss_cooldown_minutes" type="number" min="1" step="1" />
@@ -548,7 +574,9 @@
             </label>
           </fieldset>
 
-          <button class="button button-primary" type="submit">保存参数</button>
+          <div class="settings-actions">
+            <button class="button button-primary" type="submit">保存参数</button>
+          </div>
         </form>
       </section>
 

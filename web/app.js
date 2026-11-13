@@ -6,6 +6,7 @@
   syncBtn: document.querySelector("#syncBtn"),
   scanBtn: document.querySelector("#scanBtn"),
   form: document.querySelector("#settingsForm"),
+  settingsTabs: document.querySelector("#settingsTabs"),
   runningText: document.querySelector("#runningText"),
   scanText: document.querySelector("#scanText"),
   sourceText: document.querySelector("#sourceText"),
@@ -40,6 +41,34 @@
 let currentState = null;
 let toastTimer = null;
 const chartHitAreas = new WeakMap();
+
+function selectSettingsTab(tab, focus = false) {
+  if (!tab || !els.settingsTabs) return;
+  for (const item of els.settingsTabs.querySelectorAll('[data-settings-tab]')) {
+    const selected = item === tab;
+    item.setAttribute('aria-selected', String(selected));
+    item.tabIndex = selected ? 0 : -1;
+    const panel = document.getElementById(item.getAttribute('aria-controls'));
+    if (panel) panel.hidden = !selected;
+  }
+  if (focus) tab.focus();
+}
+
+els.settingsTabs?.addEventListener('click', (event) => {
+  selectSettingsTab(event.target.closest('[data-settings-tab]'));
+});
+
+els.settingsTabs?.addEventListener('keydown', (event) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = [...els.settingsTabs.querySelectorAll('[data-settings-tab]')];
+  const index = tabs.indexOf(document.activeElement);
+  if (index < 0) return;
+  event.preventDefault();
+  const next = event.key === 'Home' ? 0
+    : event.key === 'End' ? tabs.length - 1
+      : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  selectSettingsTab(tabs[next], true);
+});
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({

@@ -7,23 +7,33 @@ class InputNameParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.input_names = set()
+        self.named_controls = []
         self.input_attrs = {}
         self.select_names = set()
         self.groups = []
+        self.settings_tabs = []
+        self.settings_panels = []
+        self.subsections = []
         self.in_legend = False
 
     def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag == "button" and "data-settings-tab" in values:
+            self.settings_tabs.append(values)
         if tag == "fieldset":
-            classes = dict(attrs).get("class", "").split()
+            classes = values.get("class", "").split()
             if "settings-group" in classes:
                 self.groups.append({"classes": classes, "legend": ""})
+                self.settings_panels.append(values)
+        if tag == "h3" and "settings-subsection" in values.get("class", "").split():
+            self.subsections.append(values)
         if tag == "legend" and self.groups:
             self.in_legend = True
         if tag not in {"input", "select"}:
             return
-        values = dict(attrs)
         name = values.get("name")
         if name:
+            self.named_controls.append(name)
             if tag == "input":
                 self.input_names.add(name)
                 self.input_attrs[name] = values
@@ -40,6 +50,27 @@ class InputNameParser(HTMLParser):
 
 
 class FrontendSettingsTest(unittest.TestCase):
+    def test_settings_tabs_target_five_panels_with_only_first_visible(self):
+        parser = InputNameParser()
+        parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
+        self.assertEqual(len(parser.settings_tabs), 5)
+        self.assertEqual(len(parser.settings_panels), 5)
+        self.assertEqual(
+            [tab.get("aria-controls") for tab in parser.settings_tabs],
+            [panel.get("id") for panel in parser.settings_panels],
+        )
+        self.assertEqual([tab.get("aria-selected") for tab in parser.settings_tabs],
+                         ["true", "false", "false", "false", "false"])
+        self.assertEqual(["hidden" in panel for panel in parser.settings_panels],
+                         [False, True, True, True, True])
+        self.assertGreaterEqual(len(parser.subsections), 10)
+
+    def test_settings_keep_unique_controls_across_hidden_panels(self):
+        parser = InputNameParser()
+        parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
+        self.assertEqual(len(parser.named_controls), 84)
+        self.assertEqual(len(parser.named_controls), len(set(parser.named_controls)))
+
     def test_tradfi_amount_and_roi_inputs_accept_normal_values(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         parser = InputNameParser()
