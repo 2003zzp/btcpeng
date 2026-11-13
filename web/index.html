@@ -429,7 +429,7 @@
             </label>
             <label title="突破线和确认线都必须达到此15分钟成交额；盘前盘后同样适用。">
               TradFi 15m 最低成交额 (U)
-              <input name="tradfi_min_15m_quote_volume_usdt" type="number" min="0.01" step="1000" />
+              <input name="tradfi_min_15m_quote_volume_usdt" type="number" min="0.01" step="any" />
             </label>
             <label title="开仓前实时盘口的买一卖一价差上限。">
               TradFi 最大盘口价差 (%)
@@ -456,11 +456,11 @@
             </label>
             <label title="仅用于以后新开的美股 TradFi 订单；按仓位保证金 ROI 计算。">
               TradFi 初始止盈 ROI (%)
-              <input name="tradfi_take_profit_roi_pct" type="number" min="0.01" step="0.1" />
+              <input name="tradfi_take_profit_roi_pct" type="number" min="0.01" step="any" />
             </label>
             <label title="仅用于以后新开的美股 TradFi 订单；按仓位保证金 ROI 计算。">
               TradFi 初始止损 ROI (%)
-              <input name="tradfi_stop_loss_roi_pct" type="number" min="0.01" step="0.1" />
+              <input name="tradfi_stop_loss_roi_pct" type="number" min="0.01" step="any" />
             </label>
           </fieldset>
 

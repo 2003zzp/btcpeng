@@ -7,6 +7,7 @@ class InputNameParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.input_names = set()
+        self.input_attrs = {}
         self.select_names = set()
         self.groups = []
         self.in_legend = False
@@ -25,6 +26,7 @@ class InputNameParser(HTMLParser):
         if name:
             if tag == "input":
                 self.input_names.add(name)
+                self.input_attrs[name] = values
             else:
                 self.select_names.add(name)
 
@@ -38,6 +40,19 @@ class InputNameParser(HTMLParser):
 
 
 class FrontendSettingsTest(unittest.TestCase):
+    def test_tradfi_amount_and_roi_inputs_accept_normal_values(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        parser = InputNameParser()
+        parser.feed(html)
+
+        for name in ("tradfi_min_15m_quote_volume_usdt", "tradfi_take_profit_roi_pct",
+                     "tradfi_stop_loss_roi_pct"):
+            with self.subTest(name=name):
+                attrs = parser.input_attrs[name]
+                self.assertEqual(attrs["type"], "number")
+                self.assertEqual(attrs["min"], "0.01")
+                self.assertEqual(attrs["step"], "any")
+
     def test_settings_groups_use_stable_responsive_layout(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         css = Path("web/styles.css").read_text(encoding="utf-8")
