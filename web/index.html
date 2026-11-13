@@ -157,7 +157,7 @@
           <h2>参数实时调节面板</h2>
         </div>
         <form id="settingsForm" class="settings-grid">
-          <fieldset class="settings-group">
+          <fieldset class="settings-group settings-group--full">
             <legend>交易执行</legend>
             <label>
               开仓保证金 (U)
@@ -244,7 +244,7 @@
             </label>
           </fieldset>
 
-          <fieldset class="settings-group">
+          <fieldset class="settings-group settings-group--full">
             <legend>筛选策略</legend>
             <label>
               扫描间隔 (秒)
@@ -313,14 +313,17 @@
               预启动确认分阈值
               <input name="pre_start_market_confirm_min_score" type="number" min="0" max="10" step="0.1" />
             </label>
-            <label>
-              交易方向
+            <label class="settings-check">
               <input name="old_rebound_short_enabled" type="checkbox" />
               <span>启用老币反弹做空池</span>
             </label>
             <label class="settings-check settings-wide" title="仅豁免老币反弹池的24h涨幅上下限，其他候选和开仓条件照常执行。">
               <input name="old_rebound_whitelist_enabled" type="checkbox" />
               <span>启用老币反弹涨幅白名单</span>
+            </label>
+            <label title="仅影响自动入名单；滚动24h涨幅必须严格超过此值，已有名单和手动添加不受影响。">
+              自动入白名单涨幅阈值 (%)
+              <input name="old_rebound_whitelist_min_24h_change_pct" type="number" min="0" max="1000" step="0.1" value="50" />
             </label>
             <div class="settings-wide old-whitelist-editor">
               <div class="old-whitelist-entry">
@@ -387,7 +390,7 @@
             </label>
           </fieldset>
 
-          <fieldset class="settings-group">
+          <fieldset class="settings-group settings-group--full">
             <legend>美股 TradFi 多空</legend>
             <label class="settings-check">
               <input name="tradfi_enabled" type="checkbox" />
@@ -461,7 +464,7 @@
             </label>
           </fieldset>
 
-          <fieldset class="settings-group">
+          <fieldset class="settings-group settings-group--full">
             <legend>确认过滤</legend>
             <label>
               系统分阈值
@@ -471,11 +474,11 @@
               强波动做多24h涨幅下限 (%)
               <input name="strong_long_24h_min_change_pct" type="number" min="0" max="300" step="0.1" />
             </label>
-            <label class="checkbox-label">
+            <label class="settings-check">
               <input name="strong_long_enabled" type="checkbox" />
               <span>启用强波动池做多</span>
             </label>
-            <label class="checkbox-label">
+            <label class="settings-check">
               <input name="strong_short_enabled" type="checkbox" />
               <span>启用强波动池做空</span>
             </label>
@@ -525,7 +528,7 @@
             </label>
           </fieldset>
 
-          <fieldset class="settings-group">
+          <fieldset class="settings-group settings-group--full settings-group--risk">
             <legend>风险控制</legend>
             <label>
               最大持仓数

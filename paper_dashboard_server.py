@@ -93,6 +93,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "shared_pool_min_quote_volume_usdt": 5_000_000.0,
     "shared_pool_priority": "old_rebound_short",
     "old_rebound_whitelist_enabled": False,
+    "old_rebound_whitelist_min_24h_change_pct": 50.0,
     "old_rebound_whitelist_symbols": [],
     "pre_start_long_enabled": False,
     "pre_start_volume_auto_trade_enabled": False,
@@ -568,6 +569,8 @@ class PaperBot:
         config["old_rebound_whitelist_symbols"] = normalize_symbol_list(
             config.get("old_rebound_whitelist_symbols", []), str(config.get("quote_asset", "USDT"))
         )
+        threshold = fnum(config.get("old_rebound_whitelist_min_24h_change_pct"), 50.0)
+        config["old_rebound_whitelist_min_24h_change_pct"] = threshold if 0 <= threshold <= 1000 else 50.0
         for key in ("tradfi_min_24h_change_pct", "tradfi_max_4h_change_pct",
                     "tradfi_min_15m_quote_volume_usdt", "tradfi_max_spread_pct",
                     "tradfi_min_depth_multiple"):
@@ -1110,6 +1113,7 @@ class PaperBot:
             "shared_pool_min_quote_volume_usdt": float,
             "shared_pool_priority": str,
             "old_rebound_whitelist_enabled": str,
+            "old_rebound_whitelist_min_24h_change_pct": float,
             "pre_start_long_enabled": str,
             "pre_start_volume_auto_trade_enabled": str,
             "pre_start_volume_15m_min_usdt": float,
@@ -1196,6 +1200,10 @@ class PaperBot:
             shared_max = float(patch.get("shared_pool_24h_max_pct", self.config["shared_pool_24h_max_pct"]))
             if shared_min > shared_max:
                 raise ValueError("双策略24h涨幅下限不能高于上限")
+            if "old_rebound_whitelist_min_24h_change_pct" in patch:
+                threshold = fnum(patch["old_rebound_whitelist_min_24h_change_pct"], float("nan"))
+                if not 0 <= threshold <= 1000:
+                    raise ValueError("老币反弹白名单涨幅阈值须在0%到1000%之间")
             previous_mode = self.exchange_mode()
             for key, caster in allowed.items():
                 if key not in patch:
@@ -3579,6 +3587,7 @@ class PaperBot:
             blocked = set(normalize_symbol_list(self.config.get("blocked_symbols", []),
                                                 str(self.config.get("quote_asset", "USDT"))))
             minimum_volume = float(self.config.get("shared_pool_min_quote_volume_usdt", 5_000_000))
+            threshold = float(self.config.get("old_rebound_whitelist_min_24h_change_pct", 50.0))
             original_symbols = list(symbols)
             original_suppressed = set(suppressed)
             for item in tickers:
@@ -3586,10 +3595,10 @@ class PaperBot:
                 change = fnum(item.get("priceChangePercent"), float("nan"))
                 if not symbol or not math.isfinite(change):
                     continue
-                if change < 50:
+                if change < threshold:
                     suppressed.discard(symbol)
                     continue
-                if (change <= 50 or symbol in symbols or symbol in suppressed
+                if (change <= threshold or symbol in symbols or symbol in suppressed
                         or item.get("_crypto_candidate_allowed") is False or symbol in blocked
                         or self.stop_loss_cooldown_reason(symbol)
                         or fnum(item.get("quoteVolume")) < minimum_volume):

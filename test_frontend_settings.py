@@ -8,8 +8,16 @@ class InputNameParser(HTMLParser):
         super().__init__()
         self.input_names = set()
         self.select_names = set()
+        self.groups = []
+        self.in_legend = False
 
     def handle_starttag(self, tag, attrs):
+        if tag == "fieldset":
+            classes = dict(attrs).get("class", "").split()
+            if "settings-group" in classes:
+                self.groups.append({"classes": classes, "legend": ""})
+        if tag == "legend" and self.groups:
+            self.in_legend = True
         if tag not in {"input", "select"}:
             return
         values = dict(attrs)
@@ -20,13 +28,45 @@ class InputNameParser(HTMLParser):
             else:
                 self.select_names.add(name)
 
+    def handle_data(self, data):
+        if self.in_legend:
+            self.groups[-1]["legend"] += data
+
+    def handle_endtag(self, tag):
+        if tag == "legend":
+            self.in_legend = False
+
 
 class FrontendSettingsTest(unittest.TestCase):
+    def test_settings_groups_use_stable_responsive_layout(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        css = Path("web/styles.css").read_text(encoding="utf-8")
+        parser = InputNameParser()
+        parser.feed(html)
+
+        self.assertEqual(
+            [group["legend"] for group in parser.groups],
+            ["交易执行", "筛选策略", "美股 TradFi 多空", "确认过滤", "风险控制"],
+        )
+        for group in parser.groups:
+            self.assertIn("settings-group--full", group["classes"])
+        self.assertNotIn(".settings-group:nth-of-type", css)
+        self.assertIn(".settings-group--full", css)
+
+    def test_pool_toggles_use_consistent_checkbox_layout(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        for name in ("old_rebound_short_enabled", "strong_long_enabled", "strong_short_enabled"):
+            self.assertIn(
+                f'<label class="settings-check">\n              <input name="{name}" type="checkbox" />',
+                html,
+            )
+
     def test_old_rebound_whitelist_has_toggle_and_per_symbol_controls(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         parser = InputNameParser()
         parser.feed(html)
         self.assertIn("old_rebound_whitelist_enabled", parser.input_names)
+        self.assertIn("old_rebound_whitelist_min_24h_change_pct", parser.input_names)
         self.assertIn('id="oldReboundWhitelistInput"', html)
         self.assertIn('id="oldReboundWhitelistAdd"', html)
         self.assertIn('id="oldReboundWhitelistItems"', html)

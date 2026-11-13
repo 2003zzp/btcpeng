@@ -30,6 +30,7 @@ class OldReboundWhitelistTest(unittest.TestCase):
 
     def test_breaking_above_fifty_adds_once_and_bypasses_only_old_pool_range(self):
         bot = self.make_bot()
+        self.assertEqual(bot.config["old_rebound_whitelist_min_24h_change_pct"], 50.0)
         self.assertEqual(bot.build_candidate_pool([self.ticker(50)]), [])
         rows = bot.build_candidate_pool([self.ticker(51)])
         self.assertEqual(bot.config["old_rebound_whitelist_symbols"], ["OLDUSDT"])
@@ -39,6 +40,26 @@ class OldReboundWhitelistTest(unittest.TestCase):
         self.assertEqual(bot.config["old_rebound_whitelist_symbols"], ["OLDUSDT"])
         reloaded = server.PaperBot(bot.config_path, bot.state_path)
         self.assertEqual(reloaded.config["old_rebound_whitelist_symbols"], ["OLDUSDT"])
+
+    def test_custom_entry_threshold_controls_addition_and_suppression_reset(self):
+        bot = self.make_bot()
+        bot.config["shared_pool_24h_max_pct"] = 20
+        bot.update_settings({"old_rebound_whitelist_min_24h_change_pct": 30})
+        self.assertEqual(bot.build_candidate_pool([self.ticker(30)]), [])
+        self.assertEqual(bot.build_candidate_pool([self.ticker(31)])[0]["signal_modes"],
+                         ["old_rebound_short"])
+        bot.update_old_rebound_whitelist("remove", "OLDUSDT")
+        self.assertEqual(bot.build_candidate_pool([self.ticker(31)]), [])
+        bot.build_candidate_pool([self.ticker(29)])
+        self.assertEqual(bot.build_candidate_pool([self.ticker(31)])[0]["signal_modes"],
+                         ["old_rebound_short"])
+        self.assertEqual(bot.config["old_rebound_whitelist_min_24h_change_pct"], 30.0)
+
+    def test_entry_threshold_rejects_out_of_range_values(self):
+        bot = self.make_bot()
+        for value in (-1, 1001, "nan"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                bot.update_settings({"old_rebound_whitelist_min_24h_change_pct": value})
 
     def test_shared_candidate_only_runs_prestart_when_its_range_passes(self):
         bot = self.make_bot()

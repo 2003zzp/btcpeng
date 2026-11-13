@@ -102,6 +102,7 @@ function normalizeSettingsLabels() {
     shared_pool_24h_max_pct: "双策略24h涨幅上限 (%)",
     shared_pool_min_quote_volume_usdt: "双策略24h最低成交额 (U)",
     old_rebound_whitelist_enabled: "启用老币反弹涨幅白名单",
+    old_rebound_whitelist_min_24h_change_pct: "自动入白名单涨幅阈值 (%)",
     pre_start_volume_15m_min_usdt: "15m单根最低成交额 (U)",
     pre_start_volume_relative_min: "15m相对放量下限 (x)",
     pre_start_volume_growth_min: "后两根/前两根量比 (x)",
