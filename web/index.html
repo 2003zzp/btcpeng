@@ -377,6 +377,80 @@
           </fieldset>
 
           <fieldset class="settings-group">
+            <legend>美股 TradFi 多空</legend>
+            <label class="settings-check">
+              <input name="tradfi_enabled" type="checkbox" />
+              <span>启用美股 TradFi 候选池</span>
+            </label>
+            <label class="settings-check" title="盘前盘后只要数据和流动性达标也可自动开仓；初次使用请先观察和复盘。">
+              <input name="tradfi_auto_trade_enabled" type="checkbox" />
+              <span>允许美股 TradFi 自动开仓</span>
+            </label>
+            <label class="settings-wide" title="仅填写确认属于美股的币安 EQUITY TradFi 合约，逗号分隔；留空不会选出候选。">
+              美股合约白名单
+              <input name="tradfi_symbols" type="text" placeholder="TSLAUSDT, NVDAUSDT" />
+            </label>
+            <label>
+              多空优先验证
+              <select name="tradfi_priority">
+                <option value="SHORT">先做空，没过再做多</option>
+                <option value="LONG">先做多，没过再做空</option>
+              </select>
+            </label>
+            <label>
+              TradFi 候选数
+              <input name="tradfi_max_candidates" type="number" min="1" max="30" step="1" />
+            </label>
+            <label>
+              TradFi 24h 最低成交额 (U)
+              <input name="tradfi_min_quote_volume_usdt" type="number" min="0" step="100000" />
+            </label>
+            <label title="币安滚动24小时涨幅，低于此值的股票不进入候选。">
+              TradFi 24h 涨幅下限 (%)
+              <input name="tradfi_min_24h_change_pct" type="number" step="0.1" />
+            </label>
+            <label title="最近16根已收盘15分钟交易K线的涨幅；超过此值不进入候选，可能跨交易日。">
+              TradFi 4h 涨幅上限 (%)
+              <input name="tradfi_max_4h_change_pct" type="number" step="0.1" />
+            </label>
+            <label title="突破线和确认线都必须达到此15分钟成交额；盘前盘后同样适用。">
+              TradFi 15m 最低成交额 (U)
+              <input name="tradfi_min_15m_quote_volume_usdt" type="number" min="0.01" step="1000" />
+            </label>
+            <label title="开仓前实时盘口的买一卖一价差上限。">
+              TradFi 最大盘口价差 (%)
+              <input name="tradfi_max_spread_pct" type="number" min="0.01" step="0.01" />
+            </label>
+            <label title="买卖两侧近档挂单额都要达到计划名义仓位的该倍数。">
+              TradFi 最小盘口深度 (x)
+              <input name="tradfi_min_depth_multiple" type="number" min="1" step="0.1" />
+            </label>
+            <label>
+              TradFi 保证金 (U)
+              <input name="tradfi_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
+            </label>
+            <label>
+              TradFi 杠杆
+              <input name="tradfi_leverage" type="number" min="1" max="20" step="1" />
+            </label>
+            <label>
+              TradFi 仓位模式
+              <select name="tradfi_margin_type">
+                <option value="ISOLATED">逐仓</option>
+                <option value="CROSSED">全仓</option>
+              </select>
+            </label>
+            <label title="仅用于以后新开的美股 TradFi 订单；按仓位保证金 ROI 计算。">
+              TradFi 初始止盈 ROI (%)
+              <input name="tradfi_take_profit_roi_pct" type="number" min="0.01" step="0.1" />
+            </label>
+            <label title="仅用于以后新开的美股 TradFi 订单；按仓位保证金 ROI 计算。">
+              TradFi 初始止损 ROI (%)
+              <input name="tradfi_stop_loss_roi_pct" type="number" min="0.01" step="0.1" />
+            </label>
+          </fieldset>
+
+          <fieldset class="settings-group">
             <legend>确认过滤</legend>
             <label>
               系统分阈值

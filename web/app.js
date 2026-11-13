@@ -105,6 +105,22 @@ function normalizeSettingsLabels() {
     pre_start_oi_1h_min_pct: "预启动OI 1h下限 (%)",
     pre_start_funding_abs_max_pct: "预启动资金费率上限 (%)",
     pre_start_market_confirm_min_score: "持续放量确认分阈值",
+    tradfi_enabled: "启用美股 TradFi 候选池",
+    tradfi_auto_trade_enabled: "允许美股 TradFi 自动开仓",
+    tradfi_symbols: "美股合约白名单",
+    tradfi_priority: "多空优先验证",
+    tradfi_max_candidates: "TradFi 候选数",
+    tradfi_min_quote_volume_usdt: "TradFi 24h 最低成交额 (U)",
+    tradfi_min_24h_change_pct: "TradFi 24h 涨幅下限 (%)",
+    tradfi_max_4h_change_pct: "TradFi 4h 涨幅上限 (%)",
+    tradfi_min_15m_quote_volume_usdt: "TradFi 15m 最低成交额 (U)",
+    tradfi_max_spread_pct: "TradFi 最大盘口价差 (%)",
+    tradfi_min_depth_multiple: "TradFi 最小盘口深度 (x)",
+    tradfi_margin_per_trade_usdt: "TradFi 保证金 (U)",
+    tradfi_leverage: "TradFi 杠杆",
+    tradfi_margin_type: "TradFi 仓位模式",
+    tradfi_take_profit_roi_pct: "TradFi 初始止盈 ROI (%)",
+    tradfi_stop_loss_roi_pct: "TradFi 初始止损 ROI (%)",
     old_rebound_short_min_low_distance_pct: "老币距24h低点最小距离 (%)",
     signal_score_threshold: "系统分阈值",
     strong_long_24h_min_change_pct: "强波动做多24h涨幅下限 (%)",
@@ -181,11 +197,15 @@ function normalizeSettingsLabels() {
     const label = els.form?.elements?.[name]?.closest("label");
     if (label) label.title = "仅对以后新开的持续放量做多池订单生效。这里是仓位ROI百分比，不是币价涨跌百分比；现有订单保护单不自动修改。";
   }
+  for (const name of ["tradfi_take_profit_roi_pct", "tradfi_stop_loss_roi_pct"]) {
+    const label = els.form?.elements?.[name]?.closest("label");
+    if (label) label.title = "仅对以后新开的美股 TradFi 订单生效。这里是仓位ROI百分比，不是价格涨跌百分比；现有保护单不自动修改。";
+  }
   const marginTypeLabel = els.form?.elements?.margin_type?.closest("label");
   if (marginTypeLabel) {
-    marginTypeLabel.title = "强波动池使用此模式；老币反弹和预启动池有自己的仓位模式。全仓会共用账户保证金。";
+    marginTypeLabel.title = "强波动池使用此模式；老币反弹、预启动和美股 TradFi 池有自己的仓位模式。全仓会共用账户保证金。";
   }
-  for (const name of ["pre_start_margin_type", "old_rebound_short_margin_type"]) {
+  for (const name of ["pre_start_margin_type", "old_rebound_short_margin_type", "tradfi_margin_type"]) {
     const label = els.form?.elements?.[name]?.closest("label");
     if (label) label.title = "只影响该策略池以后新开的订单。全仓共用账户保证金；币安通常不允许直接改变已有持仓币种的仓位模式。";
   }
@@ -847,6 +867,9 @@ function renderCooldowns(rows) {
 
 function candidateModeBadge(row) {
   const mode = String(row.signal_mode || "strong_momentum");
+  if (mode === "tradfi_us_equity") {
+    return { text: "美股 TradFi", className: "mode-tradfi" };
+  }
   if (mode === "pre_start_long") {
     return { text: "持续放量做多", className: "mode-pre-start" };
   }
@@ -861,6 +884,9 @@ function candidateConfirmThreshold(row) {
   const mode = String(row.signal_mode || "strong_momentum");
   if (mode === "pre_start_long") {
     return Number(config.pre_start_market_confirm_min_score || 6.5);
+  }
+  if (mode === "tradfi_us_equity") {
+    return 8;
   }
   if (mode === "old_rebound_short") {
     return Number(config.old_rebound_short_confirm_min_score || 6.8);
@@ -885,6 +911,9 @@ function candidatePrimaryScore(row) {
   const mode = String(row.signal_mode || "strong_momentum");
   const systemScore = Number(row.score || 0);
   const confirmScore = Number(row.analyzer_confidence_pct || 0) / 10;
+  if (mode === "tradfi_us_equity") {
+    return { text: confirmScore.toFixed(1), title: `美股结构分 ${confirmScore.toFixed(1)}/10` };
+  }
   if ((mode === "pre_start_long" || mode === "old_rebound_short") && confirmScore > 0) {
     return {
       text: confirmScore.toFixed(1),
@@ -980,7 +1009,7 @@ function renderHistory(rows) {
 function strategyReasonDisplay(row) {
   const strategyParts = [];
   if (Number(row.strategy_score || row.score || 0) > 0) strategyParts.push(`分 ${Number(row.strategy_score || row.score || 0).toFixed(1)}`);
-  if (["市场确认", "持续放量确认", "老币反弹确认"].includes(row.analyzer_direction)) {
+  if (["市场确认", "持续放量确认", "老币反弹确认", "美股结构确认"].includes(row.analyzer_direction)) {
     strategyParts.push(`${row.analyzer_direction} ${(Number(row.analyzer_confidence_pct || 0) / 10).toFixed(1)}/10`);
   } else if (["做多", "做空", "观望"].includes(row.analyzer_direction)) {
     strategyParts.push(`历史确认：${row.analyzer_direction}`);
@@ -1112,6 +1141,10 @@ els.form.addEventListener("submit", async (event) => {
     }
     if (data.live_trading_enabled === "true" && !previousLiveTradingEnabled) {
       const ok = window.confirm("确认启动实盘交易？开启后机器人会使用 BINANCE_LIVE_API_KEY 在币安实盘合约账户真实下单。");
+      if (!ok) return currentState;
+    }
+    if (data.tradfi_auto_trade_enabled === "true" && !currentState?.config?.tradfi_auto_trade_enabled) {
+      const ok = window.confirm("确认允许美股 TradFi 自动开仓？盘前盘后也可能开仓；财报和临时停市事件未自动过滤，请先确认账户已签署币安 TradFi 合约协议。");
       if (!ok) return currentState;
     }
     currentState = await api("/api/settings", {

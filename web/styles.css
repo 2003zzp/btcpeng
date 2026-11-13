@@ -1118,6 +1118,12 @@ td:first-child {
   border: 1px solid rgba(244, 63, 94, 0.32);
 }
 
+.mode-tradfi {
+  color: #e8f9ff;
+  background: rgba(20, 150, 170, 0.24);
+  border: 1px solid rgba(20, 150, 170, 0.42);
+}
+
 .pill {
   min-width: 28px;
   min-height: 24px;
