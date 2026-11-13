@@ -1,4 +1,4 @@
-"""Isolated US-equity TradFi market-quality and closed-candle entry rules."""
+"""Isolated stock TradFi market-quality and closed-candle entry rules."""
 
 from __future__ import annotations
 
@@ -9,8 +9,7 @@ from typing import Any
 
 def is_equity_contract(info: dict[str, Any]) -> bool:
     return (str(info.get("contractType", "")).upper() == "TRADIFI_PERPETUAL"
-            and str(info.get("underlyingType", "")).upper() == "EQUITY"
-            and "TRADFI" in {str(x).upper() for x in info.get("underlyingSubType", [])})
+            and str(info.get("underlyingType", "")).upper() in {"EQUITY", "HK_EQUITY"})
 
 
 def closed_15m_bars(klines: list[list[Any]], now: datetime) -> list[list[Any]]:

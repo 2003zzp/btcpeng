@@ -391,18 +391,14 @@
           </fieldset>
 
           <fieldset class="settings-group settings-group--full">
-            <legend>美股 TradFi 多空</legend>
+            <legend>股票 TradFi 多空</legend>
             <label class="settings-check">
               <input name="tradfi_enabled" type="checkbox" />
-              <span>启用美股 TradFi 候选池</span>
+              <span>启用股票 TradFi 候选池</span>
             </label>
-            <label class="settings-check" title="盘前盘后只要数据和流动性达标也可自动开仓；初次使用请先观察和复盘。">
+            <label class="settings-check" title="美股和港股没有固定开仓时间限制，数据与流动性达标也可自动开仓；初次使用请先观察和复盘。">
               <input name="tradfi_auto_trade_enabled" type="checkbox" />
-              <span>允许美股 TradFi 自动开仓</span>
-            </label>
-            <label class="settings-wide" title="仅填写确认属于美股的币安 EQUITY TradFi 合约，逗号分隔；留空不会选出候选。">
-              美股合约白名单
-              <input name="tradfi_symbols" type="text" placeholder="TSLAUSDT, NVDAUSDT" />
+              <span>允许股票 TradFi 自动开仓</span>
             </label>
             <label>
               多空优先验证
@@ -454,11 +450,11 @@
                 <option value="CROSSED">全仓</option>
               </select>
             </label>
-            <label title="仅用于以后新开的美股 TradFi 订单；按仓位保证金 ROI 计算。">
+            <label title="仅用于以后新开的股票 TradFi 订单；按仓位保证金 ROI 计算。">
               TradFi 初始止盈 ROI (%)
               <input name="tradfi_take_profit_roi_pct" type="number" min="0.01" step="any" />
             </label>
-            <label title="仅用于以后新开的美股 TradFi 订单；按仓位保证金 ROI 计算。">
+            <label title="仅用于以后新开的股票 TradFi 订单；按仓位保证金 ROI 计算。">
               TradFi 初始止损 ROI (%)
               <input name="tradfi_stop_loss_roi_pct" type="number" min="0.01" step="any" />
             </label>

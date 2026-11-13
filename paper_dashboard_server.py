@@ -2,7 +2,7 @@
 """币安 U 本位合约策略服务：行情扫描、信号生成、风控下单和网页 API。
 
 阅读顺序：DEFAULT_CONFIG 配置默认值 -> PaperBot.scan_once 单轮扫描 ->
-    build_candidate_pool 加密候选池 / build_tradfi_signals 美股池 ->
+    build_candidate_pool 加密候选池 / build_tradfi_signals 股票 TradFi 池 ->
 open_from_signals 开仓前复核 -> exchange_open_position_with_sizing 下单和保护单。
 实盘与测试网共用策略逻辑，由 live_trading_enabled 选择账户和接口。
 """
@@ -140,7 +140,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "old_rebound_short_margin_type": None,
     "tradfi_enabled": False,
     "tradfi_auto_trade_enabled": False,
-    "tradfi_symbols": [],
     "tradfi_priority": "SHORT",
     "tradfi_max_candidates": 5,
     "tradfi_min_quote_volume_usdt": 1_000_000.0,
@@ -551,7 +550,7 @@ class PaperBot:
                 "old_rebound_short_max_candidates", "old_rebound_short_24h_min_pct",
                 "old_rebound_short_24h_max_pct", "old_rebound_short_min_quote_volume_usdt",
                 "old_rebound_short_max_quote_volume_usdt",
-                "tradfi_max_stop_distance_pct", "tradfi_reward_risk",
+                "tradfi_max_stop_distance_pct", "tradfi_reward_risk", "tradfi_symbols",
             }:
                 config.pop(key)
         if config.get("pre_start_take_profit_roi_pct") is None:
@@ -1155,7 +1154,6 @@ class PaperBot:
             "old_rebound_short_margin_type": str,
             "tradfi_enabled": str,
             "tradfi_auto_trade_enabled": str,
-            "tradfi_symbols": str,
             "tradfi_priority": str,
             "tradfi_max_candidates": int,
             "tradfi_min_quote_volume_usdt": float,
@@ -1229,7 +1227,7 @@ class PaperBot:
                     value = str(value).upper()
                     if value not in {"MARK_PRICE", "CONTRACT_PRICE"}:
                         value = "MARK_PRICE"
-                if key in {"blocked_symbols", "tradfi_symbols"}:
+                if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
                 if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "tradfi_leverage", "tradfi_max_candidates", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "shared_pool_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan"}:
                     value = max(1, int(value))
@@ -1429,7 +1427,7 @@ class PaperBot:
                 self.persist()
 
     def fetch_tickers(self) -> list[dict[str, Any]]:
-        """获取 24h 行情；加密合约与显式白名单中的美股 TradFi 分开标记。"""
+        """获取 24h 行情；加密合约与股票类 TradFi 分开标记。"""
         timeout = float(self.config.get("request_timeout_sec", 6))
         payload = http_get_json(self.config["market_base_url"], "/fapi/v1/ticker/24hr", timeout=timeout)
         quote = str(self.config.get("quote_asset", "USDT"))
@@ -1461,7 +1459,7 @@ class PaperBot:
             for position in self.state.get("positions", [])
             if str(position.get("symbol", "")).strip()
         }
-        tradfi_symbols = set(self.config.get("tradfi_symbols", [])) if self.config.get("tradfi_enabled", False) else set()
+        tradfi_enabled = bool(self.config.get("tradfi_enabled", False))
         result = []
         for item in payload:
             symbol = item.get("symbol", "")
@@ -1472,7 +1470,7 @@ class PaperBot:
                 and fnum(item.get("lastPrice")) > 0
                 and symbol in exchange_symbols
                 and (symbol in self.crypto_symbols or symbol in existing_symbols
-                     or (symbol in tradfi_symbols and tradfi_strategy.is_equity_contract(symbol_info)))
+                     or (tradfi_enabled and tradfi_strategy.is_equity_contract(symbol_info)))
             ):
                 enriched = dict(item)
                 enriched["_crypto_candidate_allowed"] = symbol in self.crypto_symbols
@@ -3125,7 +3123,7 @@ class PaperBot:
 
     def signal_mode_label(self, signal_mode: str) -> str:
         if signal_mode == "tradfi_us_equity":
-            return "美股TradFi多空"
+            return "股票TradFi多空"
         if signal_mode == "high_pullback_short":
             return "高位回落做空"
         if signal_mode == "old_rebound_short":
@@ -3463,11 +3461,8 @@ class PaperBot:
         return metrics
 
     def build_tradfi_candidate_pool(self, tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """US equity contracts are an explicit allowlist; commodities never enter this pool."""
+        """Discover stock TradFi contracts; commodities never enter this pool."""
         if not self.config.get("tradfi_enabled", False):
-            return []
-        allowed = set(self.config.get("tradfi_symbols", []))
-        if not allowed:
             return []
         try:
             symbols = self.get_market_exchange_symbols()
@@ -3477,8 +3472,7 @@ class PaperBot:
         modes = [priority, "LONG" if priority == "SHORT" else "SHORT"]
         modes = [side for side in modes if not self.direction_mode_reject_reason(side)]
         candidates = [item for item in tickers
-                      if item.get("symbol") in allowed
-                      and tradfi_strategy.is_equity_contract(symbols.get(item.get("symbol"), {}))
+                      if tradfi_strategy.is_equity_contract(symbols.get(item.get("symbol"), {}))
                       and item.get("symbol") not in set(self.config.get("blocked_symbols", []))
                       and not self.stop_loss_cooldown_reason(str(item.get("symbol", "")))
                       and fnum(item.get("lastPrice")) > 0
@@ -3524,10 +3518,10 @@ class PaperBot:
             passed = bool(result["passed"])
             reject = "" if passed else "；".join(f"{s}：{r['reason']}" for s, r in attempts)
             if passed and not self.config.get("tradfi_auto_trade_enabled", False):
-                reject = "美股观察模式：信号达标，不自动开仓"
+                reject = "股票TradFi观察模式：信号达标，不自动开仓"
             if passed and self.config.get("reverse_orders_enabled", False):
-                reject = "美股策略禁止反向订单"
-            decision_steps = [f"美股TradFi：{symbol}，优先{modes[0]}，实际{side}",
+                reject = "股票TradFi策略禁止反向订单"
+            decision_steps = [f"股票TradFi：{symbol}，优先{modes[0]}，实际{side}",
                               *[f"{s}：{r['reason']}" for s, r in attempts],
                               f"结论：{reject or '通过候选筛选，待开仓前复核'}"]
             signals.append(Signal(
@@ -3539,8 +3533,8 @@ class PaperBot:
                 funding_rate_pct=0, long_short_ratio=0, volume_4h_ratio=0,
                 taker_long_short_ratio=0, oi_volume_ratio=0,
                 signal_mode="tradfi_us_equity", signal_heat_level="normal",
-                market_regime_score=0, market_regime_label="独立美股模型", market_regime_reason="不使用加密市场环境分",
-                risk_level="注意", analyzer_direction="美股结构确认",
+                market_regime_score=0, market_regime_label="独立股票模型", market_regime_reason="不使用加密市场环境分",
+                risk_level="注意", analyzer_direction="股票结构确认",
                 analyzer_confidence_pct=fnum(result["score"]) * 10,
                 analyzer_reason=str(result["reason"]), trigger_reason=str(result["reason"]),
                 reject_reason=reject, decision_summary=self.decision_summary(reject),
@@ -4308,13 +4302,13 @@ class PaperBot:
 
     def tradfi_open_reject_reason(self, signal: Signal, symbol_info: dict[str, Any]) -> str:
         if not (self.config.get("tradfi_enabled", False) and self.config.get("tradfi_auto_trade_enabled", False)):
-            return "美股TradFi自动开仓未启用"
+            return "股票TradFi自动开仓未启用"
         if signal.signal_model != "tradfi_us_v1" or self.config.get("reverse_orders_enabled", False):
-            return "美股TradFi信号版本无效或反向订单已开启"
+            return "股票TradFi信号版本无效或反向订单已开启"
         if signal.side not in {"LONG", "SHORT"}:
-            return "美股TradFi交易方向无效"
-        if signal.symbol not in set(self.config.get("tradfi_symbols", [])) or not tradfi_strategy.is_equity_contract(symbol_info):
-            return "不在美股TradFi白名单或合约类型不符"
+            return "股票TradFi交易方向无效"
+        if not tradfi_strategy.is_equity_contract(symbol_info):
+            return "股票TradFi合约类型不符"
         try:
             book = http_get_json(self.config["market_base_url"], "/fapi/v1/depth",
                                  {"symbol": signal.symbol, "limit": 20},
@@ -4323,25 +4317,25 @@ class PaperBot:
             bid, ask = fnum(bids[0][0]), fnum(asks[0][0])
             bid_qty, ask_qty = fnum(bids[0][1]), fnum(asks[0][1])
         except Exception:
-            return "美股TradFi实时盘口不可用"
+            return "股票TradFi实时盘口不可用"
         if (bid <= 0 or ask <= bid or bid_qty <= 0 or ask_qty <= 0
                 or (ask - bid) / ((ask + bid) / 2) > float(self.config.get("tradfi_max_spread_pct", 0.25)) / 100):
-            return "美股TradFi实时买卖价差过大或无效"
+            return "股票TradFi实时买卖价差过大或无效"
         executable = ask if signal.side == "LONG" else bid
         if signal.price <= 0 or abs(executable / signal.price - 1) > 0.004:
-            return "美股TradFi实时价格偏离信号"
+            return "股票TradFi实时价格偏离信号"
         try:
             bid_depth = sum(fnum(level[0]) * max(0.0, fnum(level[1])) for level in bids
                             if len(level) >= 2 and fnum(level[0]) >= bid * 0.9975)
             ask_depth = sum(fnum(level[0]) * max(0.0, fnum(level[1])) for level in asks
                             if len(level) >= 2 and fnum(level[0]) <= ask * 1.0025)
         except (TypeError, IndexError):
-            return "美股TradFi实时盘口数据无效"
+            return "股票TradFi实时盘口数据无效"
         required_depth = (float(self.config.get("tradfi_margin_per_trade_usdt", 3.0))
                           * float(self.config.get("tradfi_leverage", 2))
                           * float(self.config.get("tradfi_min_depth_multiple", 3.0)))
         if min(bid_depth, ask_depth) < required_depth:
-            return "美股TradFi盘口深度不足"
+            return "股票TradFi盘口深度不足"
         return ""
 
     def open_from_signals(self, signals: list[Signal]) -> int:

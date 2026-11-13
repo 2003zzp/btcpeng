@@ -61,7 +61,7 @@ class FrontendSettingsTest(unittest.TestCase):
 
         self.assertEqual(
             [group["legend"] for group in parser.groups],
-            ["交易执行", "筛选策略", "美股 TradFi 多空", "确认过滤", "风险控制"],
+            ["交易执行", "筛选策略", "股票 TradFi 多空", "确认过滤", "风险控制"],
         )
         for group in parser.groups:
             self.assertIn("settings-group--full", group["classes"])
@@ -90,13 +90,14 @@ class FrontendSettingsTest(unittest.TestCase):
         html = Path("web/index.html").read_text(encoding="utf-8")
         parser = InputNameParser()
         parser.feed(html)
-        self.assertTrue({"tradfi_enabled", "tradfi_auto_trade_enabled", "tradfi_symbols",
+        self.assertTrue({"tradfi_enabled", "tradfi_auto_trade_enabled",
                          "tradfi_max_candidates", "tradfi_min_quote_volume_usdt",
                          "tradfi_margin_per_trade_usdt", "tradfi_leverage",
                          "tradfi_take_profit_roi_pct", "tradfi_stop_loss_roi_pct",
                          "tradfi_min_24h_change_pct", "tradfi_max_4h_change_pct",
                          "tradfi_min_15m_quote_volume_usdt", "tradfi_max_spread_pct",
                          "tradfi_min_depth_multiple"}.issubset(parser.input_names))
+        self.assertNotIn("tradfi_symbols", parser.input_names)
         self.assertNotIn("tradfi_max_stop_distance_pct", parser.input_names)
         self.assertNotIn("tradfi_reward_risk", parser.input_names)
         self.assertTrue({"tradfi_priority", "tradfi_margin_type"}.issubset(parser.select_names))

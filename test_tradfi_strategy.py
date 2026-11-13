@@ -21,27 +21,34 @@ class TradfiStrategyTest(unittest.TestCase):
 
     def test_only_equity_tradfi_contract_is_eligible(self):
         stock = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY", "underlyingSubType": ["TradFi"]}
+        hk_stock = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "HK_EQUITY", "underlyingSubType": ["TradFi"]}
         metal = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "COMMODITY", "underlyingSubType": ["TradFi"]}
         crypto = {"contractType": "PERPETUAL", "underlyingType": "COIN"}
         self.assertTrue(tradfi_strategy.is_equity_contract(stock))
+        self.assertTrue(tradfi_strategy.is_equity_contract(hk_stock))
+        self.assertTrue(tradfi_strategy.is_equity_contract({"contractType": "TRADIFI_PERPETUAL", "underlyingType": "HK_EQUITY"}))
+        self.assertTrue(tradfi_strategy.is_equity_contract({"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY", "underlyingSubType": None}))
         self.assertFalse(tradfi_strategy.is_equity_contract(metal))
         self.assertFalse(tradfi_strategy.is_equity_contract(crypto))
 
     def test_priority_and_fallback_use_one_stock_candidate(self):
         bot = self.make_bot()
-        bot.config.update({"tradfi_enabled": True, "tradfi_symbols": ["TSLAUSDT"],
-                           "tradfi_priority": "SHORT", "tradfi_max_candidates": 3})
-        tickers = [{"symbol": "TSLAUSDT", "lastPrice": "100", "quoteVolume": "10000000", "priceChangePercent": "3"}]
-        info = {"TSLAUSDT": {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY", "underlyingSubType": ["TradFi"]}}
+        bot.config.update({"tradfi_enabled": True, "tradfi_priority": "SHORT", "tradfi_max_candidates": 3})
+        tickers = [{"symbol": name, "lastPrice": "100", "quoteVolume": "10000000", "priceChangePercent": "3"}
+                   for name in ("TSLAUSDT", "0700USDT", "XAUUSDT", "BTCUSDT")]
+        info = {name: {"contractType": "TRADIFI_PERPETUAL", "underlyingType": kind,
+                       "underlyingSubType": ["TradFi"]}
+                for name, kind in (("TSLAUSDT", "EQUITY"), ("0700USDT", "HK_EQUITY"),
+                                   ("XAUUSDT", "COMMODITY"))}
+        info["BTCUSDT"] = {"contractType": "PERPETUAL", "underlyingType": "COIN"}
         bot.get_market_exchange_symbols = lambda: info
         pool = bot.build_tradfi_candidate_pool(tickers)
-        self.assertEqual(len(pool), 1)
+        self.assertEqual({entry["item"]["symbol"] for entry in pool}, {"TSLAUSDT", "0700USDT"})
         self.assertEqual(pool[0]["modes"], ["SHORT", "LONG"])
 
     def test_tradfi_24h_change_floor_filters_candidate(self):
         bot = self.make_bot()
-        bot.config.update({"tradfi_enabled": True, "tradfi_symbols": ["TSLAUSDT"],
-                           "tradfi_min_24h_change_pct": -10})
+        bot.config.update({"tradfi_enabled": True, "tradfi_min_24h_change_pct": -10})
         bot.get_market_exchange_symbols = lambda: {"TSLAUSDT": {
             "contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY", "underlyingSubType": ["TradFi"]}}
         ticker = {"symbol": "TSLAUSDT", "lastPrice": "100", "quoteVolume": "10000000",
@@ -95,26 +102,28 @@ class TradfiStrategyTest(unittest.TestCase):
                  "0", start + (i + 1) * 900_000 - 1, "100000"] for i in range(16)]
         self.assertAlmostEqual(tradfi_strategy.four_hour_change_pct(bars, now), 8.0)
 
-    def test_fetch_tickers_only_adds_whitelisted_equity_tradfi(self):
+    def test_fetch_tickers_discovers_stock_tradfi_without_whitelist(self):
         bot = self.make_bot()
-        bot.config.update({"tradfi_enabled": True, "tradfi_symbols": ["TSLAUSDT", "XAUUSDT"]})
+        bot.config.update({"tradfi_enabled": True})
         payload = [{"symbol": name, "lastPrice": "100", "quoteVolume": "10000000"}
-                   for name in ("BTCUSDT", "TSLAUSDT", "NVDAUSDT", "XAUUSDT")]
+                   for name in ("BTCUSDT", "TSLAUSDT", "NVDAUSDT", "0700USDT", "XAUUSDT")]
         kinds = {"BTCUSDT": ("PERPETUAL", "COIN"), "TSLAUSDT": ("TRADIFI_PERPETUAL", "EQUITY"),
-                 "NVDAUSDT": ("TRADIFI_PERPETUAL", "EQUITY"), "XAUUSDT": ("TRADIFI_PERPETUAL", "COMMODITY")}
+                 "NVDAUSDT": ("TRADIFI_PERPETUAL", "EQUITY"),
+                 "0700USDT": ("TRADIFI_PERPETUAL", "HK_EQUITY"),
+                 "XAUUSDT": ("TRADIFI_PERPETUAL", "COMMODITY")}
         info = {name: {"contractType": contract, "underlyingType": kind,
                        "underlyingSubType": ["TradFi"] if contract.startswith("TRADIFI") else []}
                 for name, (contract, kind) in kinds.items()}
         bot.get_market_exchange_symbols = lambda: info
         with patch.object(server, "http_get_json", return_value=payload):
             rows = bot.fetch_tickers()
-        self.assertEqual({row["symbol"] for row in rows}, {"BTCUSDT", "TSLAUSDT"})
+        self.assertEqual({row["symbol"] for row in rows}, {"BTCUSDT", "TSLAUSDT", "NVDAUSDT", "0700USDT"})
         self.assertEqual([row["item"]["symbol"] for row in bot.build_candidate_pool(rows)], [])
 
     def test_short_priority_falls_back_to_long_once(self):
         bot = self.make_bot()
         bot.config.update({"tradfi_enabled": True, "tradfi_auto_trade_enabled": True,
-                           "tradfi_symbols": ["TSLAUSDT"], "tradfi_priority": "SHORT"})
+                           "tradfi_priority": "SHORT"})
         bot.get_market_exchange_symbols = lambda: {"TSLAUSDT": {
             "contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY", "underlyingSubType": ["TradFi"]}}
         now = datetime(2026, 7, 6, 16, 45, tzinfo=timezone.utc)
@@ -229,8 +238,7 @@ class TradfiStrategyTest(unittest.TestCase):
 
     def test_preopen_rechecks_type_spread_and_depth_outside_regular_session(self):
         bot = self.make_bot()
-        bot.config.update({"tradfi_enabled": True, "tradfi_auto_trade_enabled": True,
-                           "tradfi_symbols": ["TSLAUSDT"]})
+        bot.config.update({"tradfi_enabled": True, "tradfi_auto_trade_enabled": True})
         info = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY", "underlyingSubType": ["TradFi"]}
         signal = server.Signal(
             symbol="TSLAUSDT", side="SHORT", score=9, price=100, quote_volume=1_000_000,
@@ -257,12 +265,20 @@ class TradfiStrategyTest(unittest.TestCase):
             self.assertIn("盘口", bot.tradfi_open_reject_reason(signal, info))
         with patch.object(server, "utc_now", return_value=premarket), patch.object(server, "http_get_json", return_value=self.depth_book()):
             self.assertEqual(bot.tradfi_open_reject_reason(signal, info), "")
+            self.assertEqual(bot.tradfi_open_reject_reason(signal, {**info, "underlyingType": "HK_EQUITY"}), "")
             self.assertIn("合约类型", bot.tradfi_open_reject_reason(signal, {**info, "underlyingType": "COMMODITY"}))
+            self.assertIn("合约类型", bot.tradfi_open_reject_reason(signal, {**info, "contractType": "PERPETUAL", "underlyingType": "COIN"}))
+
+    def test_legacy_tradfi_symbols_are_ignored_on_load(self):
+        bot = self.make_bot()
+        bot.config_path.write_text('{"tradfi_symbols": ["TSLAUSDT"]}', encoding="utf-8")
+        reloaded = server.PaperBot(bot.config_path, bot.state_path)
+        self.assertNotIn("tradfi_symbols", reloaded.config)
 
     def test_open_path_allows_only_verified_equity_signal(self):
         bot = self.make_bot()
         bot.config.update({"tradfi_enabled": True, "tradfi_auto_trade_enabled": True,
-                           "tradfi_symbols": ["TSLAUSDT"], "square_publish_on_open": False})
+                           "square_publish_on_open": False})
         info = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY", "underlyingSubType": ["TradFi"]}
         bot.get_exchange_symbols = lambda: {"TSLAUSDT": info}
         bot.get_market_exchange_symbols = lambda: {"TSLAUSDT": info}

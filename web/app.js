@@ -110,9 +110,8 @@ function normalizeSettingsLabels() {
     pre_start_oi_1h_min_pct: "预启动OI 1h下限 (%)",
     pre_start_funding_abs_max_pct: "预启动资金费率上限 (%)",
     pre_start_market_confirm_min_score: "持续放量确认分阈值",
-    tradfi_enabled: "启用美股 TradFi 候选池",
-    tradfi_auto_trade_enabled: "允许美股 TradFi 自动开仓",
-    tradfi_symbols: "美股合约白名单",
+    tradfi_enabled: "启用股票 TradFi 候选池",
+    tradfi_auto_trade_enabled: "允许股票 TradFi 自动开仓",
     tradfi_priority: "多空优先验证",
     tradfi_max_candidates: "TradFi 候选数",
     tradfi_min_quote_volume_usdt: "TradFi 24h 最低成交额 (U)",
@@ -204,11 +203,11 @@ function normalizeSettingsLabels() {
   }
   for (const name of ["tradfi_take_profit_roi_pct", "tradfi_stop_loss_roi_pct"]) {
     const label = els.form?.elements?.[name]?.closest("label");
-    if (label) label.title = "仅对以后新开的美股 TradFi 订单生效。这里是仓位ROI百分比，不是价格涨跌百分比；现有保护单不自动修改。";
+    if (label) label.title = "仅对以后新开的股票 TradFi 订单生效。这里是仓位ROI百分比，不是价格涨跌百分比；现有保护单不自动修改。";
   }
   const marginTypeLabel = els.form?.elements?.margin_type?.closest("label");
   if (marginTypeLabel) {
-    marginTypeLabel.title = "强波动池使用此模式；老币反弹、预启动和美股 TradFi 池有自己的仓位模式。全仓会共用账户保证金。";
+    marginTypeLabel.title = "强波动池使用此模式；老币反弹、预启动和股票 TradFi 池有自己的仓位模式。全仓会共用账户保证金。";
   }
   for (const name of ["pre_start_margin_type", "old_rebound_short_margin_type", "tradfi_margin_type"]) {
     const label = els.form?.elements?.[name]?.closest("label");
@@ -886,7 +885,7 @@ function renderCooldowns(rows) {
 function candidateModeBadge(row) {
   const mode = String(row.signal_mode || "strong_momentum");
   if (mode === "tradfi_us_equity") {
-    return { text: "美股 TradFi", className: "mode-tradfi" };
+    return { text: "股票 TradFi", className: "mode-tradfi" };
   }
   if (mode === "pre_start_long") {
     return { text: "持续放量做多", className: "mode-pre-start" };
@@ -930,7 +929,7 @@ function candidatePrimaryScore(row) {
   const systemScore = Number(row.score || 0);
   const confirmScore = Number(row.analyzer_confidence_pct || 0) / 10;
   if (mode === "tradfi_us_equity") {
-    return { text: confirmScore.toFixed(1), title: `美股结构分 ${confirmScore.toFixed(1)}/10` };
+    return { text: confirmScore.toFixed(1), title: `股票结构分 ${confirmScore.toFixed(1)}/10` };
   }
   if ((mode === "pre_start_long" || mode === "old_rebound_short") && confirmScore > 0) {
     return {
@@ -1027,7 +1026,7 @@ function renderHistory(rows) {
 function strategyReasonDisplay(row) {
   const strategyParts = [];
   if (Number(row.strategy_score || row.score || 0) > 0) strategyParts.push(`分 ${Number(row.strategy_score || row.score || 0).toFixed(1)}`);
-  if (["市场确认", "持续放量确认", "老币反弹确认", "美股结构确认"].includes(row.analyzer_direction)) {
+  if (["市场确认", "持续放量确认", "老币反弹确认", "美股结构确认", "股票结构确认"].includes(row.analyzer_direction)) {
     strategyParts.push(`${row.analyzer_direction} ${(Number(row.analyzer_confidence_pct || 0) / 10).toFixed(1)}/10`);
   } else if (["做多", "做空", "观望"].includes(row.analyzer_direction)) {
     strategyParts.push(`历史确认：${row.analyzer_direction}`);
@@ -1198,7 +1197,7 @@ els.form.addEventListener("submit", async (event) => {
       if (!ok) return currentState;
     }
     if (data.tradfi_auto_trade_enabled === "true" && !currentState?.config?.tradfi_auto_trade_enabled) {
-      const ok = window.confirm("确认允许美股 TradFi 自动开仓？盘前盘后也可能开仓；财报和临时停市事件未自动过滤，请先确认账户已签署币安 TradFi 合约协议。");
+      const ok = window.confirm("确认允许股票 TradFi 自动开仓？美股和港股可在数据与流动性达标时开仓；财报和临时停市事件未自动过滤，请先确认账户已签署币安 TradFi 合约协议。");
       if (!ok) return currentState;
     }
     currentState = await api("/api/settings", {
