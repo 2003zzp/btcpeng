@@ -68,8 +68,24 @@ class FrontendSettingsTest(unittest.TestCase):
     def test_settings_keep_unique_controls_across_hidden_panels(self):
         parser = InputNameParser()
         parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
-        self.assertEqual(len(parser.named_controls), 84)
+        self.assertEqual(len(parser.named_controls), 87)
         self.assertEqual(len(parser.named_controls), len(set(parser.named_controls)))
+
+    def test_old_rebound_15m_drop_limit_is_editable(self):
+        parser = InputNameParser()
+        parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
+        attrs = parser.input_attrs["old_rebound_short_15m_min_pct"]
+        self.assertEqual((attrs["type"], attrs["min"], attrs["max"], attrs["step"]),
+                         ("number", "-50", "0", "0.1"))
+
+    def test_old_rebound_cumulative_drop_limits_are_editable(self):
+        parser = InputNameParser()
+        parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
+        for name in ("old_rebound_short_1h_min_pct", "old_rebound_short_2h_min_pct"):
+            with self.subTest(name=name):
+                attrs = parser.input_attrs[name]
+                self.assertEqual((attrs["type"], attrs["min"], attrs["max"], attrs["step"]),
+                                 ("number", "-100", "0", "0.1"))
 
     def test_tradfi_amount_and_roi_inputs_accept_normal_values(self):
         html = Path("web/index.html").read_text(encoding="utf-8")

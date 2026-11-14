@@ -359,9 +359,21 @@
               老币15m转弱上限 (%)
               <input name="old_rebound_short_15m_max_pct" type="number" min="-50" max="50" step="0.1" />
             </label>
+            <label title="最近一根已收盘15m跌幅低于此值时禁止直接追空，并进入急跌观察；例如填-5表示低于-5%才触发单根限制。近1h和近2h累计跌幅保护仍独立生效。">
+              老币15m跌幅下限 (%)
+              <input name="old_rebound_short_15m_min_pct" type="number" min="-50" max="0" step="0.1" />
+            </label>
             <label>
               老币1h转弱上限 (%)
               <input name="old_rebound_short_1h_max_pct" type="number" min="-100" max="100" step="0.1" />
+            </label>
+            <label title="最近一根已收盘1h低于此值时禁止直接追空；连续4根已收盘15m的累计跌幅低于此值也会进入急跌观察。反抽失败后仍需通过其他开仓检查。">
+              老币1h跌幅下限 (%)
+              <input name="old_rebound_short_1h_min_pct" type="number" min="-100" max="0" step="0.1" />
+            </label>
+            <label title="最近连续8根已收盘15m的累计跌幅达到此值时进入急跌观察；不额外拉取2h K线，不单独控制1h追空限制。">
+              老币近2h累计跌幅下限 (%)
+              <input name="old_rebound_short_2h_min_pct" type="number" min="-100" max="0" step="0.1" />
             </label>
             <label>
               老币量能下限
