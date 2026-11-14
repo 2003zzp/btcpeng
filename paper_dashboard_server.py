@@ -123,9 +123,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "old_rebound_short_min_history_days": 365,
     "old_rebound_short_15m_max_pct": 0.3,
     "old_rebound_short_1h_max_pct": 0.5,
-    "old_rebound_short_15m_min_pct": -3.0,
-    "old_rebound_short_1h_min_pct": -6.0,
-    "old_rebound_short_2h_min_pct": -8.0,
+    "old_rebound_short_15m_min_pct": -5.0,
     "old_rebound_short_15m_break_min_pct": 0.2,
     "old_rebound_short_max_high_drawdown_pct": 35.0,
     "old_rebound_short_min_low_distance_pct": 5.0,
@@ -510,48 +508,6 @@ def infer_trend(closes: list[float]) -> str:
     return "neutral"
 
 
-def old_rebound_shock_state(
-    klines: list[list[Any]], min_15m: float = -3.0,
-    min_1h: float = -6.0, break_min_pct: float = 0.2,
-    min_2h: float = -8.0,
-) -> dict[str, Any]:
-    """从已收盘15m线重建最近急跌和反抽状态，不依赖跨轮内存。"""
-    if len(klines) < 17:
-        return {"status": "unavailable", "reason": "老币反弹15m急跌观察数据不足"}
-    closes = [fnum(k[4]) for k in klines]
-    lows = [fnum(k[3]) for k in klines]
-    if any(value <= 0 for value in closes + lows):
-        return {"status": "unavailable", "reason": "老币反弹15m急跌观察价格无效"}
-
-    shocks: list[tuple[int, str, float]] = []
-    for index in range(max(8, len(closes) - 16), len(closes)):
-        move_15m = pct(closes[index], closes[index - 1])
-        move_1h = pct(closes[index], closes[index - 4])
-        move_2h = pct(closes[index], closes[index - 8])
-        if move_15m < min_15m:
-            shocks.append((index, "单根15m", move_15m))
-        elif move_1h < min_1h:
-            shocks.append((index, "近1h累计", move_1h))
-        elif move_2h <= min_2h:
-            shocks.append((index, "近2h累计", move_2h))
-    if not shocks:
-        return {"status": "none"}
-
-    trough, trigger, move = min(shocks, key=lambda row: closes[row[0]])
-    waiting = {"status": "waiting", "reason": f"老币反弹{trigger}跌幅 {move:+.1f}% 过深，等待已收盘15m反抽失败"}
-    if trough + 3 > len(closes) - 1:
-        return waiting
-    peak = max(range(trough + 1, len(closes) - 1), key=lambda index: closes[index])
-    if (pct(closes[peak], closes[trough]) < 2.0
-            or not 2 <= len(closes) - 1 - peak <= 3
-            or not closes[-1] < closes[-2] < closes[-3]
-            or pct(closes[-1], lows[-2]) > -break_min_pct
-            or pct(closes[-1], closes[trough]) < 2.0
-            or pct(closes[-1], closes[peak]) < -4.0):
-        return waiting
-    return {"status": "ready", "break_level": lows[-2]}
-
-
 class PaperBot:
     """策略运行器；持有配置、运行状态、交易所缓存和扫描线程。"""
 
@@ -593,6 +549,7 @@ class PaperBot:
                 "old_rebound_short_max_candidates", "old_rebound_short_24h_min_pct",
                 "old_rebound_short_24h_max_pct", "old_rebound_short_min_quote_volume_usdt",
                 "old_rebound_short_max_quote_volume_usdt",
+                "old_rebound_short_1h_min_pct", "old_rebound_short_2h_min_pct",
                 "tradfi_max_stop_distance_pct", "tradfi_reward_risk", "tradfi_symbols",
             }:
                 config.pop(key)
@@ -1185,8 +1142,6 @@ class PaperBot:
             "old_rebound_short_15m_max_pct": float,
             "old_rebound_short_15m_min_pct": float,
             "old_rebound_short_1h_max_pct": float,
-            "old_rebound_short_1h_min_pct": float,
-            "old_rebound_short_2h_min_pct": float,
             "old_rebound_short_min_low_distance_pct": float,
             "old_rebound_short_volume_ratio_min": float,
             "old_rebound_short_volume_ratio_max": float,
@@ -1252,14 +1207,6 @@ class PaperBot:
                 threshold = fnum(patch["old_rebound_short_15m_min_pct"], float("nan"))
                 if not -50 <= threshold <= 0:
                     raise ValueError("老币15m跌幅下限须在-50%到0%之间")
-            for key, label in (
-                ("old_rebound_short_1h_min_pct", "老币1h跌幅下限"),
-                ("old_rebound_short_2h_min_pct", "老币2h累计跌幅下限"),
-            ):
-                if key in patch:
-                    threshold = fnum(patch[key], float("nan"))
-                    if not -100 <= threshold <= 0:
-                        raise ValueError(f"{label}须在-100%到0%之间")
             previous_mode = self.exchange_mode()
             for key, caster in allowed.items():
                 if key not in patch:
@@ -3359,8 +3306,7 @@ class PaperBot:
         min_days = int(self.config.get("old_rebound_short_min_history_days", 365))
         max_15m = float(self.config.get("old_rebound_short_15m_max_pct", 0.3))
         max_1h = float(self.config.get("old_rebound_short_1h_max_pct", 0.5))
-        min_15m = float(self.config.get("old_rebound_short_15m_min_pct", -3.0))
-        min_1h = float(self.config.get("old_rebound_short_1h_min_pct", -6.0))
+        min_15m = float(self.config.get("old_rebound_short_15m_min_pct", -5.0))
         min_volume = float(self.config.get("old_rebound_short_volume_ratio_min", 0.8))
         max_volume = float(self.config.get("old_rebound_short_volume_ratio_max", 6.0))
         live_metrics = live_metrics or {}
@@ -3378,15 +3324,8 @@ class PaperBot:
             return "老币反弹15m已收盘K线不足，禁止用24h估算开空"
         if int(live_metrics.get("closed_1h_count", 0)) < 30:
             return "老币反弹1h已收盘K线不足，禁止用24h估算开空"
-        shock = live_metrics.get("old_rebound_shock") or {}
-        if shock.get("status") == "unavailable":
-            return str(shock.get("reason"))
         if short_move < min_15m:
-            return f"老币反弹跌幅过深，禁止追空：15m {short_move:+.1f}% / 1h {change_1h:+.1f}%"
-        if shock.get("status") == "waiting":
-            return str(shock.get("reason"))
-        if change_1h < min_1h and shock.get("status") != "ready":
-            return f"老币反弹跌幅过深，禁止追空：15m {short_move:+.1f}% / 1h {change_1h:+.1f}%"
+            return f"老币反弹最新已收盘15m跌幅 {short_move:+.1f}% 低于下限 {min_15m:+.1f}%，禁止追空"
         price = fnum(live_metrics.get("price"))
         if price <= 0:
             return "老币反弹K线价格无效"
@@ -3408,12 +3347,10 @@ class PaperBot:
             return "老币反弹15m未明确转弱，短暂横盘或微涨不允许开空"
         if live_metrics.get("trend_1h") == "up":
             return "老币反弹1h趋势仍上行，等待转弱"
-        retest_ready = shock.get("status") == "ready"
-        previous_low = fnum(shock.get("break_level")) if retest_ready else fnum(live_metrics.get("closed_15m_previous_low"))
+        previous_low = fnum(live_metrics.get("closed_15m_previous_low"))
         break_min_pct = float(self.config.get("old_rebound_short_15m_break_min_pct", 0.2))
         if previous_low <= 0 or pct(price, previous_low) > -break_min_pct:
-            reference = "反抽支撑" if retest_ready else "前3根已收盘K线低点"
-            return f"老币反弹15m未确认破位，需跌破{reference}至少 {break_min_pct:.1f}%"
+            return f"老币反弹15m未确认破位，需跌破前3根已收盘K线低点至少 {break_min_pct:.1f}%"
         if current_price > 0 and current_price >= previous_low:
             return "老币反弹当前价站回破位线，暂停开空"
         if "live_short_move" in live_metrics:
@@ -3464,13 +3401,6 @@ class PaperBot:
             if old_rebound:
                 metrics["closed_15m_count"] = len(klines15)
                 metrics["trend_15m"] = infer_trend(closes15)
-                metrics["old_rebound_shock"] = old_rebound_shock_state(
-                    klines15,
-                    float(self.config.get("old_rebound_short_15m_min_pct", -3.0)),
-                    float(self.config.get("old_rebound_short_1h_min_pct", -6.0)),
-                    float(self.config.get("old_rebound_short_15m_break_min_pct", 0.2)),
-                    float(self.config.get("old_rebound_short_2h_min_pct", -8.0)),
-                )
                 if len(klines15) >= 4:
                     lows = [fnum(k[3]) for k in klines15[-4:-1]]
                     if all(low > 0 for low in lows):
@@ -3925,8 +3855,6 @@ class PaperBot:
                         high_24h=fnum(item.get("highPrice")), low_24h=fnum(item.get("lowPrice")),
                         current_price=fnum(item.get("lastPrice")),
                     )
-                    if not reject and metrics.get("old_rebound_shock", {}).get("status") == "ready":
-                        mode_reason = f"{mode_reason}；急跌后已收盘15m反抽失败"
             priority = "高" if score >= 6 else "中" if score >= 4.5 else "低"
             # 资金面先放占位估算值；后续接口能取到真实数据时再替换。
             market_stats = {

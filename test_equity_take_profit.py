@@ -809,8 +809,9 @@ class LongStructureConfirmationTest(unittest.TestCase):
         self.assertEqual(bot.config["shared_pool_24h_min_pct"], 8.0)
         self.assertEqual(bot.config["old_rebound_short_confirm_min_score"], 6.9)
 
-    def test_old_rebound_15m_drop_limit_changes_rejection_and_shock_detection(self):
+    def test_old_rebound_15m_drop_limit_changes_latest_candle_rejection(self):
         bot = self.make_bot()
+        bot.config["old_rebound_short_15m_min_pct"] = -3.0
         bot.has_symbol_history = lambda symbol, days: True
         klines = [[0, "0", "0", str(close * .999), str(close), "0", 0, "1000"]
                   for close in [100.0] * 29 + [96.0]]
@@ -820,20 +821,18 @@ class LongStructureConfirmationTest(unittest.TestCase):
         reason = lambda: bot.old_rebound_short_kline_reject_reason(
             "OLDUSDT", -4.0, -4.0, 1.1, "down", metrics,
             high_24h=100, low_24h=90, current_price=96)
-        self.assertIn("跌幅过深", reason())
-        self.assertEqual(server.old_rebound_shock_state(klines)["status"], "waiting")
+        self.assertIn("15m", reason())
 
         bot.update_settings({"old_rebound_short_15m_min_pct": "-5.0"})
         self.assertEqual(bot.config["old_rebound_short_15m_min_pct"], -5.0)
         self.assertEqual(reason(), "")
-        self.assertEqual(server.old_rebound_shock_state(
-            klines, bot.config["old_rebound_short_15m_min_pct"])["status"], "none")
         bot.fetch_klines_interval = lambda symbol, interval, limit: (
             klines if interval == "15m" else
             [[0, "0", "0", "99", "100", "0", 0, "1000"] for _ in range(30)]
         )
-        self.assertEqual(bot.kline_short_metrics(
-            "OLDUSDT", 96, 10, old_rebound=True)["old_rebound_shock"]["status"], "none")
+        enriched = bot.kline_short_metrics("OLDUSDT", 96, 10, old_rebound=True)
+        self.assertEqual(enriched["short_move"], -4.0)
+        self.assertNotIn("old_rebound_shock", enriched)
 
         for value in ("-51", "1", "nan"):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -959,103 +958,58 @@ class KlineShortMetricsTest(unittest.TestCase):
         return [[0, "0", "0", str(close * 0.999), str(close), "0", 0, "1000"]
                 for close in closes]
 
-    def test_old_rebound_shock_waits_through_continued_drop_and_single_bounce(self):
-        closes = [100.0] * 25 + [96, 92, 88, 85]
-        self.assertEqual(server.old_rebound_shock_state(self.rebound_klines(closes))["status"], "waiting")
-        self.assertEqual(server.old_rebound_shock_state(self.rebound_klines(closes + [89]))["status"], "waiting")
-
-    def test_old_rebound_cumulative_mild_drop_enters_observation(self):
-        closes = [100.0] * 25 + [98, 96, 94, 92]
-        state = server.old_rebound_shock_state(self.rebound_klines(closes))
-        self.assertEqual(state["status"], "waiting")
-        self.assertIn("累计", state["reason"])
-
-    def test_old_rebound_1h_and_2h_limits_update_both_paths(self):
+    def test_old_rebound_only_latest_closed_15m_drop_blocks_entry(self):
         bot = self.make_bot()
-        one_hour = self.rebound_klines([100.0] * 25 + [98.5, 97, 95.5, 93.5])
-        two_hours = self.rebound_klines([100.0] * 25 + [99, 98, 97, 96, 95, 94, 93, 92])
-        self.assertEqual(server.old_rebound_shock_state(one_hour)["status"], "waiting")
-        self.assertEqual(server.old_rebound_shock_state(two_hours)["status"], "waiting")
+        bot.has_symbol_history = lambda symbol, days: True
+        bot.config["old_rebound_short_15m_min_pct"] = -5.0
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "price": 90.0, "closed_15m_previous_low": 91.0,
+                   "trend_1h": "down",
+                   "old_rebound_shock": {"status": "waiting", "reason": "历史急跌"}}
+        def reject(move):
+            return bot.old_rebound_short_kline_reject_reason(
+                "OLDUSDT", move, -15.3, 1.1, "down", metrics,
+                high_24h=110.0, low_24h=80.0, current_price=90.0)
+        self.assertEqual(reject(-1.0), "")
+        self.assertIn("15m", reject(-5.1))
 
-        bot.update_settings({"old_rebound_short_1h_min_pct": "-8", "old_rebound_short_2h_min_pct": "-10"})
-        self.assertEqual(bot.config["old_rebound_short_1h_min_pct"], -8)
-        self.assertEqual(bot.config["old_rebound_short_2h_min_pct"], -10)
-        self.assertEqual(server.PaperBot(bot.config_path, bot.state_path).config[
-            "old_rebound_short_2h_min_pct"], -10)
-        self.assertEqual(server.old_rebound_shock_state(
-            one_hour, min_1h=-8, min_2h=-10)["status"], "none")
+    def test_old_rebound_old_drop_limits_are_not_active_settings(self):
+        bot = self.make_bot()
+        self.assertEqual(bot.config["old_rebound_short_15m_min_pct"], -5.0)
+        bot.config_path.write_text(
+            '{"old_rebound_short_1h_min_pct": -6, "old_rebound_short_2h_min_pct": -8}',
+            encoding="utf-8",
+        )
+        reloaded = server.PaperBot(bot.config_path, bot.state_path)
+        self.assertNotIn("old_rebound_short_1h_min_pct", reloaded.config)
+        self.assertNotIn("old_rebound_short_2h_min_pct", reloaded.config)
+
+    def test_old_rebound_previous_shock_does_not_block_current_mild_break(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        closes = [100.0] * 35 + [90, 94, 93, 92, 91]
         bot.fetch_klines_interval = lambda symbol, interval, limit: (
-            two_hours if interval == "15m" else
-            self.rebound_klines([100] * 29 + [93]))
-        metrics = bot.kline_short_metrics("OLDUSDT", 92, 10, old_rebound=True)
-        self.assertEqual(metrics["old_rebound_shock"]["status"], "none")
-        bot.has_symbol_history = lambda symbol, days: True
-        base = {"closed_15m_count": 30, "closed_1h_count": 30, "price": 92,
-                "closed_15m_previous_low": 95, "trend_1h": "neutral"}
-        reason = bot.old_rebound_short_kline_reject_reason(
-            "OLDUSDT", -1, -7, 1, "down", base,
-            high_24h=100, low_24h=80, current_price=92)
-        self.assertEqual(reason, "")
-
-        for name in ("old_rebound_short_1h_min_pct", "old_rebound_short_2h_min_pct"):
-            for value in ("-101", "1", "nan"):
-                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
-                    bot.update_settings({name: value})
-
-    def test_old_rebound_closed_retest_can_recheck_after_shock(self):
-        closes = [100.0] * 25 + [96, 92, 88, 85, 90, 89.5, 88.8]
-        state = server.old_rebound_shock_state(self.rebound_klines(closes))
-        self.assertEqual(state["status"], "ready")
-        self.assertGreater(state["break_level"], 88.8)
-        bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
-        metrics = {"closed_15m_count": 30, "closed_1h_count": 30,
-                   "price": 88.8, "trend_1h": "neutral", "old_rebound_shock": state,
-                   "closed_15m_previous_low": 85.0}
+            self.rebound_klines(closes) if interval == "15m" else self.rebound_klines([100] * 30))
+        metrics = bot.kline_short_metrics("OLDUSDT", 91, 10, old_rebound=True)
+        self.assertAlmostEqual(metrics["short_move"], (91 / 92 - 1) * 100)
+        self.assertNotIn("old_rebound_shock", metrics)
         self.assertEqual(bot.old_rebound_short_kline_reject_reason(
-            "OLDUSDT", -0.8, -15.3, 1.1, "down", metrics,
-            high_24h=100, low_24h=80, current_price=88.8), "")
+            "OLDUSDT", metrics["short_move"], -15.3, 1.1, "down", metrics,
+            high_24h=110, low_24h=80, current_price=91), "")
 
-    def test_old_rebound_retest_does_not_override_new_waterfall_or_live_reclaim(self):
-        bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
-        state = {"status": "ready", "break_level": 89.0}
-        metrics = {"closed_15m_count": 30, "closed_1h_count": 30,
-                   "price": 88.8, "trend_1h": "neutral", "old_rebound_shock": state}
-        reject = lambda move, live: bot.old_rebound_short_kline_reject_reason(
-            "OLDUSDT", move, -15.3, 1.1, "down", {**metrics, "live_short_move": live},
-            high_24h=100, low_24h=80, current_price=88.8)
-        self.assertIn("追空", reject(-3.2, -0.1))
-        self.assertIn("站回破位线", reject(-0.8, 1.0))
-        self.assertIn("24h低点", bot.old_rebound_short_kline_reject_reason(
-            "OLDUSDT", -0.8, -15.3, 1.1, "down", metrics,
-            high_24h=100, low_24h=87, current_price=88.8))
-
-    def test_old_rebound_shock_observation_blocks_small_next_candle(self):
-        bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
-        metrics = {"closed_15m_count": 30, "closed_1h_count": 30,
-                   "price": 89.0, "trend_1h": "neutral", "closed_15m_previous_low": 90,
-                   "old_rebound_shock": {"status": "waiting", "reason": "等待已收盘15m反抽失败"}}
-        reason = bot.old_rebound_short_kline_reject_reason(
-            "OLDUSDT", -0.7, -1.0, 1.1, "down", metrics,
-            high_24h=100, low_24h=80, current_price=89)
-        self.assertIn("等待", reason)
-
-    def test_old_rebound_shock_ignores_unclosed_bounce_and_expires(self):
+    def test_old_rebound_unclosed_15m_does_not_set_main_drop(self):
         bot = self.make_bot()
         future = int(server.time.time() * 1000) + 60_000
-        closes = [100.0] * 25 + [96, 92, 88, 85]
-        live_bounce = self.rebound_klines([90])[0]
-        live_bounce[6] = future
+        closes = [100.0] * 35 + [90, 94, 93, 92, 91]
+        live_drop = self.rebound_klines([86])[0]
+        live_drop[6] = future
         bot.fetch_klines_interval = lambda symbol, interval, limit: (
-            self.rebound_klines(closes) + [live_bounce] if interval == "15m"
+            self.rebound_klines(closes) + [live_drop] if interval == "15m"
             else self.rebound_klines([100] * 30))
-        metrics = bot.kline_short_metrics("OLDUSDT", 85, 10, old_rebound=True)
-        self.assertEqual(metrics["old_rebound_shock"]["status"], "waiting")
-        self.assertEqual(metrics["price"], 85)
-        self.assertEqual(server.old_rebound_shock_state(
-            self.rebound_klines(closes + [100] * 17))["status"], "none")
+        metrics = bot.kline_short_metrics("OLDUSDT", 91, 10, old_rebound=True)
+        self.assertEqual(metrics["price"], 91)
+        self.assertAlmostEqual(metrics["short_move"], (91 / 92 - 1) * 100)
+        self.assertLess(metrics["live_short_move"], -5)
 
     def test_old_rebound_requests_enough_closed_1h_bars_and_keeps_separate_trends(self):
         bot = self.make_bot()
@@ -1095,7 +1049,7 @@ class KlineShortMetricsTest(unittest.TestCase):
         self.assertIn("1h", reason)
         self.assertIn("不足", reason)
 
-    def test_old_rebound_rejects_waterfall_but_allows_fresh_break(self):
+    def test_old_rebound_rejects_latest_15m_waterfall_but_allows_fresh_break(self):
         bot = self.make_bot()
         bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30, "trend_15m": "down",
@@ -1105,8 +1059,8 @@ class KlineShortMetricsTest(unittest.TestCase):
                 "OLDUSDT", move15, move1h, 1.1, "down", {**metrics, "price": price},
                 high_24h=high, low_24h=low)
         self.assertEqual(reason(-0.8, -1), "")
-        self.assertIn("追空", reason(-5, -1))
-        self.assertIn("追空", reason(-0.8, -9))
+        self.assertIn("追空", reason(-5.1, -1))
+        self.assertEqual(reason(-0.8, -9), "")
         self.assertIn("24h高点", reason(-0.8, -1, high=20))
         self.assertIn("24h低点", reason(-0.8, -1, low=9.9))
 
@@ -1188,7 +1142,7 @@ class KlineShortMetricsTest(unittest.TestCase):
                    "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
         reason = bot.old_rebound_short_kline_reject_reason(
             "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics,
-            high_24h=12.0, low_24h=8.0, current_price=9.5)
+            high_24h=12.0, low_24h=8.0, current_price=9.49)
         self.assertIn("实时", reason)
         self.assertIn("追空", reason)
 
@@ -1936,7 +1890,7 @@ class KlineShortMetricsTest(unittest.TestCase):
             calls.append(symbol)
             return {
                 "short_move": -0.8,
-                "change_1h": -1.2,
+                "change_1h": -15.3,
                 "change_4h": 3.0,
                 "volume_ratio": 2.0,
                 "trend": "down",
