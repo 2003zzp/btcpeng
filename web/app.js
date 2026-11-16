@@ -155,6 +155,7 @@ function normalizeSettingsLabels() {
     tradfi_take_profit_roi_pct: "TradFi 初始止盈 ROI (%)",
     tradfi_stop_loss_roi_pct: "TradFi 初始止损 ROI (%)",
     old_rebound_short_min_low_distance_pct: "老币距24h低点最小距离 (%)",
+    old_rebound_short_min_historical_low_distance_pct: "老币距历史低价最小距离 (%)",
     old_rebound_short_15m_min_pct: "老币15m跌幅下限 (%)",
     signal_score_threshold: "系统分阈值",
     strong_long_24h_min_change_pct: "强波动做多24h涨幅下限 (%)",

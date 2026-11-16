@@ -68,7 +68,7 @@ class FrontendSettingsTest(unittest.TestCase):
     def test_settings_keep_unique_controls_across_hidden_panels(self):
         parser = InputNameParser()
         parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
-        self.assertEqual(len(parser.named_controls), 85)
+        self.assertEqual(len(parser.named_controls), 86)
         self.assertEqual(len(parser.named_controls), len(set(parser.named_controls)))
 
     def test_old_rebound_15m_drop_limit_is_editable(self):
@@ -250,11 +250,13 @@ class FrontendSettingsTest(unittest.TestCase):
         self.assertIn("pre_start_margin_type", parser.select_names)
         self.assertIn("old_rebound_short_margin_type", parser.select_names)
 
-    def test_old_rebound_historical_low_distance_control_is_removed(self):
+    def test_old_rebound_historical_low_distance_control_is_exposed(self):
         html = Path("web/index.html").read_text(encoding="utf-8")
         parser = InputNameParser()
         parser.feed(html)
-        self.assertNotIn("old_rebound_short_min_historical_low_distance_pct", parser.input_names)
+        self.assertIn("old_rebound_short_min_historical_low_distance_pct", parser.input_names)
+        self.assertEqual(parser.input_attrs["old_rebound_short_min_historical_low_distance_pct"]["min"], "0")
+        self.assertEqual(parser.input_attrs["old_rebound_short_min_historical_low_distance_pct"]["max"], "100")
 
     def test_old_rebound_24h_low_distance_control_is_exposed(self):
         html = Path("web/index.html").read_text(encoding="utf-8")

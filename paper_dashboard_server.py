@@ -127,6 +127,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "old_rebound_short_15m_break_min_pct": 0.2,
     "old_rebound_short_max_high_drawdown_pct": 35.0,
     "old_rebound_short_min_low_distance_pct": 5.0,
+    "old_rebound_short_min_historical_low_distance_pct": 25.0,
     "old_rebound_short_volume_ratio_min": 0.8,
     "old_rebound_short_volume_ratio_max": 6.0,
     "old_rebound_short_taker_ratio_max": 0.95,
@@ -429,6 +430,24 @@ def http_get_json(base_url: str, path: str, params: dict[str, Any] | None = None
     raise RuntimeError(f"HTTP GET failed after retries: {last_error}") from last_error
 
 
+def http_get_json_once(
+    base_url: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 2.5,
+) -> Any:
+    query = urllib.parse.urlencode(params or {})
+    url = f"{base_url.rstrip('/')}{path}"
+    if query:
+        url = f"{url}?{query}"
+    request = urllib.request.Request(
+        url, headers={"Accept": "application/json", "User-Agent": "paper-futures-dashboard/1.0", **(headers or {})}
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(decode_http_body(response))
+
+
 def http_request_json(
     method: str,
     base_url: str,
@@ -525,6 +544,7 @@ class PaperBot:
         self.market_exchange_symbols_cache: dict[str, Any] = {"symbols": {}, "synced_at_ms": 0}
         self.crypto_symbols: set[str] = set()
         self.crypto_classification_error = ""
+        self.coingecko_low_cache: dict[str, dict[str, Any]] = {}
 
     def load_config(self) -> dict[str, Any]:
         """合并默认配置与用户配置，并清理已移除功能的旧参数。"""
@@ -1143,6 +1163,7 @@ class PaperBot:
             "old_rebound_short_15m_min_pct": float,
             "old_rebound_short_1h_max_pct": float,
             "old_rebound_short_min_low_distance_pct": float,
+            "old_rebound_short_min_historical_low_distance_pct": float,
             "old_rebound_short_volume_ratio_min": float,
             "old_rebound_short_volume_ratio_max": float,
             "old_rebound_short_taker_ratio_max": float,
@@ -1300,6 +1321,9 @@ class PaperBot:
                     value = float(value)
                 if key == "old_rebound_short_min_low_distance_pct":
                     value = max(0.0, float(value))
+                if key == "old_rebound_short_min_historical_low_distance_pct":
+                    if not math.isfinite(value) or not 0 <= value <= 100:
+                        raise ValueError("老币距历史低价最小距离须在0%到100%之间")
                 self.config[key] = value
             save_json(self.config_path, self.config)
             current_mode = self.exchange_mode()
@@ -4342,6 +4366,101 @@ class PaperBot:
             return "股票TradFi盘口深度不足"
         return ""
 
+    def coingecko_historical_low(self, symbol_info: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+        """Only accept a uniquely matched CoinGecko symbol; cache successful ATL for one day."""
+        base_asset = str(symbol_info.get("baseAsset") or "").upper()
+        if not base_asset or not base_asset.isalnum():
+            return None, "合约基础币种无法识别"
+        api_key = os.environ.get("COINGECKO_API_KEY", "").strip()
+        if not api_key:
+            return None, "未配置CoinGecko密钥"
+        now = time.time()
+        cached = self.coingecko_low_cache.get(base_asset)
+        if cached and now < cached["expires_at"]:
+            return cached["data"], cached["reason"]
+        headers = {"x-cg-demo-api-key": api_key}
+        data: dict[str, Any] | None = None
+        reason = ""
+        try:
+            search = http_get_json_once(
+                "https://api.coingecko.com/api/v3", "/search", {"query": base_asset},
+                headers=headers,
+            )
+            matches = {
+                str(coin.get("id")): coin for coin in search.get("coins", [])
+                if str(coin.get("symbol", "")).upper() == base_asset and coin.get("id")
+            }
+            if len(matches) != 1:
+                reason = "CoinGecko币种匹配不唯一" if matches else "CoinGecko没有对应币种"
+            else:
+                coin_id = next(iter(matches))
+                coin = http_get_json_once(
+                    "https://api.coingecko.com/api/v3",
+                    f"/coins/{urllib.parse.quote(coin_id, safe='')}",
+                    {"localization": "false", "tickers": "false", "market_data": "true",
+                     "community_data": "false", "developer_data": "false", "sparkline": "false"},
+                    headers=headers,
+                )
+                if str(coin.get("id")) != coin_id or str(coin.get("symbol", "")).upper() != base_asset:
+                    reason = "CoinGecko币种身份不一致"
+                else:
+                    market_data = coin.get("market_data") or {}
+                    low = fnum((market_data.get("atl") or {}).get("usd"))
+                    if low <= 0 or not math.isfinite(low):
+                        reason = "CoinGecko历史低价缺失"
+                    else:
+                        data = {
+                            "price": low,
+                            "id": coin_id,
+                            "date": str((market_data.get("atl_date") or {}).get("usd") or ""),
+                        }
+        except Exception as exc:
+            reason = f"CoinGecko接口错误 {type(exc).__name__}"
+        self.coingecko_low_cache[base_asset] = {
+            "data": data,
+            "reason": reason,
+            "expires_at": now + (86400 if data is not None else 60),
+        }
+        return data, reason
+
+    def latest_contract_price(self, symbol: str) -> float:
+        ticker = http_get_json_once(
+            self.config["market_base_url"], "/fapi/v1/ticker/price", {"symbol": symbol}
+        )
+        price = fnum(ticker.get("price"))
+        if price <= 0 or not math.isfinite(price):
+            raise ValueError("合约最新价无效")
+        return price
+
+    def old_rebound_historical_low_reject_reason(self, signal: Signal, symbol_info: dict[str, Any]) -> str:
+        threshold = float(self.config.get("old_rebound_short_min_historical_low_distance_pct", 25.0))
+        if threshold <= 0:
+            return ""
+        low_data, reason = self.coingecko_historical_low(symbol_info)
+        if low_data is None:
+            signal.decision_steps.append(f"历史低价检查跳过：{reason}")
+            return ""
+        try:
+            current_price = self.latest_contract_price(signal.symbol)
+        except Exception as exc:
+            signal.decision_steps.append(f"历史低价检查跳过：合约最新价请求失败 {type(exc).__name__}")
+            return ""
+        if current_price is None or current_price <= 0 or not math.isfinite(current_price):
+            signal.decision_steps.append("历史低价检查跳过：合约最新价无效")
+            return ""
+        low = fnum(low_data.get("price"))
+        if low <= 0 or not math.isfinite(low):
+            signal.decision_steps.append("历史低价检查跳过：CoinGecko历史低价无效")
+            return ""
+        distance = max(0.0, (current_price - low) / current_price * 100)
+        signal.decision_steps.append(
+            f"CoinGecko历史低价：{low:.10g} USD（{low_data.get('date') or '日期未知'}），"
+            f"合约最新价 {current_price:.10g} USDT，距低点 {distance:.1f}%/{threshold:.1f}%"
+        )
+        if distance <= threshold:
+            return f"老币距CoinGecko历史低点过近 {distance:.1f}%/{threshold:.1f}%，禁止开空"
+        return ""
+
     def open_from_signals(self, signals: list[Signal]) -> int:
         """开仓前再次核对禁开/冷却/方向/交易对，并限制仓位数与每轮新单数。"""
         open_count = len(self.state.get("positions", []))
@@ -4417,6 +4536,16 @@ class PaperBot:
                 self.update_signal_decision(signal, reason, f"开仓前复核：{reason}")
                 self.event("risk", f"{signal.symbol} {reason}，跳过")
                 continue
+            if signal.signal_mode == "old_rebound_short" and self.execution_side(signal.side) == "SHORT":
+                try:
+                    reason = self.old_rebound_historical_low_reject_reason(signal, market_symbol_info)
+                except Exception as exc:
+                    signal.decision_steps.append(f"历史低价检查跳过：检查异常 {type(exc).__name__}")
+                    reason = ""
+                if reason:
+                    self.update_signal_decision(signal, reason)
+                    self.event("risk", f"{signal.symbol} {reason}")
+                    continue
             try:
                 record = self.exchange_open_position(signal, symbol_info)
             except Exception as exc:
