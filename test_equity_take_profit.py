@@ -298,6 +298,32 @@ class ReverseOrdersTest(unittest.TestCase):
             priority="高",
         )
 
+    def test_signal_review_updates_index_without_recreating_jsonl(self):
+        bot = self.make_bot()
+        signal = self.make_signal()
+        scan_time = (server.utc_now() - server.timedelta(hours=5)).isoformat(timespec="seconds")
+        bot.state["scan_count"] = 1
+        bot.state["last_scan_at"] = scan_time
+        review_state_path = bot.state_path.parent / "signal_review_state.json"
+        review_log_path = bot.state_path.parent / "signal_review.jsonl"
+
+        with patch.object(server, "SIGNAL_REVIEW_STATE_PATH", review_state_path), patch.object(
+            server, "SIGNAL_REVIEW_PATH", review_log_path, create=True
+        ):
+            bot.record_signal_review_scan([signal])
+            bot.mark_signal_review_opened(signal, {"entry_order_id": "order-1", "entry_price": 100})
+            bot.mark_signal_review_closed(
+                {"signal_review_id": "scan-1-BTCUSDT", "entry_order_id": "order-1"},
+                {"close_reason": "止盈", "pnl_usdt": 2.0, "roi_pct": 20.0},
+            )
+            bot.update_signal_future_returns({"BTCUSDT": 90.0})
+
+        review = server.load_json(review_state_path, {})["signals"]["scan-1-BTCUSDT"]
+        self.assertTrue(review["opened"])
+        self.assertTrue(review["closed"])
+        self.assertAlmostEqual(review["future_return_240m_pct"], -10.0)
+        self.assertFalse(review_log_path.exists())
+
     def test_reverse_orders_setting_can_be_updated(self):
         bot = self.make_bot()
 

@@ -40,7 +40,6 @@ ROOT = Path(__file__).resolve().parent
 WEB_ROOT = ROOT / "web"
 CONFIG_PATH = ROOT / "paper_dashboard_config.json"
 STATE_PATH = ROOT / "data" / "paper_dashboard_state.json"
-SIGNAL_REVIEW_PATH = ROOT / "data" / "signal_review.jsonl"
 SIGNAL_REVIEW_STATE_PATH = ROOT / "data" / "signal_review_state.json"
 SQUARE_POST_SKILL_DIR = Path(os.environ.get("BINANCE_SQUARE_SKILL_DIR", r"C:\Users\Administrator\.codex\skills\square-post"))
 RETRYABLE_HTTP_EXCEPTIONS = (
@@ -364,12 +363,6 @@ def save_json(path: Path, payload: Any) -> None:
     with tmp_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
     tmp_path.replace(path)
-
-
-def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def decode_http_body(resp: Any) -> str:
@@ -788,7 +781,7 @@ class PaperBot:
         }
 
     def record_signal_review_scan(self, signals: list[Signal]) -> None:
-        """记录每轮候选及拒绝原因；JSONL 是追加日志，state 文件保留近期索引。"""
+        """在近期索引中记录每轮候选及拒绝原因。"""
         scan_id = int(self.state.get("scan_count", 0))
         scan_time = str(self.state.get("last_scan_at") or iso_now())
         review_state = self.load_signal_review_state()
@@ -796,7 +789,6 @@ class PaperBot:
         for signal in signals:
             payload = self.signal_review_payload(signal, scan_id, scan_time)
             signals_state[payload["id"]] = payload
-            append_jsonl(SIGNAL_REVIEW_PATH, {"type": "signal_scan", **payload})
         self.save_signal_review_state(review_state)
 
     def mark_signal_review_opened(self, signal: Signal, record: dict[str, Any]) -> None:
@@ -820,7 +812,6 @@ class PaperBot:
             }
         )
         review_state.setdefault("open_orders", {})[str(record.get("entry_order_id") or review_id)] = review_id
-        append_jsonl(SIGNAL_REVIEW_PATH, {"type": "signal_opened", **item})
         self.save_signal_review_state(review_state)
 
     def mark_signal_review_closed(self, open_record: dict[str, Any], trade_row: dict[str, Any]) -> None:
@@ -843,7 +834,6 @@ class PaperBot:
                 "roi_pct": fnum(trade_row.get("roi_pct")),
             }
         )
-        append_jsonl(SIGNAL_REVIEW_PATH, {"type": "signal_closed", **item})
         self.save_signal_review_state(review_state)
 
     def update_signal_future_returns(self, price_map: dict[str, float]) -> None:
@@ -867,7 +857,6 @@ class PaperBot:
                     continue
                 value = pct(current_price, entry_price)
                 item[field] = round(value, 4)
-                append_jsonl(SIGNAL_REVIEW_PATH, {"type": "future_return", "id": item.get("id"), "symbol": symbol, "field": field, "value": item[field]})
                 changed = True
         if changed:
             self.save_signal_review_state(review_state)
