@@ -1160,6 +1160,220 @@ class KlineShortMetricsTest(unittest.TestCase):
         reason = bot.old_rebound_short_kline_reject_reason("OLDUSDT", -0.8, -1, 1.1, "neutral", metrics)
         self.assertIn("反抽", reason)
 
+    def test_old_rebound_early_1h_weakness_requires_closed_15m_break(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "trend_15m": "down", "trend_1h": "neutral",
+                   "closed_15m_previous_low": 10.1, "price": 10.0,
+                   "live_short_move": -0.7, "live_change_1h": -2.6}
+
+        def reject():
+            return bot.old_rebound_short_kline_reject_reason(
+                "OLDUSDT", -0.8, 0.9, 1.1, "down", metrics,
+                high_24h=12, low_24h=8, current_price=10)
+
+        self.assertEqual(reject(), "")
+        metrics["closed_15m_previous_low"] = 9.9
+        self.assertIn("15m未确认破位", reject())
+        metrics["closed_15m_previous_low"] = 10.1
+        metrics["live_short_move"] = 1.1
+        self.assertIn("实时反抽", reject())
+
+    def test_old_rebound_early_1h_weakness_rejects_weak_live_or_strong_closed_uptrend(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "trend_15m": "down", "trend_1h": "neutral",
+                   "closed_15m_previous_low": 10.1, "price": 10.0,
+                   "live_short_move": -0.7, "live_change_1h": -0.5}
+
+        def reject(closed_move):
+            return bot.old_rebound_short_kline_reject_reason(
+                "OLDUSDT", -0.8, closed_move, 1.1, "down", metrics,
+                high_24h=12, low_24h=8, current_price=10)
+
+        self.assertIn("1h未转弱", reject(0.9))
+        metrics["live_change_1h"] = -3.0
+        self.assertIn("1h未转弱", reject(2.0))
+        metrics["trend_1h"] = "up"
+        self.assertIn("1h", reject(0.9))
+
+    def test_old_rebound_early_1h_weakness_contributes_partial_confirmation(self):
+        bot = self.make_bot()
+        stats = {"taker_long_short_ratio": 0.88, "open_interest_1h_pct": 2.0,
+                 "funding_rate_pct": 0.03, "long_short_ratio": 1.8}
+        live = {"live_short_move": -0.7, "live_change_1h": -2.6, "trend_1h": "neutral"}
+        early = bot.old_rebound_short_confirmation_score(
+            18.0, 0.9, -0.8, 2.0, "down", stats, live, "OLDUSDT")
+        closed = bot.old_rebound_short_confirmation_score(
+            18.0, -0.8, -0.8, 2.0, "down", stats, live, "OLDUSDT")
+
+        self.assertIn("1h实时转弱", early["reason"])
+        self.assertGreaterEqual(early["score"], bot.config["old_rebound_short_confirm_min_score"])
+        self.assertLess(early["score"], closed["score"])
+
+    def test_old_rebound_uptrend_early_path_needs_closed_15m_lower_highs_and_break(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "trend_1h": "up", "closed_15m_lower_highs": True,
+                   "closed_15m_previous_low": 10.1, "price": 10.0,
+                   "live_short_move": -0.7, "live_change_1h": -2.6}
+
+        def reject():
+            return bot.old_rebound_short_kline_reject_reason(
+                "OLDUSDT", -0.8, 0.9, 1.2, "up", metrics,
+                high_24h=12, low_24h=8, current_price=10)
+
+        self.assertEqual(reject(), "")
+        metrics["closed_15m_lower_highs"] = False
+        self.assertIn("15m未形成连续更低高点", reject())
+        metrics["closed_15m_lower_highs"] = True
+        metrics["closed_15m_previous_low"] = 9.9
+        self.assertIn("15m未确认破位", reject())
+        metrics["closed_15m_previous_low"] = 10.1
+        metrics["live_short_move"] = 1.1
+        self.assertIn("实时反抽", reject())
+
+    def test_old_rebound_uptrend_early_path_rejects_weak_live_1h(self):
+        bot = self.make_bot()
+        bot.has_symbol_history = lambda symbol, days: True
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "trend_1h": "up", "closed_15m_lower_highs": True,
+                   "closed_15m_previous_low": 10.1, "price": 10.0,
+                   "live_short_move": -0.7, "live_change_1h": -0.8}
+        reason = bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", -0.8, 0.9, 1.2, "up", metrics,
+            high_24h=12, low_24h=8, current_price=10)
+        self.assertIn("1h", reason)
+
+    def test_old_rebound_lower_highs_come_only_from_closed_15m_candles(self):
+        bot = self.make_bot()
+        future = int(server.time.time() * 1000) + 60_000
+        closed = [[0, "10", "11", "9.5", "10", "0", 0, "1000"] for _ in range(27)]
+        closed.extend([
+            [0, "10", "10.9", "10.1", "10.4", "0", 0, "1000"],
+            [0, "10", "10.7", "10.1", "10.3", "0", 0, "1000"],
+            [0, "10", "10.5", "10.1", "10.2", "0", 0, "1000"],
+            [0, "10", "10.3", "9.9", "10.0", "0", 0, "1000"],
+        ])
+        live = [0, "10", "12", "9.8", "9.9", "0", future, "1000"]
+        bot.fetch_klines_interval = lambda symbol, interval, limit: (
+            closed + [live] if interval == "15m" else
+            [[0, "10", "11", "9", "10", "0", 0, "1000"] for _ in range(30)])
+
+        metrics = bot.kline_short_metrics("OLDUSDT", 10, 10, old_rebound=True)
+        self.assertTrue(metrics["closed_15m_lower_highs"])
+        self.assertEqual(metrics["closed_15m_previous_low"], 10.1)
+        closed[-2][2] = "10.8"
+        metrics = bot.kline_short_metrics("OLDUSDT", 10, 10, old_rebound=True)
+        self.assertFalse(metrics["closed_15m_lower_highs"])
+
+    def test_old_rebound_uptrend_early_path_requires_real_taker_and_oi(self):
+        bot = self.make_bot()
+        stats = {"taker_long_short_ratio": 0.8, "open_interest_1h_pct": 1.0,
+                 "funding_rate_pct": 0.01, "long_short_ratio": 1.8}
+        self.assertIn("真实", bot.old_rebound_short_market_stats_reject_reason(
+            stats, early_uptrend=True))
+        stats["taker_ratio_available"] = True
+        self.assertIn("真实", bot.old_rebound_short_market_stats_reject_reason(
+            stats, early_uptrend=True))
+        stats["open_interest_1h_available"] = True
+        self.assertEqual(bot.old_rebound_short_market_stats_reject_reason(
+            stats, early_uptrend=True), "")
+
+    def test_old_rebound_uptrend_early_path_gets_partial_confirmation(self):
+        bot = self.make_bot()
+        stats = {"taker_long_short_ratio": 0.88, "open_interest_1h_pct": 2.0,
+                 "funding_rate_pct": 0.03, "long_short_ratio": 1.8}
+        live = {"live_short_move": -0.7, "live_change_1h": -2.6,
+                "trend_1h": "up", "closed_15m_lower_highs": True,
+                "closed_15m_previous_low": 10.1, "price": 10.0}
+        early = bot.old_rebound_short_confirmation_score(
+            18.0, 0.9, -0.8, 2.0, "up", stats, live, "OLDUSDT")
+        self.assertIn("1h上行背景下提前转弱", early["reason"])
+        self.assertGreaterEqual(early["score"], bot.config["old_rebound_short_confirm_min_score"])
+        closed_weak_but_trend_up = bot.old_rebound_short_confirmation_score(
+            18.0, -0.5, -0.8, 2.0, "up", stats, live, "OLDUSDT")
+        self.assertIn("1h上行背景下提前转弱", closed_weak_but_trend_up["reason"])
+        self.assertNotIn("1h反弹衰竭", closed_weak_but_trend_up["reason"])
+
+    def test_old_rebound_uptrend_early_path_reaches_signal_only_with_real_flow(self):
+        bot = self.make_bot()
+        bot.config["market_regime_filter_enabled"] = False
+        bot.config["short_structure_confirmation_enabled"] = False
+        bot.has_symbol_history = lambda symbol, days: True
+        bot.kline_short_metrics = lambda *args, **kwargs: {
+            "closed_15m_count": 40, "closed_1h_count": 30,
+            "trend_15m": "down", "trend_1h": "up", "trend": "up",
+            "closed_15m_lower_highs": True, "closed_15m_previous_low": 10.1,
+            "price": 10.0, "short_move": -0.8, "change_1h": 0.9,
+            "change_4h": 2.0, "volume_ratio": 2.0,
+            "live_short_move": -0.7, "live_change_1h": -2.6,
+        }
+        stats = {"taker_long_short_ratio": 0.88, "open_interest_1h_pct": 2.0,
+                 "open_interest_24h_pct": 2.0, "open_interest_4h_pct": 2.0,
+                 "open_interest_usdt": 1000000.0,
+                 "funding_rate_pct": 0.03, "long_short_ratio": 1.8,
+                 "volume_4h_ratio": 1.0, "oi_volume_ratio": 0.1,
+                 "funding_rate_available": True, "taker_ratio_available": True,
+                 "open_interest_1h_available": True}
+        bot.fetch_signal_market_stats = lambda *args: dict(stats)
+        ticker = {"symbol": "OLDUSDT", "lastPrice": "10", "highPrice": "12",
+                  "lowPrice": "8", "priceChangePercent": "18", "quoteVolume": "10000000"}
+        candidate = {"item": ticker, "signal_mode": "old_rebound_short"}
+        regimes = ({"score": 10}, {"score": 10})
+
+        signal = bot.build_signals([ticker], set(), candidate, regimes)[0]
+        self.assertEqual(signal.reject_reason, "")
+        self.assertIn("1h上行背景下提前转弱", signal.analyzer_reason)
+        stats["taker_ratio_available"] = False
+        signal = bot.build_signals([ticker], set(), candidate, regimes)[0]
+        self.assertIn("真实", signal.reject_reason)
+
+    def test_old_rebound_taker_availability_reflects_exchange_response(self):
+        bot = self.make_bot()
+        ticker = {"lastPrice": "10", "quoteVolume": "10000000", "priceChangePercent": "18"}
+
+        def exchange_data(base, path, params=None, timeout=None):
+            if path.endswith("/openInterest"):
+                return {"openInterest": "1000"}
+            if path.endswith("/premiumIndex"):
+                return {"lastFundingRate": "0.0001"}
+            if path.endswith("/openInterestHist"):
+                return [{"sumOpenInterestValue": "10000"}, {"sumOpenInterestValue": "10100"}]
+            if path.endswith("/globalLongShortAccountRatio"):
+                return [{"longShortRatio": "1.8"}]
+            if path.endswith("/takerlongshortRatio"):
+                return [{"buyVol": "80", "sellVol": "100"}]
+            raise AssertionError(path)
+
+        with patch.object(server, "http_get_json", side_effect=exchange_data):
+            stats = bot.fetch_signal_market_stats("OLDUSDT", ticker)
+        self.assertTrue(stats["taker_ratio_available"])
+        self.assertTrue(stats["open_interest_1h_available"])
+        self.assertAlmostEqual(stats["taker_long_short_ratio"], 0.8)
+
+        def missing_taker(base, path, params=None, timeout=None):
+            if path.endswith("/takerlongshortRatio"):
+                raise TimeoutError("taker endpoint unavailable")
+            return exchange_data(base, path, params, timeout)
+
+        with patch.object(server, "http_get_json", side_effect=missing_taker):
+            stats = bot.fetch_signal_market_stats("OLDUSDT", ticker)
+        self.assertFalse(stats["taker_ratio_available"])
+
+        def missing_buy(base, path, params=None, timeout=None):
+            if path.endswith("/takerlongshortRatio"):
+                return [{"sellVol": "100"}]
+            return exchange_data(base, path, params, timeout)
+
+        with patch.object(server, "http_get_json", side_effect=missing_buy):
+            stats = bot.fetch_signal_market_stats("OLDUSDT", ticker)
+        self.assertFalse(stats["taker_ratio_available"])
+        self.assertEqual(stats["taker_long_short_ratio"], 0.0)
+
     def test_stale_scan_in_progress_is_released_on_next_scan(self):
         bot = self.make_bot()
         bot.config["max_scan_runtime_sec"] = 60
@@ -1984,7 +2198,7 @@ class PreStartVolumeStrategyTest(unittest.TestCase):
             "oi_volume_ratio": .1, "funding_rate_available": True,
             "open_interest_1h_available": True,
         }
-        bot.old_rebound_short_market_stats_reject_reason = lambda *_: ""
+        bot.old_rebound_short_market_stats_reject_reason = lambda *_args, **_kwargs: ""
         bot.pre_start_market_stats_reject_reason = lambda *_: ""
         bot.pre_start_volume_reject_reason = lambda *_: ""
         bot.old_rebound_short_confirmation_score = lambda *_: {"score": 8, "label": "通过", "reason": "test"}

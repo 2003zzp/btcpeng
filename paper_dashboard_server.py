@@ -2530,6 +2530,7 @@ class PaperBot:
             "oi_volume_ratio": 0.0,
             "funding_rate_available": False,
             "open_interest_1h_available": False,
+            "taker_ratio_available": False,
         }
         try:
             oi = http_get_json(self.config["market_base_url"], "/fapi/v1/openInterest", {"symbol": symbol}, timeout=timeout)
@@ -2593,6 +2594,8 @@ class PaperBot:
                 buy = fnum(taker[-1].get("buyVol"))
                 sell = fnum(taker[-1].get("sellVol"))
                 stats["taker_long_short_ratio"] = buy / sell if sell > 0 else 1.0
+                if taker[-1].get("buyVol") is not None and sell > 0:
+                    stats["taker_ratio_available"] = True
         except Exception:
             stats["taker_long_short_ratio"] = stats["long_short_ratio"]
 
@@ -3050,7 +3053,7 @@ class PaperBot:
         live_metrics: dict[str, Any] | None = None,
         symbol: str = "",
     ) -> dict[str, Any]:
-        """老币反弹池专用确认分：收盘 K 线定方向，实时 K 线只加减辅助分。"""
+        """老币反弹池专用确认分：已收盘 15m 定入场，1h 提前路径低权重计分。"""
         score = 0.0
         reasons: list[str] = []
         live_metrics = live_metrics or {}
@@ -3073,9 +3076,17 @@ class PaperBot:
         if short_move <= max_15m:
             score += 1.3
             reasons.append(f"15m开始转弱 {short_move:+.1f}%")
-        if change_1h <= max_1h:
+        early_1h_weak = self.old_rebound_1h_live_weak(change_1h, live_metrics)
+        early_uptrend = self.old_rebound_1h_uptrend_early_weak(change_1h, short_move, live_metrics)
+        if early_uptrend:
+            score += 0.5
+            reasons.append(f"1h上行背景下提前转弱 {fnum(live_metrics['live_change_1h']):+.1f}%")
+        elif change_1h <= max_1h:
             score += 1.2
             reasons.append(f"1h反弹衰竭 {change_1h:+.1f}%")
+        elif early_1h_weak:
+            score += 0.5
+            reasons.append(f"1h实时转弱提前确认 {fnum(live_metrics['live_change_1h']):+.1f}%")
         if trend == "down":
             score += 1.0
             reasons.append("短线趋势转下")
@@ -3090,7 +3101,7 @@ class PaperBot:
             elif live_short_move > max_15m:
                 score -= 0.4
                 reasons.append(f"15m实时反抽 {live_short_move:+.1f}%")
-        if "live_change_1h" in live_metrics and change_1h <= max_1h:
+        if "live_change_1h" in live_metrics and (change_1h <= max_1h or early_1h_weak or early_uptrend):
             live_change_1h = fnum(live_metrics.get("live_change_1h"))
             if live_change_1h <= 0:
                 score += 0.2
@@ -3314,6 +3325,26 @@ class PaperBot:
         except Exception:
             return False
 
+    def old_rebound_1h_live_weak(self, closed_move: float, live_metrics: dict[str, Any]) -> bool:
+        """Permit an early 1h turn only when the closed rise was mild and live selling is decisive."""
+        max_closed = float(self.config.get("old_rebound_short_1h_max_pct", 0.5))
+        return (
+            max_closed < closed_move <= max(1.5, max_closed)
+            and live_metrics.get("trend_1h") in {"down", "neutral"}
+            and fnum(live_metrics.get("live_change_1h"), 999.0) <= -max(1.5, closed_move + 0.5)
+        )
+
+    def old_rebound_1h_uptrend_early_weak(
+        self, closed_move: float, short_move: float, live_metrics: dict[str, Any]
+    ) -> bool:
+        return (
+            live_metrics.get("trend_1h") == "up"
+            and live_metrics.get("closed_15m_lower_highs") is True
+            and short_move < 0
+            and fnum(live_metrics.get("live_change_1h"), 999.0)
+            <= -max(1.5, max(0.0, closed_move) + 0.5)
+        )
+
     def old_rebound_short_kline_reject_reason(
         self,
         symbol: str,
@@ -3365,11 +3396,19 @@ class PaperBot:
             return "老币反弹15m实时跌幅过深，禁止追空"
         if short_move > max_15m:
             return f"老币反弹15m未转弱 {short_move:.1f}%/{max_15m:.1f}%{live_note}"
-        if change_1h > max_1h:
+        early_uptrend = self.old_rebound_1h_uptrend_early_weak(change_1h, short_move, live_metrics)
+        if (
+            live_metrics.get("trend_1h") == "up"
+            and live_metrics.get("closed_15m_lower_highs") is not True
+            and fnum(live_metrics.get("live_change_1h"), 999.0)
+            <= -max(1.5, max(0.0, change_1h) + 0.5)
+        ):
+            return "老币反弹1h趋势仍上行，已收盘15m未形成连续更低高点"
+        if change_1h > max_1h and not (self.old_rebound_1h_live_weak(change_1h, live_metrics) or early_uptrend):
             return f"老币反弹1h未转弱 {change_1h:.1f}%/{max_1h:.1f}%{live_note}"
         if short_move >= 0:
             return "老币反弹15m未明确转弱，短暂横盘或微涨不允许开空"
-        if live_metrics.get("trend_1h") == "up":
+        if live_metrics.get("trend_1h") == "up" and not early_uptrend:
             return "老币反弹1h趋势仍上行，等待转弱"
         previous_low = fnum(live_metrics.get("closed_15m_previous_low"))
         break_min_pct = float(self.config.get("old_rebound_short_15m_break_min_pct", 0.2))
@@ -3387,7 +3426,17 @@ class PaperBot:
             return f"老币反弹量能过热 {volume_ratio:.1f}x/{max_volume:.1f}x"
         return ""
 
-    def old_rebound_short_market_stats_reject_reason(self, stats: dict[str, float]) -> str:
+    def old_rebound_short_market_stats_reject_reason(
+        self, stats: dict[str, float], early_uptrend: bool = False
+    ) -> str:
+        if early_uptrend:
+            missing = []
+            if not stats.get("taker_ratio_available"):
+                missing.append("主动买卖比")
+            if not stats.get("open_interest_1h_available"):
+                missing.append("OI")
+            if missing:
+                return f"老币反弹提前转弱缺少真实{'、'.join(missing)}数据，暂停开空"
         taker_ratio = fnum(stats.get("taker_long_short_ratio"), 1.0)
         oi_1h = fnum(stats.get("open_interest_1h_pct"))
         funding = abs(fnum(stats.get("funding_rate_pct")))
@@ -3429,6 +3478,11 @@ class PaperBot:
                     lows = [fnum(k[3]) for k in klines15[-4:-1]]
                     if all(low > 0 for low in lows):
                         metrics["closed_15m_previous_low"] = min(lows)
+                if len(klines15) >= 3:
+                    highs = [fnum(k[2]) for k in klines15[-3:]]
+                    metrics["closed_15m_lower_highs"] = (
+                        all(high > 0 for high in highs) and highs[0] > highs[1] > highs[2]
+                    )
             if closes15:
                 metrics["price"] = closes15[-1] or metrics["price"] or fallback_price
                 metrics["enriched"] = True
@@ -3906,7 +3960,9 @@ class PaperBot:
                 if not reject and is_pre_start_long:
                     reject = self.pre_start_market_stats_reject_reason(market_stats)
                 if not reject and is_old_rebound_short:
-                    reject = self.old_rebound_short_market_stats_reject_reason(market_stats)
+                    reject = self.old_rebound_short_market_stats_reject_reason(
+                        market_stats, early_uptrend=metrics.get("trend_1h") == "up"
+                    )
                 if not reject and side == "LONG" and self.config.get("long_structure_confirmation_enabled", False):
                     long_structure = self.long_structure_confirmation(change_4h, change_1h, short_move, trend, volume_ratio, market_stats)
                     if not long_structure.get("passed"):
