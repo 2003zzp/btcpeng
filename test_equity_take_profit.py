@@ -812,7 +812,6 @@ class LongStructureConfirmationTest(unittest.TestCase):
     def test_old_rebound_15m_drop_limit_changes_latest_candle_rejection(self):
         bot = self.make_bot()
         bot.config["old_rebound_short_15m_min_pct"] = -3.0
-        bot.has_symbol_history = lambda symbol, days: True
         klines = [[0, "0", "0", str(close * .999), str(close), "0", 0, "1000"]
                   for close in [100.0] * 29 + [96.0]]
         metrics = {"closed_15m_count": 30, "closed_1h_count": 30,
@@ -937,7 +936,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_24h_low_distance_can_be_configured_and_disabled(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
         bot.update_settings({"old_rebound_short_min_low_distance_pct": 10})
@@ -951,6 +949,25 @@ class KlineShortMetricsTest(unittest.TestCase):
             "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics,
             high_24h=12.0, low_24h=10.0, current_price=10.0), "")
 
+    def test_old_rebound_kline_filter_does_not_fetch_daily_history(self):
+        bot = self.make_bot()
+        bot.fetch_klines_interval = lambda *_: self.fail("daily history must not be requested")
+        metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
+                   "price": 10.0, "closed_15m_previous_low": 10.1,
+                   "trend_1h": "neutral"}
+        reason = bot.old_rebound_short_kline_reject_reason(
+            "OLDUSDT", -0.8, -1.0, 1.1, "down", metrics,
+            high_24h=12.0, low_24h=8.0, current_price=10.0)
+        self.assertEqual(reason, "")
+
+    def test_removed_old_rebound_history_setting_is_ignored(self):
+        bot = self.make_bot()
+        bot.config_path.write_text('{"old_rebound_short_min_history_days": 365}', encoding="utf-8")
+        reloaded = server.PaperBot(bot.config_path, bot.state_path)
+        self.assertNotIn("old_rebound_short_min_history_days", reloaded.config)
+        reloaded.update_settings({"old_rebound_short_min_history_days": 10})
+        self.assertNotIn("old_rebound_short_min_history_days", reloaded.config)
+
     def kline(self, close: float, quote_volume: float = 1000.0, close_time: int = 0) -> list[object]:
         return [0, "0", "0", "0", str(close), "0", close_time, str(quote_volume)]
 
@@ -960,7 +977,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_only_latest_closed_15m_drop_blocks_entry(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         bot.config["old_rebound_short_15m_min_pct"] = -5.0
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "price": 90.0, "closed_15m_previous_low": 91.0,
@@ -986,7 +1002,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_previous_shock_does_not_block_current_mild_break(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         closes = [100.0] * 35 + [90, 94, 93, 92, 91]
         bot.fetch_klines_interval = lambda symbol, interval, limit: (
             self.rebound_klines(closes) if interval == "15m" else self.rebound_klines([100] * 30))
@@ -1032,7 +1047,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_flat_candle_needs_closed_15m_break(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "trend_15m": "neutral", "trend_1h": "neutral", "closed_15m_previous_low": 9.8,
                    "price": 10.0}
@@ -1042,7 +1056,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_no_1h_klines_does_not_use_24h_fallback(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 0, "price": 10,
                    "closed_15m_previous_low": 11}
         reason = bot.old_rebound_short_kline_reject_reason("OLDUSDT", -1, -1, 1.1, "down", metrics)
@@ -1051,7 +1064,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_rejects_latest_15m_waterfall_but_allows_fresh_break(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30, "trend_15m": "down",
                    "trend_1h": "neutral", "closed_15m_previous_low": 10.1, "price": 10.0}
         def reason(move15, move1h, price=10, high=12, low=8):
@@ -1079,12 +1091,10 @@ class KlineShortMetricsTest(unittest.TestCase):
         metrics = bot.kline_short_metrics("OLDUSDT", 10, 10, old_rebound=True)
         self.assertEqual(metrics["closed_15m_previous_low"], 10.1)
         self.assertEqual(metrics["closed_15m_count"], 40)
-        bot.has_symbol_history = lambda symbol, days: True
         self.assertEqual(bot.old_rebound_short_kline_reject_reason("OLDUSDT", metrics["short_move"], 0, 1, metrics["trend"], metrics), "")
 
     def test_old_rebound_checks_live_ticker_location_not_only_closed_price(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
         reason = bot.old_rebound_short_kline_reject_reason(
@@ -1094,7 +1104,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_requires_valid_24h_high_and_low(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
         reason = bot.old_rebound_short_kline_reject_reason(
@@ -1107,7 +1116,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_rejects_ticker_reclaim_after_closed_break(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
         reason = bot.old_rebound_short_kline_reject_reason(
@@ -1117,7 +1125,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_requires_closed_down_candle_even_if_low_comparison_passes(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
         reason = bot.old_rebound_short_kline_reject_reason(
@@ -1127,7 +1134,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_first_closed_candle_can_break_but_does_not_wait_for_retest(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
         reason = bot.old_rebound_short_kline_reject_reason(
@@ -1137,7 +1143,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_rejects_live_waterfall_after_mild_closed_break(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "closed_15m_previous_low": 10.1, "price": 10.0, "trend_1h": "neutral"}
         reason = bot.old_rebound_short_kline_reject_reason(
@@ -1148,7 +1153,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_upward_1h_trend_and_live_reclaim_block_entry(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "trend_15m": "down", "trend_1h": "up", "closed_15m_previous_low": 10.1,
                    "price": 10.0}
@@ -1162,7 +1166,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_early_1h_weakness_requires_closed_15m_break(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "trend_15m": "down", "trend_1h": "neutral",
                    "closed_15m_previous_low": 10.1, "price": 10.0,
@@ -1182,7 +1185,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_early_1h_weakness_rejects_weak_live_or_strong_closed_uptrend(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "trend_15m": "down", "trend_1h": "neutral",
                    "closed_15m_previous_low": 10.1, "price": 10.0,
@@ -1215,7 +1217,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_uptrend_early_path_needs_closed_15m_lower_highs_and_break(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "trend_1h": "up", "closed_15m_lower_highs": True,
                    "closed_15m_previous_low": 10.1, "price": 10.0,
@@ -1238,7 +1239,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_uptrend_early_path_rejects_weak_live_1h(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
         metrics = {"closed_15m_count": 40, "closed_1h_count": 30,
                    "trend_1h": "up", "closed_15m_lower_highs": True,
                    "closed_15m_previous_low": 10.1, "price": 10.0,
@@ -1303,7 +1303,6 @@ class KlineShortMetricsTest(unittest.TestCase):
         bot = self.make_bot()
         bot.config["market_regime_filter_enabled"] = False
         bot.config["short_structure_confirmation_enabled"] = False
-        bot.has_symbol_history = lambda symbol, days: True
         bot.kline_short_metrics = lambda *args, **kwargs: {
             "closed_15m_count": 40, "closed_1h_count": 30,
             "trend_15m": "down", "trend_1h": "up", "trend": "up",
@@ -1536,7 +1535,6 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_short_live_drop_cannot_override_unclosed_main_confirmation(self):
         bot = self.make_bot()
-        bot.has_symbol_history = lambda symbol, days: True
 
         reject = bot.old_rebound_short_kline_reject_reason(
             "LIVEONLYUSDT",
@@ -2129,7 +2127,6 @@ class KlineShortMetricsTest(unittest.TestCase):
             "taker_long_short_ratio": 0.88,
             "oi_volume_ratio": 0.1,
         }
-        bot.has_symbol_history = lambda symbol, days: True
         bot.market_confirmation_score = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generic market confirmation should be skipped"))
 
         signals = bot.build_signals(

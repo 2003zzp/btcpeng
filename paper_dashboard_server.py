@@ -120,7 +120,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pre_start_take_profit_roi_pct": None,
     "pre_start_stop_loss_roi_pct": None,
     "old_rebound_short_enabled": False,
-    "old_rebound_short_min_history_days": 365,
     "old_rebound_short_15m_max_pct": 0.3,
     "old_rebound_short_1h_max_pct": 0.5,
     "old_rebound_short_15m_min_pct": -5.0,
@@ -570,6 +569,7 @@ class PaperBot:
                 "old_rebound_short_24h_max_pct", "old_rebound_short_min_quote_volume_usdt",
                 "old_rebound_short_max_quote_volume_usdt",
                 "old_rebound_short_1h_min_pct", "old_rebound_short_2h_min_pct",
+                "old_rebound_short_min_history_days",
                 "tradfi_max_stop_distance_pct", "tradfi_reward_risk", "tradfi_symbols",
             }:
                 config.pop(key)
@@ -1158,7 +1158,6 @@ class PaperBot:
             "pre_start_take_profit_roi_pct": float,
             "pre_start_stop_loss_roi_pct": float,
             "old_rebound_short_enabled": str,
-            "old_rebound_short_min_history_days": int,
             "old_rebound_short_15m_max_pct": float,
             "old_rebound_short_15m_min_pct": float,
             "old_rebound_short_1h_max_pct": float,
@@ -1255,7 +1254,7 @@ class PaperBot:
                         value = "MARK_PRICE"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "tradfi_leverage", "tradfi_max_candidates", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "shared_pool_max_candidates", "old_rebound_short_min_history_days", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan"}:
+                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "tradfi_leverage", "tradfi_max_candidates", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "shared_pool_max_candidates", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan"}:
                     value = max(1, int(value))
                 if key in {
                     "margin_per_trade_usdt",
@@ -3316,15 +3315,6 @@ class PaperBot:
             return f"预启动资金费率过热 {funding:.3f}%/{max_funding:.3f}%"
         return ""
 
-    def has_symbol_history(self, symbol: str, min_days: int) -> bool:
-        if min_days <= 0:
-            return True
-        try:
-            klines = self.fetch_klines_interval(symbol, "1d", min(1000, max(1, min_days)))
-            return len(klines) >= min_days
-        except Exception:
-            return False
-
     def old_rebound_1h_live_weak(self, closed_move: float, live_metrics: dict[str, Any]) -> bool:
         """Permit an early 1h turn only when the closed rise was mild and live selling is decisive."""
         max_closed = float(self.config.get("old_rebound_short_1h_max_pct", 0.5))
@@ -3357,8 +3347,7 @@ class PaperBot:
         low_24h: float = 0.0,
         current_price: float = 0.0,
     ) -> str:
-        """老币做空硬过滤：历史长度、已收盘破位、跌幅位置及实时反抽。"""
-        min_days = int(self.config.get("old_rebound_short_min_history_days", 365))
+        """老币做空硬过滤：已收盘破位、跌幅位置及实时反抽。"""
         max_15m = float(self.config.get("old_rebound_short_15m_max_pct", 0.3))
         max_1h = float(self.config.get("old_rebound_short_1h_max_pct", 0.5))
         min_15m = float(self.config.get("old_rebound_short_15m_min_pct", -5.0))
@@ -3373,8 +3362,6 @@ class PaperBot:
             if "live_change_1h" in live_metrics:
                 live_parts.append(f"1h {fnum(live_metrics.get('live_change_1h')):+.1f}%")
             live_note = f"（实时转弱观察中 {' / '.join(live_parts)}，不单独放行）"
-        if not self.has_symbol_history(symbol, min_days):
-            return f"老币反弹历史不足 {min_days} 天"
         if int(live_metrics.get("closed_15m_count", 0)) < 30:
             return "老币反弹15m已收盘K线不足，禁止用24h估算开空"
         if int(live_metrics.get("closed_1h_count", 0)) < 30:
