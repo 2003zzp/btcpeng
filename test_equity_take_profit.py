@@ -1327,6 +1327,7 @@ class KlineShortMetricsTest(unittest.TestCase):
 
     def test_old_rebound_uptrend_early_path_reaches_signal_only_with_real_flow(self):
         bot = self.make_bot()
+        bot.config["old_rebound_short_enabled"] = True
         bot.config["market_regime_filter_enabled"] = False
         bot.config["short_structure_confirmation_enabled"] = False
         bot.kline_short_metrics = lambda *args, **kwargs: {
@@ -1720,6 +1721,64 @@ class KlineShortMetricsTest(unittest.TestCase):
         )
 
         self.assertEqual(candidates, [])
+
+    def test_legacy_global_direction_does_not_restrict_enabled_pools(self):
+        bot = self.make_bot()
+        bot.config.update({"trade_direction_mode": "long_only", "old_rebound_short_enabled": True,
+                           "pre_start_long_enabled": True, "strong_short_enabled": True})
+        candidates = bot.build_candidate_pool([
+            {"symbol": "OLDUSDT", "lastPrice": "10", "priceChangePercent": "8", "quoteVolume": "50000000"},
+            {"symbol": "DROPUSDT", "lastPrice": "10", "priceChangePercent": "-12", "quoteVolume": "50000000"},
+        ])
+        self.assertIn("old_rebound_short", {row["signal_mode"] for row in candidates})
+        self.assertIn("strong_momentum", {row["signal_mode"] for row in candidates})
+
+    def test_legacy_direction_cannot_be_saved_again(self):
+        bot = self.make_bot()
+        bot.config_path.write_text('{"trade_direction_mode": "long_only"}', encoding="utf-8")
+        bot = server.PaperBot(bot.config_path, bot.state_path)
+        self.assertNotIn("trade_direction_mode", bot.config)
+        bot.update_settings({"trade_direction_mode": "short_only"})
+        self.assertNotIn("trade_direction_mode", bot.config)
+
+    def test_watchlist_does_not_bypass_disabled_strong_short(self):
+        bot = self.make_bot()
+        bot.config["strong_short_enabled"] = False
+        bot.config["manual_watchlist"] = ["DROPUSDT"]
+        candidates = bot.build_candidate_pool([
+            {"symbol": "DROPUSDT", "lastPrice": "10", "priceChangePercent": "-12",
+             "quoteVolume": "50000000"},
+        ])
+        self.assertEqual(candidates, [])
+
+    def test_strong_signal_uses_only_enabled_side(self):
+        bot = self.make_bot()
+        bot.config["strong_long_enabled"] = False
+        bot.config["strong_short_enabled"] = True
+        bot.score_side = lambda side, *_: (10.0, "test") if side == "LONG" else (2.0, "test")
+        item = {"symbol": "DROPUSDT", "lastPrice": "10", "priceChangePercent": "-12",
+                "quoteVolume": "50000000"}
+        candidate = {"item": item, "signal_mode": "strong_momentum", "mode_reason": "test"}
+        regime = {"score": 10.0, "label": "test", "reason": ""}
+        signal = bot.build_signals([item], set(), candidate, (regime, regime))[0]
+        self.assertEqual(signal.side, "SHORT")
+
+    def test_disabled_strategy_is_rechecked_before_order(self):
+        for mode, side, flag in (("strong_momentum", "SHORT", "strong_short_enabled"),
+                                 ("pre_start_long", "LONG", "pre_start_long_enabled"),
+                                 ("old_rebound_short", "SHORT", "old_rebound_short_enabled")):
+            with self.subTest(mode=mode):
+                bot = self.make_bot()
+                bot.config[flag] = False
+                signal = ReverseOrdersTest().make_signal()
+                signal.signal_mode = mode
+                signal.side = side
+                bot.get_exchange_symbols = lambda: {signal.symbol: {"symbol": signal.symbol}}
+                bot.get_market_exchange_symbols = lambda: {signal.symbol: {
+                    "underlyingType": "COIN", "contractType": "PERPETUAL"}}
+                bot.exchange_open_position = lambda *_: self.fail("disabled strategy reached order")
+                self.assertEqual(bot.open_from_signals([signal]), 0)
+                self.assertIn("关闭", signal.reject_reason)
 
     def test_strong_long_toggle_filters_positive_candidates_without_affecting_shorts_or_watchlist(self):
         bot = self.make_bot()
@@ -2421,6 +2480,7 @@ class PreStartVolumeStrategyTest(unittest.TestCase):
 
     def test_observation_default_and_reverse_orders_guard_old_pending_signal(self):
         bot = self.make_bot()
+        bot.config["pre_start_long_enabled"] = True
         signal = RemovedStrategyControlsTest().make_signal()
         signal.signal_mode = "pre_start_long"
         signal.side = "LONG"

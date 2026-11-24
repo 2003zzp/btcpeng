@@ -12,6 +12,7 @@ class OldReboundHistoricalLowTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         bot = server.PaperBot(root / "config.json", root / "state.json")
+        bot.config["old_rebound_short_enabled"] = True
         bot.config["shared_pool_24h_min_pct"] = 1
         bot.config["shared_pool_24h_max_pct"] = 100
         return bot

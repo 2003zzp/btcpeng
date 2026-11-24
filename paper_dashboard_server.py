@@ -73,7 +73,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "short_24h_change_pct": -7.0,
     "short_term_move_pct": 1.2,
     "volume_spike_ratio": 1.5,
-    "trade_direction_mode": "both",
     "reverse_orders_enabled": False,
     "signal_score_threshold": 4.0,
     "market_confirm_min_score": 7.0,
@@ -576,6 +575,7 @@ class PaperBot:
                 "old_rebound_short_1h_min_pct", "old_rebound_short_2h_min_pct",
                 "old_rebound_short_min_history_days",
                 "tradfi_max_stop_distance_pct", "tradfi_reward_risk", "tradfi_symbols",
+                "trade_direction_mode",
             }:
                 config.pop(key)
         if config.get("pre_start_take_profit_roi_pct") is None:
@@ -1229,7 +1229,6 @@ class PaperBot:
             "market_regime_filter_enabled": str,
             "market_regime_min_score": float,
             "max_new_positions_per_scan": int,
-            "trade_direction_mode": str,
             "reverse_orders_enabled": str,
             "blocked_symbols": str,
             "live_trading_enabled": str,
@@ -1258,10 +1257,6 @@ class PaperBot:
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
                     value = caster(patch[key])
-                if key == "trade_direction_mode":
-                    value = str(value)
-                    if value not in {"both", "long_only", "short_only"}:
-                        value = "both"
                 if key == "shared_pool_priority" and value not in {"old_rebound_short", "pre_start_long"}:
                     value = "old_rebound_short"
                 if key == "tradfi_priority" and value not in {"LONG", "SHORT"}:
@@ -3571,8 +3566,7 @@ class PaperBot:
             return []
         priority = str(self.config.get("tradfi_priority", "SHORT"))
         modes = [priority, "LONG" if priority == "SHORT" else "SHORT"]
-        modes = [side for side in modes if self.config.get(f"tradfi_{side.lower()}_enabled", True)
-                 and not self.direction_mode_reject_reason(side)]
+        modes = [side for side in modes if self.config.get(f"tradfi_{side.lower()}_enabled", True)]
         if not modes:
             return []
         candidates = [item for item in tickers
@@ -3676,8 +3670,7 @@ class PaperBot:
 
     def refresh_old_rebound_whitelist(self, tickers: list[dict[str, Any]]) -> None:
         if (not self.config.get("old_rebound_whitelist_enabled", False)
-                or not self.config.get("old_rebound_short_enabled", False)
-                or self.config.get("trade_direction_mode") == "long_only"):
+                or not self.config.get("old_rebound_short_enabled", False)):
             return
         with self.lock:
             symbols = list(self.config.get("old_rebound_whitelist_symbols", []))
@@ -3721,13 +3714,7 @@ class PaperBot:
         strong_short_enabled = bool(self.config.get("strong_short_enabled", True))
         max_candidates = int(self.config.get("max_candidates_per_scan", 18))
         shared_limit = int(self.config.get("shared_pool_max_candidates", 8))
-        direction_mode = str(self.config.get("trade_direction_mode", "both"))
-
         def change_allowed(change: float) -> bool:
-            if direction_mode == "long_only":
-                return strong_long_enabled and change >= max(min_abs_change, strong_long_min_change)
-            if direction_mode == "short_only":
-                return strong_short_enabled and change <= -min_abs_change
             if change > 0:
                 return strong_long_enabled and change >= max(min_abs_change, strong_long_min_change)
             return strong_short_enabled and abs(change) >= min_abs_change
@@ -3745,9 +3732,9 @@ class PaperBot:
         # 两个方向策略共用候选名单；每个币只占一个候选名额。
         pool: dict[str, dict[str, Any]] = {}
         modes = []
-        if self.config.get("old_rebound_short_enabled", False) and direction_mode != "long_only":
+        if self.config.get("old_rebound_short_enabled", False):
             modes.append("old_rebound_short")
-        if self.config.get("pre_start_long_enabled", False) and direction_mode != "short_only":
+        if self.config.get("pre_start_long_enabled", False):
             modes.append("pre_start_long")
         if modes and shared_limit > 0:
             priority = str(self.config.get("shared_pool_priority", "old_rebound_short"))
@@ -3792,14 +3779,10 @@ class PaperBot:
                 continue
             change = fnum(item.get("priceChangePercent"))
             volume = fnum(item.get("quoteVolume"))
-            if (symbol in watchlist and (strong_long_enabled or change < 0)) or (volume >= min_volume and change_allowed(change)):
+            watchlist_side_enabled = strong_long_enabled if change >= 0 else strong_short_enabled
+            if (symbol in watchlist and watchlist_side_enabled) or (volume >= min_volume and change_allowed(change)):
                 strong.append(item)
-        if direction_mode == "long_only":
-            strong.sort(key=lambda x: (-fnum(x.get("priceChangePercent")), -fnum(x.get("quoteVolume"))))
-        elif direction_mode == "short_only":
-            strong.sort(key=lambda x: (fnum(x.get("priceChangePercent")), -fnum(x.get("quoteVolume"))))
-        else:
-            strong.sort(key=lambda x: (-abs(fnum(x.get("priceChangePercent"))), -fnum(x.get("quoteVolume"))))
+        strong.sort(key=lambda x: (-abs(fnum(x.get("priceChangePercent"))), -fnum(x.get("quoteVolume"))))
         for item in strong[:max_candidates]:
             pool[str(item.get("symbol", ""))] = {"item": item, "signal_mode": "strong_momentum", "mode_reason": "24h强波动池"}
 
@@ -3888,7 +3871,8 @@ class PaperBot:
                 side, score, reason = "LONG", long_score, long_reason
             elif is_old_rebound_short:
                 side, score, reason = "SHORT", short_score, short_reason
-            elif long_score >= short_score:
+            elif not self.config.get("strong_short_enabled", True) or (
+                    self.config.get("strong_long_enabled", True) and long_score >= short_score):
                 side, score, reason = "LONG", long_score, long_reason
             else:
                 side, score, reason = "SHORT", short_score, short_reason
@@ -3906,7 +3890,7 @@ class PaperBot:
             elif side == "SHORT" and trend == "up" and not is_old_rebound_short:
                 reject = "短线趋势反向"
             else:
-                reject = self.direction_mode_reject_reason(side)
+                reject = self.strategy_direction_reject_reason(signal_mode, side)
 
             if not reject and (enriched_count < enrich_limit or is_pre_start_long or is_old_rebound_short):
                 if is_old_rebound_short:
@@ -3929,7 +3913,8 @@ class PaperBot:
                     side, score, reason = "LONG", long_score, long_reason
                 elif is_old_rebound_short:
                     side, score, reason = "SHORT", short_score, short_reason
-                elif long_score >= short_score:
+                elif not self.config.get("strong_short_enabled", True) or (
+                        self.config.get("strong_long_enabled", True) and long_score >= short_score):
                     side, score, reason = "LONG", long_score, long_reason
                 else:
                     side, score, reason = "SHORT", short_score, short_reason
@@ -3940,7 +3925,7 @@ class PaperBot:
                 elif side == "SHORT" and trend == "up" and not is_old_rebound_short:
                     reject = "短线趋势反向"
                 else:
-                    reject = self.direction_mode_reject_reason(side)
+                    reject = self.strategy_direction_reject_reason(signal_mode, side)
                 if not reject and is_pre_start_long:
                     pre_start_metrics = metrics.get("pre_start_volume", {})
                     reject = self.pre_start_volume_reject_reason(pre_start_metrics)
@@ -4178,12 +4163,16 @@ class PaperBot:
             reasons.append("波动不足")
         return score, " / ".join(reasons)
 
-    def direction_mode_reject_reason(self, side: str) -> str:
-        mode = str(self.config.get("trade_direction_mode", "both"))
-        if mode == "long_only" and side == "SHORT":
-            return "方向模式为只做多，跳过空单"
-        if mode == "short_only" and side == "LONG":
-            return "方向模式为只做空，跳过多单"
+    def strategy_direction_reject_reason(self, signal_mode: str, side: str) -> str:
+        if signal_mode == "strong_momentum":
+            if side == "LONG" and not self.config.get("strong_long_enabled", True):
+                return "强波动池做多已关闭"
+            if side == "SHORT" and not self.config.get("strong_short_enabled", True):
+                return "强波动池做空已关闭"
+        if signal_mode == "pre_start_long" and not self.config.get("pre_start_long_enabled", False):
+            return "持续放量做多池已关闭"
+        if signal_mode == "old_rebound_short" and not self.config.get("old_rebound_short_enabled", False):
+            return "老币反弹做空池已关闭"
         return ""
 
     def blocked_symbol_reject_reason(self, symbol: str) -> str:
@@ -4224,9 +4213,6 @@ class PaperBot:
         blocked_reason = self.blocked_symbol_reject_reason(symbol)
         if blocked_reason:
             steps.append(f"禁开名单：{blocked_reason}")
-        mode_reason = self.direction_mode_reject_reason(side)
-        if mode_reason:
-            steps.append(f"方向模式：{mode_reason}")
         steps.append(f"最终结论：{self.decision_summary(reject)}")
         return steps
 
@@ -4560,8 +4546,9 @@ class PaperBot:
                 reason = "高位回落做空策略已移除"
                 self.update_signal_decision(signal, reason, f"开仓前复核：{reason}")
                 continue
-            if signal.signal_mode == "strong_momentum" and signal.side == "LONG" and not self.config.get("strong_long_enabled", True):
-                reason = "强波动池做多已关闭"
+            strategy_reason = self.strategy_direction_reject_reason(signal.signal_mode, signal.side)
+            if strategy_reason:
+                reason = strategy_reason
                 self.update_signal_decision(signal, reason, f"开仓前复核：{reason}")
                 continue
             if signal.signal_mode == "pre_start_long":
@@ -4585,11 +4572,6 @@ class PaperBot:
             if blocked_reason:
                 self.update_signal_decision(signal, blocked_reason, f"开仓前复核：{blocked_reason}")
                 self.event("risk", f"{signal.symbol} {blocked_reason}，跳过开仓")
-                continue
-            mode_reject = self.direction_mode_reject_reason(signal.side)
-            if mode_reject:
-                self.update_signal_decision(signal, mode_reject, f"开仓前复核：{mode_reject}")
-                self.event("risk", f"{signal.symbol} {mode_reject}")
                 continue
             cooldown_reason = self.stop_loss_cooldown_reason(signal.symbol)
             if cooldown_reason:
