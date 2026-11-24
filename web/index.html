@@ -465,7 +465,7 @@
             </label>
             <label>
               股票做多杠杆
-              <input name="tradfi_long_leverage" type="number" min="1" max="20" step="1" />
+              <input name="tradfi_long_leverage" type="number" min="1" step="1" />
             </label>
             <label>
               股票做多仓位模式
@@ -489,7 +489,7 @@
             </label>
             <label>
               股票做空杠杆
-              <input name="tradfi_short_leverage" type="number" min="1" max="20" step="1" />
+              <input name="tradfi_short_leverage" type="number" min="1" step="1" />
             </label>
             <label>
               股票做空仓位模式
@@ -618,6 +618,7 @@
             <thead>
               <tr>
                 <th>币种</th>
+                <th>平仓方向</th>
                 <th>剩余</th>
                 <th>最近平仓时间</th>
                 <th>亏损</th>
@@ -627,7 +628,7 @@
               </tr>
             </thead>
             <tbody id="cooldownRows">
-              <tr><td colspan="7" class="empty">暂无平仓冷静期</td></tr>
+              <tr><td colspan="8" class="empty">暂无平仓冷静期</td></tr>
             </tbody>
           </table>
         </div>

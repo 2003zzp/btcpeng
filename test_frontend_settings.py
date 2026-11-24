@@ -50,6 +50,13 @@ class InputNameParser(HTMLParser):
 
 
 class FrontendSettingsTest(unittest.TestCase):
+    def test_cooldown_table_shows_close_side_and_clears_one_side(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+        js = Path("web/app.js").read_text(encoding="utf-8")
+        self.assertIn("<th>平仓方向</th>", html)
+        self.assertIn("data-cooldown-side", js)
+        self.assertIn("JSON.stringify({ symbol, side })", js)
+
     def test_settings_tabs_target_five_panels_with_only_first_visible(self):
         parser = InputNameParser()
         parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
@@ -168,6 +175,16 @@ class FrontendSettingsTest(unittest.TestCase):
         attrs = parser.input_attrs["tradfi_max_candidates"]
         self.assertEqual(attrs.get("min"), "1")
         self.assertNotIn("max", attrs)
+
+    def test_tradfi_leverage_has_no_frontend_upper_bound(self):
+        parser = InputNameParser()
+        parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
+        for side in ("long", "short"):
+            with self.subTest(side=side):
+                attrs = parser.input_attrs[f"tradfi_{side}_leverage"]
+                self.assertEqual(attrs.get("min"), "1")
+                self.assertEqual(attrs.get("step"), "1")
+                self.assertNotIn("max", attrs)
 
     def test_analyzer_confidence_controls_are_not_exposed(self):
         html = Path("web/index.html").read_text(encoding="utf-8")

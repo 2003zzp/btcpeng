@@ -900,22 +900,25 @@ function renderOldReboundWhitelist(symbols) {
 function renderCooldowns(rows) {
   if (!els.cooldownRows) return;
   if (!rows.length) {
-    els.cooldownRows.innerHTML = `<tr><td colspan="7" class="empty">暂无平仓冷静期</td></tr>`;
+    els.cooldownRows.innerHTML = `<tr><td colspan="8" class="empty">暂无平仓冷静期</td></tr>`;
     return;
   }
   els.cooldownRows.innerHTML = rows
     .map((row) => {
       const symbol = escapeHtml(row.symbol || "-");
       const reason = row.close_reason || "最近平仓";
+      const side = ["LONG", "SHORT"].includes(row.side) ? row.side : "BOTH";
+      const sideLabel = side === "LONG" ? "做多平仓" : side === "SHORT" ? "做空平仓" : "方向未知（双向冷却）";
       return `
         <tr>
           <td><strong>${symbol}</strong></td>
+          <td>${sideLabel}</td>
           <td><span class="score-badge">${Number(row.remaining_minutes || 0)} 分钟</span></td>
           <td>${formatDate(row.closed_at)}</td>
           <td class="${signedClass(row.pnl_usdt)}">${money(row.pnl_usdt)}</td>
           <td class="${signedClass(row.roi_pct)}">${pct(row.roi_pct)}</td>
           <td><span class="decision-chain" title="${titleText(reason)}">${escapeHtml(reason)}</span></td>
-          <td><button class="mini-action" type="button" data-clear-cooldown="${symbol}">解除</button></td>
+          <td><button class="mini-action" type="button" data-clear-cooldown="${symbol}" data-cooldown-side="${side}">解除</button></td>
         </tr>
       `;
     })
@@ -1176,12 +1179,14 @@ els.cooldownRows?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-clear-cooldown]");
   if (!button) return;
   const symbol = button.dataset.clearCooldown || "";
-  const ok = window.confirm(`确认解除 ${symbol} 本次平仓冷静期？如果后续再次平仓，冷静期会重新生效。`);
+  const side = button.dataset.cooldownSide || "BOTH";
+  const sideLabel = side === "LONG" ? "做多" : side === "SHORT" ? "做空" : "方向未知的双向";
+  const ok = window.confirm(`确认解除 ${symbol} ${sideLabel}平仓冷静期？如果后续再次平仓，冷静期会重新生效。`);
   if (!ok) return;
   await runAction(button, `正在解除 ${symbol} 冷静期...`, `${symbol} 冷静期已解除`, async () => {
     currentState = await api("/api/clear-cooldown", {
       method: "POST",
-      body: JSON.stringify({ symbol }),
+      body: JSON.stringify({ symbol, side }),
     });
     render(currentState);
     return currentState;

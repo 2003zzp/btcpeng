@@ -52,6 +52,24 @@ class TradfiStrategyTest(unittest.TestCase):
         bot.config["tradfi_long_enabled"] = False
         self.assertEqual(bot.build_tradfi_candidate_pool([ticker]), [])
 
+    def test_stock_candidate_keeps_only_side_without_cooldown(self):
+        bot = self.make_bot()
+        bot.config["tradfi_enabled"] = True
+        bot.get_market_exchange_symbols = lambda: {"TSLAUSDT": {
+            "contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY"}}
+        bot.state["trade_history"] = [{
+            "symbol": "TSLAUSDT", "side": "SHORT", "closed_at": server.iso_now(),
+            "close_reason": "止损平仓", "pnl_usdt": -1.0,
+        }]
+        ticker = {"symbol": "TSLAUSDT", "lastPrice": "100", "quoteVolume": "10000000",
+                  "priceChangePercent": "2"}
+        self.assertEqual(bot.build_tradfi_candidate_pool([ticker])[0]["modes"], ["LONG"])
+        bot.state["trade_history"].append({
+            "symbol": "TSLAUSDT", "side": "LONG", "closed_at": server.iso_now(),
+            "close_reason": "止盈平仓", "pnl_usdt": 1.0,
+        })
+        self.assertEqual(bot.build_tradfi_candidate_pool([ticker]), [])
+
     def test_legacy_global_direction_does_not_restrict_stock_sides(self):
         bot = self.make_bot()
         bot.config.update({"tradfi_enabled": True, "tradfi_long_enabled": True,

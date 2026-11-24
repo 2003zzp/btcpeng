@@ -3569,16 +3569,19 @@ class PaperBot:
         modes = [side for side in modes if self.config.get(f"tradfi_{side.lower()}_enabled", True)]
         if not modes:
             return []
+        cooldown_sides = self.cooldown_sides_by_symbol()
         candidates = [item for item in tickers
                       if tradfi_strategy.is_equity_contract(symbols.get(item.get("symbol"), {}))
                       and item.get("symbol") not in set(self.config.get("blocked_symbols", []))
-                      and not self.stop_loss_cooldown_reason(str(item.get("symbol", "")))
+                      and any(side not in cooldown_sides.get(str(item.get("symbol", "")), set()) for side in modes)
                       and fnum(item.get("lastPrice")) > 0
                       and fnum(item.get("quoteVolume")) >= float(self.config.get("tradfi_min_quote_volume_usdt", 1_000_000))
                       and item.get("priceChangePercent") is not None
                       and fnum(item.get("priceChangePercent"), float("-inf")) >= float(self.config.get("tradfi_min_24h_change_pct", -10.0))]
         candidates.sort(key=lambda item: (-fnum(item.get("quoteVolume")), str(item.get("symbol"))))
-        return [{"item": item, "modes": modes} for item in candidates[:int(self.config.get("tradfi_max_candidates", 5))]]
+        return [{"item": item, "modes": [side for side in modes
+                 if side not in cooldown_sides.get(str(item.get("symbol", "")), set())]}
+                for item in candidates[:int(self.config.get("tradfi_max_candidates", 5))]]
 
     def build_tradfi_signals(self, tickers: list[dict[str, Any]], open_symbols: set[str]) -> list[Signal]:
         candidates = self.build_tradfi_candidate_pool(tickers)
@@ -3668,10 +3671,13 @@ class PaperBot:
             save_json(self.config_path, self.config)
             self.persist()
 
-    def refresh_old_rebound_whitelist(self, tickers: list[dict[str, Any]]) -> None:
+    def refresh_old_rebound_whitelist(
+        self, tickers: list[dict[str, Any]], cooldown_sides: dict[str, set[str]] | None = None
+    ) -> None:
         if (not self.config.get("old_rebound_whitelist_enabled", False)
                 or not self.config.get("old_rebound_short_enabled", False)):
             return
+        cooldown_sides = cooldown_sides if cooldown_sides is not None else self.cooldown_sides_by_symbol()
         with self.lock:
             symbols = list(self.config.get("old_rebound_whitelist_symbols", []))
             suppressed = set(self.state.get("old_rebound_whitelist_suppressed", []))
@@ -3691,7 +3697,7 @@ class PaperBot:
                     continue
                 if (change <= threshold or symbol in symbols or symbol in suppressed
                         or item.get("_crypto_candidate_allowed") is False or symbol in blocked
-                        or self.stop_loss_cooldown_reason(symbol)
+                        or self.execution_side("SHORT") in cooldown_sides.get(symbol, set())
                         or fnum(item.get("quoteVolume")) < minimum_volume):
                     continue
                 symbols.append(symbol)
@@ -3704,7 +3710,8 @@ class PaperBot:
 
     def build_candidate_pool(self, tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """用 24h 滚动行情粗筛三类池，先排除禁开、冷却和非加密合约。"""
-        self.refresh_old_rebound_whitelist(tickers)
+        cooldown_sides = self.cooldown_sides_by_symbol()
+        self.refresh_old_rebound_whitelist(tickers, cooldown_sides)
         watchlist = {str(item).upper() for item in self.config.get("manual_watchlist", [])}
         blocked = set(normalize_symbol_list(self.config.get("blocked_symbols", []), str(self.config.get("quote_asset", "USDT"))))
         min_volume = float(self.config.get("min_quote_volume_usdt", 0))
@@ -3727,7 +3734,7 @@ class PaperBot:
 
         def is_cooldown_candidate(item: dict[str, Any]) -> bool:
             symbol = str(item.get("symbol", "")).upper()
-            return bool(symbol and self.stop_loss_cooldown_reason(symbol))
+            return cooldown_sides.get(symbol, set()) == {"LONG", "SHORT"}
 
         # 两个方向策略共用候选名单；每个币只占一个候选名额。
         pool: dict[str, dict[str, Any]] = {}
@@ -3751,9 +3758,11 @@ class PaperBot:
                 if not math.isfinite(change):
                     continue
                 in_range = min_change <= change <= max_change
-                item_modes = [mode for mode in modes if in_range or (
-                    mode == "old_rebound_short" and self.is_old_rebound_whitelisted(str(item.get("symbol", "")))
-                )]
+                symbol = str(item.get("symbol", ""))
+                item_modes = [mode for mode in modes
+                              if self.execution_side("SHORT" if mode == "old_rebound_short" else "LONG")
+                              not in cooldown_sides.get(symbol, set())
+                              and (in_range or (mode == "old_rebound_short" and self.is_old_rebound_whitelisted(symbol)))]
                 if not item_modes:
                     continue
                 if (item_modes == ["pre_start_long"]
@@ -3779,6 +3788,9 @@ class PaperBot:
                 continue
             change = fnum(item.get("priceChangePercent"))
             volume = fnum(item.get("quoteVolume"))
+            candidate_side = "LONG" if change >= 0 else "SHORT"
+            if self.execution_side(candidate_side) in cooldown_sides.get(symbol, set()):
+                continue
             watchlist_side_enabled = strong_long_enabled if change >= 0 else strong_short_enabled
             if (symbol in watchlist and watchlist_side_enabled) or (volume >= min_volume and change_allowed(change)):
                 strong.append(item)
@@ -3864,6 +3876,11 @@ class PaperBot:
             volume_ratio = fnum(metrics.get("volume_ratio"), 1.0)
             volume_1h_ratio = fnum(metrics.get("volume_1h_ratio"), 1.0)
             trend = str(metrics.get("trend", "neutral"))
+            cooling_sides = self.cooldown_sides_by_symbol().get(symbol, set())
+            long_available = (self.config.get("strong_long_enabled", True)
+                              and self.execution_side("LONG") not in cooling_sides)
+            short_available = (self.config.get("strong_short_enabled", True)
+                               and self.execution_side("SHORT") not in cooling_sides)
 
             long_score, long_reason = self.score_side("LONG", change, short_move, volume_ratio, trend)
             short_score, short_reason = self.score_side("SHORT", change, short_move, volume_ratio, trend)
@@ -3871,11 +3888,12 @@ class PaperBot:
                 side, score, reason = "LONG", long_score, long_reason
             elif is_old_rebound_short:
                 side, score, reason = "SHORT", short_score, short_reason
-            elif not self.config.get("strong_short_enabled", True) or (
-                    self.config.get("strong_long_enabled", True) and long_score >= short_score):
+            elif long_available and (not short_available or long_score >= short_score):
                 side, score, reason = "LONG", long_score, long_reason
-            else:
+            elif short_available or short_score >= long_score:
                 side, score, reason = "SHORT", short_score, short_reason
+            else:
+                side, score, reason = "LONG", long_score, long_reason
 
             score_threshold = self.score_threshold_for_mode(signal_mode)
             reject = ""
@@ -3883,6 +3901,8 @@ class PaperBot:
                 reject = "已有持仓"
             elif self.blocked_symbol_reject_reason(symbol):
                 reject = self.blocked_symbol_reject_reason(symbol)
+            elif self.execution_side(side) in cooling_sides:
+                reject = self.stop_loss_cooldown_reason(symbol, self.execution_side(side))
             elif score < score_threshold and not (is_pre_start_long or is_old_rebound_short):
                 reject = f"分数 {score:.1f} 低于阈值 {score_threshold:.1f}"
             elif side == "LONG" and trend == "down" and not is_pre_start_long:
@@ -3913,12 +3933,15 @@ class PaperBot:
                     side, score, reason = "LONG", long_score, long_reason
                 elif is_old_rebound_short:
                     side, score, reason = "SHORT", short_score, short_reason
-                elif not self.config.get("strong_short_enabled", True) or (
-                        self.config.get("strong_long_enabled", True) and long_score >= short_score):
+                elif long_available and (not short_available or long_score >= short_score):
                     side, score, reason = "LONG", long_score, long_reason
-                else:
+                elif short_available or short_score >= long_score:
                     side, score, reason = "SHORT", short_score, short_reason
-                if score < score_threshold and not (is_pre_start_long or is_old_rebound_short):
+                else:
+                    side, score, reason = "LONG", long_score, long_reason
+                if self.execution_side(side) in cooling_sides:
+                    reject = self.stop_loss_cooldown_reason(symbol, self.execution_side(side))
+                elif score < score_threshold and not (is_pre_start_long or is_old_rebound_short):
                     reject = f"分数 {score:.1f} 低于阈值 {score_threshold:.1f}"
                 elif side == "LONG" and trend == "down" and not is_pre_start_long:
                     reject = "短线趋势反向"
@@ -4275,33 +4298,15 @@ class PaperBot:
         self.state["trade_history"] = self.state["trade_history"][:200]
         self.event("trade", f"{pos['symbol']} {self.side_cn(pos['side'])} {reason}，PnL {pnl:+.2f} U")
 
-    def stop_loss_cooldown_reason(self, symbol: str) -> str:
-        """从平仓记录找最近止损或启用冷静期的止盈，返回剩余冷静时间。"""
-        if not self.config.get("stop_loss_cooldown_enabled", True):
+    def stop_loss_cooldown_reason(self, symbol: str, side: str | None = None) -> str:
+        """按实际持仓方向检查平仓冷静期；无方向的旧记录同时拦截多空。"""
+        rows = [row for row in self.active_stop_loss_cooldowns()
+                if row["symbol"] == symbol and (side is None or row["side"] in {side, "BOTH"})]
+        if not rows:
             return ""
-        cooldown_sec = max(60, int(float(self.config.get("stop_loss_cooldown_minutes", 60)) * 60))
-        now_ms = int(time.time() * 1000)
-        latest_stop_ms = 0
-        for trade in self.state.get("trade_history", []):
-            if str(trade.get("symbol", "")) != symbol:
-                continue
-            if not self.is_cooldown_trade(trade):
-                continue
-            closed_ms = parse_time_ms(trade.get("closed_at"))
-            if closed_ms > latest_stop_ms:
-                latest_stop_ms = closed_ms
-        if latest_stop_ms <= 0:
-            return ""
-        overrides = self.state.setdefault("stop_loss_cooldown_overrides", {})
-        override_ms = int(fnum(overrides.get(symbol)))
-        if override_ms >= latest_stop_ms:
-            return ""
-        elapsed_sec = max(0, (now_ms - latest_stop_ms) / 1000)
-        remaining_sec = cooldown_sec - elapsed_sec
-        if remaining_sec <= 0:
-            return ""
-        remaining_min = math.ceil(remaining_sec / 60)
-        return f"平仓冷静期剩余 {remaining_min} 分钟"
+        remaining_min = max(int(row["remaining_minutes"]) for row in rows)
+        direction = f"{self.side_cn(side)}" if side in {"LONG", "SHORT"} else ""
+        return f"{direction}平仓冷静期剩余 {remaining_min} 分钟"
 
     def is_cooldown_trade(self, trade: dict[str, Any]) -> bool:
         reason = str(trade.get("close_reason", ""))
@@ -4312,20 +4317,24 @@ class PaperBot:
             return False
         return "止盈" in reason or pnl > 0
 
-    def latest_stop_loss_trade_by_symbol(self) -> dict[str, dict[str, Any]]:
-        latest: dict[str, dict[str, Any]] = {}
+    def latest_stop_loss_trade_by_symbol(self) -> dict[tuple[str, str], dict[str, Any]]:
+        latest: dict[tuple[str, str], dict[str, Any]] = {}
         for trade in self.state.get("trade_history", []):
             symbol = str(trade.get("symbol", ""))
             if not symbol:
                 continue
             if not self.is_cooldown_trade(trade):
                 continue
+            side = str(trade.get("side", "")).upper()
+            if side not in {"LONG", "SHORT"}:
+                side = "BOTH"
             closed_ms = parse_time_ms(trade.get("closed_at"))
             if closed_ms <= 0:
                 continue
-            current = latest.get(symbol)
+            key = (symbol, side)
+            current = latest.get(key)
             if not current or closed_ms > int(current.get("closed_ms", 0)):
-                latest[symbol] = {"trade": trade, "closed_ms": closed_ms}
+                latest[key] = {"trade": trade, "closed_ms": closed_ms}
         return latest
 
     def active_stop_loss_cooldowns(self) -> list[dict[str, Any]]:
@@ -4335,9 +4344,10 @@ class PaperBot:
         now_ms = int(time.time() * 1000)
         overrides = self.state.setdefault("stop_loss_cooldown_overrides", {})
         rows: list[dict[str, Any]] = []
-        for symbol, item in self.latest_stop_loss_trade_by_symbol().items():
+        for (symbol, side), item in self.latest_stop_loss_trade_by_symbol().items():
             closed_ms = int(item.get("closed_ms", 0))
-            if int(fnum(overrides.get(symbol))) >= closed_ms:
+            if max(int(fnum(overrides.get(symbol))),
+                   int(fnum(overrides.get(f"{symbol}:{side}")))) >= closed_ms:
                 continue
             remaining_sec = cooldown_sec - max(0, (now_ms - closed_ms) / 1000)
             if remaining_sec <= 0:
@@ -4345,6 +4355,8 @@ class PaperBot:
             trade = item.get("trade") or {}
             rows.append({
                 "symbol": symbol,
+                "side": side,
+                "closed_ms": closed_ms,
                 "remaining_minutes": math.ceil(remaining_sec / 60),
                 "remaining_seconds": int(max(0, remaining_sec)),
                 "closed_at": trade.get("closed_at", ""),
@@ -4356,37 +4368,41 @@ class PaperBot:
         rows.sort(key=lambda row: int(row.get("remaining_seconds", 0)), reverse=True)
         return rows
 
+    def cooldown_sides_by_symbol(self) -> dict[str, set[str]]:
+        sides: dict[str, set[str]] = {}
+        for row in self.active_stop_loss_cooldowns():
+            blocked = {"LONG", "SHORT"} if row["side"] == "BOTH" else {row["side"]}
+            sides.setdefault(row["symbol"], set()).update(blocked)
+        return sides
+
     def prune_stop_loss_cooldown_overrides(self, state: dict[str, Any] | None = None) -> None:
         target = state if state is not None else self.state
         overrides = target.setdefault("stop_loss_cooldown_overrides", {})
         if not isinstance(overrides, dict):
             target["stop_loss_cooldown_overrides"] = {}
             return
-        latest = self.latest_stop_loss_trade_by_symbol() if state is None else {}
-        for symbol in list(overrides.keys()):
-            if state is not None:
-                continue
-            latest_ms = int((latest.get(symbol) or {}).get("closed_ms", 0))
-            if latest_ms <= 0 or int(fnum(overrides.get(symbol))) < latest_ms:
-                continue
-            # Keep active overrides; old symbols are harmless and small, trimmed below.
         if len(overrides) > 200:
             items = sorted(overrides.items(), key=lambda item: fnum(item[1]), reverse=True)[:200]
             target["stop_loss_cooldown_overrides"] = dict(items)
 
-    def clear_stop_loss_cooldown(self, symbol: str) -> dict[str, Any]:
+    def clear_stop_loss_cooldown(self, symbol: str, side: str | None = None) -> dict[str, Any]:
         normalized = normalize_symbol_list([symbol], str(self.config.get("quote_asset", "USDT")))
         if not normalized:
             return {"ok": False, "error": "币种不能为空", **self.snapshot()}
+        if side is not None and side not in {"LONG", "SHORT", "BOTH"}:
+            return {"ok": False, "error": "平仓方向无效", **self.snapshot()}
         target_symbol = normalized[0]
         error = ""
         with self.lock:
-            latest = self.latest_stop_loss_trade_by_symbol().get(target_symbol)
-            if not latest:
+            active_rows = [row for row in self.active_stop_loss_cooldowns()
+                           if row["symbol"] == target_symbol and (side is None or row["side"] == side)]
+            if not active_rows:
                 error = f"{target_symbol} 当前没有平仓冷静期记录"
             else:
-                self.state.setdefault("stop_loss_cooldown_overrides", {})[target_symbol] = int(latest.get("closed_ms", 0))
-                self.event("risk", f"已手动解除 {target_symbol} 本次平仓冷静期")
+                overrides = self.state.setdefault("stop_loss_cooldown_overrides", {})
+                for row in active_rows:
+                    overrides[f"{target_symbol}:{row['side']}"] = row["closed_ms"]
+                self.event("risk", f"已手动解除 {target_symbol} {side or '全部方向'}平仓冷静期")
                 self.persist()
         if error:
             return {"ok": False, "error": error, **self.snapshot()}
@@ -4573,7 +4589,7 @@ class PaperBot:
                 self.update_signal_decision(signal, blocked_reason, f"开仓前复核：{blocked_reason}")
                 self.event("risk", f"{signal.symbol} {blocked_reason}，跳过开仓")
                 continue
-            cooldown_reason = self.stop_loss_cooldown_reason(signal.symbol)
+            cooldown_reason = self.stop_loss_cooldown_reason(signal.symbol, self.execution_side(signal.side))
             if cooldown_reason:
                 self.update_signal_decision(signal, cooldown_reason, f"开仓前复核：{cooldown_reason}")
                 self.event("risk", f"{signal.symbol} {cooldown_reason}，跳过开仓")
@@ -4765,7 +4781,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/clear-cooldown":
                 body = self.read_json_body()
-                self.write_json(BOT.clear_stop_loss_cooldown(str(body.get("symbol", ""))))
+                self.write_json(BOT.clear_stop_loss_cooldown(
+                    str(body.get("symbol", "")), str(body["side"]) if "side" in body else None
+                ))
                 return
             self.send_error(404)
         except Exception as exc:

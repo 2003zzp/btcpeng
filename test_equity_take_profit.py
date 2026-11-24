@@ -639,6 +639,161 @@ class ClosedTradeCooldownTest(unittest.TestCase):
 
         self.assertEqual(bot.config["stop_loss_cooldown_minutes"], 15)
 
+    def test_cooldown_tracks_each_closed_position_side(self):
+        bot = self.make_bot()
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "side": "SHORT", "closed_at": server.iso_now(),
+             "close_reason": "止损平仓", "pnl_usdt": -2.0},
+        ]
+        self.assertTrue(bot.stop_loss_cooldown_reason("BTCUSDT", "SHORT"))
+        self.assertEqual(bot.stop_loss_cooldown_reason("BTCUSDT", "LONG"), "")
+        self.assertEqual([row["side"] for row in bot.active_stop_loss_cooldowns()], ["SHORT"])
+        bot.state["trade_history"].append(
+            {"symbol": "BTCUSDT", "side": "LONG", "closed_at": server.iso_now(),
+             "close_reason": "止盈平仓", "pnl_usdt": 2.0}
+        )
+        self.assertEqual({row["side"] for row in bot.active_stop_loss_cooldowns()}, {"LONG", "SHORT"})
+
+    def test_legacy_close_without_side_cools_both_sides(self):
+        bot = self.make_bot()
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "closed_at": server.iso_now(),
+             "close_reason": "止损平仓", "pnl_usdt": -2.0},
+        ]
+        self.assertTrue(bot.stop_loss_cooldown_reason("BTCUSDT", "LONG"))
+        self.assertTrue(bot.stop_loss_cooldown_reason("BTCUSDT", "SHORT"))
+        self.assertEqual(bot.active_stop_loss_cooldowns()[0]["side"], "BOTH")
+
+    def test_manual_clear_only_releases_selected_side(self):
+        bot = self.make_bot()
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "side": side, "closed_at": server.iso_now(),
+             "close_reason": "止损平仓", "pnl_usdt": -2.0}
+            for side in ("LONG", "SHORT")
+        ]
+        self.assertTrue(bot.clear_stop_loss_cooldown("BTCUSDT", "SHORT")["ok"])
+        self.assertEqual(bot.stop_loss_cooldown_reason("BTCUSDT", "SHORT"), "")
+        self.assertTrue(bot.stop_loss_cooldown_reason("BTCUSDT", "LONG"))
+
+    def test_candidate_pool_keeps_opposite_side_and_excludes_dual_cooldown(self):
+        bot = self.make_bot()
+        bot.config.update({"pre_start_long_enabled": True, "old_rebound_short_enabled": True,
+                           "pre_start_volume_auto_trade_enabled": True,
+                           "shared_pool_max_candidates": 4})
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "side": "SHORT", "closed_at": server.iso_now(),
+             "close_reason": "止损平仓", "pnl_usdt": -2.0},
+        ]
+        ticker = {"symbol": "BTCUSDT", "lastPrice": "10", "priceChangePercent": "8",
+                  "quoteVolume": "50000000"}
+        candidate = bot.build_candidate_pool([ticker])[0]
+        self.assertEqual(candidate["signal_modes"], ["pre_start_long"])
+        bot.state["trade_history"].append(
+            {"symbol": "BTCUSDT", "side": "LONG", "closed_at": server.iso_now(),
+             "close_reason": "止盈平仓", "pnl_usdt": 2.0}
+        )
+        self.assertEqual(bot.build_candidate_pool([ticker]), [])
+
+    def test_long_close_still_allows_old_rebound_short_candidate(self):
+        bot = self.make_bot()
+        bot.config.update({"pre_start_long_enabled": True, "old_rebound_short_enabled": True,
+                           "pre_start_volume_auto_trade_enabled": True})
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "side": "LONG", "closed_at": server.iso_now(),
+             "close_reason": "止损平仓", "pnl_usdt": -2.0},
+        ]
+        ticker = {"symbol": "BTCUSDT", "lastPrice": "10", "priceChangePercent": "8",
+                  "quoteVolume": "50000000"}
+        self.assertEqual(bot.build_candidate_pool([ticker])[0]["signal_modes"], ["old_rebound_short"])
+
+    def test_expired_direction_does_not_keep_symbol_cooling(self):
+        bot = self.make_bot()
+        closed_at = (server.utc_now() - server.timedelta(minutes=61)).isoformat(timespec="seconds")
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "side": side, "closed_at": closed_at,
+             "close_reason": "止损平仓", "pnl_usdt": -2.0}
+            for side in ("LONG", "SHORT")
+        ]
+        self.assertEqual(bot.cooldown_sides_by_symbol(), {})
+
+    def test_legacy_symbol_override_still_suppresses_previous_closes(self):
+        bot = self.make_bot()
+        closed_at = server.iso_now()
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "side": "SHORT", "closed_at": closed_at,
+             "close_reason": "止损平仓", "pnl_usdt": -2.0},
+        ]
+        bot.state["stop_loss_cooldown_overrides"]["BTCUSDT"] = server.parse_time_ms(closed_at)
+        self.assertEqual(bot.stop_loss_cooldown_reason("BTCUSDT", "SHORT"), "")
+
+    def test_zero_change_watchlist_uses_long_cooldown(self):
+        bot = self.make_bot()
+        bot.config["manual_watchlist"] = ["BTCUSDT"]
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "side": "LONG", "closed_at": server.iso_now(),
+             "close_reason": "止损平仓", "pnl_usdt": -2.0},
+        ]
+        ticker = {"symbol": "BTCUSDT", "lastPrice": "10", "priceChangePercent": "0",
+                  "quoteVolume": "1000000"}
+        self.assertEqual(bot.build_candidate_pool([ticker]), [])
+
+    def test_reverse_order_cooldown_checks_actual_order_side(self):
+        bot = self.make_bot()
+        bot.config["reverse_orders_enabled"] = True
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "side": "SHORT", "closed_at": server.iso_now(),
+             "close_reason": "止损平仓", "pnl_usdt": -2.0},
+        ]
+        signal = ReverseOrdersTest().make_signal()
+        bot.get_exchange_symbols = lambda: {signal.symbol: {"symbol": signal.symbol}}
+        bot.get_market_exchange_symbols = lambda: {signal.symbol: {
+            "underlyingType": "COIN", "contractType": "PERPETUAL"}}
+        bot.exchange_open_position = lambda *_: self.fail("cooling actual short reached order")
+        self.assertEqual(bot.open_from_signals([signal]), 0)
+        self.assertIn("冷静期", signal.reject_reason)
+
+    def test_opposite_direction_can_open_while_short_is_cooling(self):
+        bot = self.make_bot()
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "side": "SHORT", "closed_at": server.iso_now(),
+             "close_reason": "止损平仓", "pnl_usdt": -2.0},
+        ]
+        signal = ReverseOrdersTest().make_signal()
+        bot.get_exchange_symbols = lambda: {signal.symbol: {"symbol": signal.symbol}}
+        bot.get_market_exchange_symbols = lambda: {signal.symbol: {
+            "underlyingType": "COIN", "contractType": "PERPETUAL"}}
+        bot.exchange_open_position = lambda *_: {"entry_order_id": "1", "side": "LONG", "margin_usdt": 3.0}
+        bot.mark_signal_review_opened = lambda *_: None
+        bot.publish_square_open_position_async = lambda *_: None
+        self.assertEqual(bot.open_from_signals([signal]), 1)
+
+    def test_strong_signal_selects_non_cooling_direction(self):
+        bot = self.make_bot()
+        bot.state["trade_history"] = [
+            {"symbol": "BTCUSDT", "side": "LONG", "closed_at": server.iso_now(),
+             "close_reason": "止损平仓", "pnl_usdt": -2.0},
+        ]
+        bot.score_side = lambda side, *_: (10.0, "test") if side == "LONG" else (8.0, "test")
+        metrics = {"price": 10.0, "short_move": -1.0, "change_1h": -1.0,
+                   "change_4h": -1.0, "volume_ratio": 2.0, "trend": "neutral"}
+        bot.kline_short_metrics = lambda *args, **kwargs: metrics
+        bot.fetch_signal_market_stats = lambda *args: {
+            "funding_rate_pct": 0.0, "open_interest_24h_pct": 0.0,
+            "open_interest_4h_pct": 0.0, "open_interest_1h_pct": 0.0,
+            "open_interest_usdt": 1.0, "long_short_ratio": 1.0,
+            "volume_4h_ratio": 1.0, "taker_long_short_ratio": 1.0, "oi_volume_ratio": 0.0,
+        }
+        bot.market_confirmation_score = lambda *args: {"score": 10.0, "label": "test", "reason": "test"}
+        bot.config.update({"market_regime_filter_enabled": False,
+                           "long_structure_confirmation_enabled": False,
+                           "short_structure_confirmation_enabled": False})
+        ticker = {"symbol": "BTCUSDT", "lastPrice": "10", "quoteVolume": "50000000",
+                  "priceChangePercent": "-12"}
+        candidate = {"item": ticker, "signal_mode": "strong_momentum"}
+        regime = {"score": 10.0, "label": "test", "reason": ""}
+        signal = bot.build_signals([ticker], set(), candidate, (regime, regime))[0]
+        self.assertEqual(signal.side, "SHORT")
+
 
 class MarketScanTest(unittest.TestCase):
     def make_bot(self) -> server.PaperBot:
