@@ -4399,7 +4399,7 @@ class PaperBot:
         return ""
 
     def coingecko_historical_low(self, symbol_info: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
-        """Only accept a uniquely matched CoinGecko symbol; cache successful ATL for one day."""
+        """Read market ATL by contract base symbol; cache successful data for one day."""
         base_asset = str(symbol_info.get("baseAsset") or "").upper()
         if not base_asset or not base_asset.isalnum():
             return None, "合约基础币种无法识别"
@@ -4414,37 +4414,31 @@ class PaperBot:
         data: dict[str, Any] | None = None
         reason = ""
         try:
-            search = http_get_json_once(
-                "https://api.coingecko.com/api/v3", "/search", {"query": base_asset},
-                headers=headers,
-            )
-            matches = {
-                str(coin.get("id")): coin for coin in search.get("coins", [])
-                if str(coin.get("symbol", "")).upper() == base_asset and coin.get("id")
+            params: dict[str, Any] = {
+                "vs_currency": "usd", "order": "market_cap_desc", "per_page": 250,
+                "page": 1, "sparkline": "false", "symbols": base_asset.lower(),
+                "include_tokens": "top",
             }
-            if len(matches) != 1:
-                reason = "CoinGecko币种匹配不唯一" if matches else "CoinGecko没有对应币种"
+            markets = http_get_json_once(
+                "https://api.coingecko.com/api/v3", "/coins/markets", params, headers=headers,
+            )
+            if not isinstance(markets, list):
+                reason = "CoinGecko市场数据无效"
             else:
-                coin_id = next(iter(matches))
-                coin = http_get_json_once(
-                    "https://api.coingecko.com/api/v3",
-                    f"/coins/{urllib.parse.quote(coin_id, safe='')}",
-                    {"localization": "false", "tickers": "false", "market_data": "true",
-                     "community_data": "false", "developer_data": "false", "sparkline": "false"},
-                    headers=headers,
-                )
-                if str(coin.get("id")) != coin_id or str(coin.get("symbol", "")).upper() != base_asset:
-                    reason = "CoinGecko币种身份不一致"
+                matches = [coin for coin in markets if isinstance(coin, dict)
+                           and str(coin.get("symbol", "")).upper() == base_asset and coin.get("id")]
+                if len(matches) != 1:
+                    reason = "CoinGecko币种匹配不唯一" if matches else "CoinGecko没有对应币种"
                 else:
-                    market_data = coin.get("market_data") or {}
-                    low = fnum((market_data.get("atl") or {}).get("usd"))
+                    coin = matches[0]
+                    low = fnum(coin.get("atl"))
                     if low <= 0 or not math.isfinite(low):
                         reason = "CoinGecko历史低价缺失"
                     else:
                         data = {
                             "price": low,
-                            "id": coin_id,
-                            "date": str((market_data.get("atl_date") or {}).get("usd") or ""),
+                            "id": str(coin["id"]),
+                            "date": str(coin.get("atl_date") or ""),
                         }
         except Exception as exc:
             reason = f"CoinGecko接口错误 {type(exc).__name__}"
@@ -4486,7 +4480,8 @@ class PaperBot:
             return ""
         distance = max(0.0, (current_price - low) / current_price * 100)
         signal.decision_steps.append(
-            f"CoinGecko历史低价：{low:.10g} USD（{low_data.get('date') or '日期未知'}），"
+            f"CoinGecko按代码匹配 {low_data.get('id') or 'ID未知'}，历史低价："
+            f"{low:.10g} USD（{low_data.get('date') or '日期未知'}），"
             f"合约最新价 {current_price:.10g} USDT，距低点 {distance:.1f}%/{threshold:.1f}%"
         )
         if distance <= threshold:
