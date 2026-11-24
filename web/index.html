@@ -421,6 +421,14 @@
               <input name="tradfi_auto_trade_enabled" type="checkbox" />
               <span>允许股票 TradFi 自动开仓</span>
             </label>
+            <label class="settings-check">
+              <input name="tradfi_long_enabled" type="checkbox" />
+              <span>启用股票做多</span>
+            </label>
+            <label class="settings-check">
+              <input name="tradfi_short_enabled" type="checkbox" />
+              <span>启用股票做空</span>
+            </label>
             <label>
               多空优先验证
               <select name="tradfi_priority">
@@ -431,7 +439,7 @@
             <h3 class="settings-subsection">候选与量价</h3>
             <label>
               TradFi 候选数
-              <input name="tradfi_max_candidates" type="number" min="1" max="30" step="1" />
+              <input name="tradfi_max_candidates" type="number" min="1" step="1" />
             </label>
             <label>
               TradFi 24h 最低成交额 (U)
@@ -458,29 +466,53 @@
               TradFi 最小盘口深度 (x)
               <input name="tradfi_min_depth_multiple" type="number" min="1" step="0.1" />
             </label>
-            <h3 class="settings-subsection">仓位与退出</h3>
+            <h3 class="settings-subsection">做多仓位与退出</h3>
             <label>
-              TradFi 保证金 (U)
-              <input name="tradfi_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
+              股票做多保证金 (U)
+              <input name="tradfi_long_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
             </label>
             <label>
-              TradFi 杠杆
-              <input name="tradfi_leverage" type="number" min="1" max="20" step="1" />
+              股票做多杠杆
+              <input name="tradfi_long_leverage" type="number" min="1" max="20" step="1" />
             </label>
             <label>
-              TradFi 仓位模式
-              <select name="tradfi_margin_type">
+              股票做多仓位模式
+              <select name="tradfi_long_margin_type">
                 <option value="ISOLATED">逐仓</option>
                 <option value="CROSSED">全仓</option>
               </select>
             </label>
             <label title="仅用于以后新开的股票 TradFi 订单；按仓位保证金 ROI 计算。">
-              TradFi 初始止盈 ROI (%)
-              <input name="tradfi_take_profit_roi_pct" type="number" min="0.01" step="any" />
+              股票做多初始止盈 ROI (%)
+              <input name="tradfi_long_take_profit_roi_pct" type="number" min="0.01" step="any" />
             </label>
             <label title="仅用于以后新开的股票 TradFi 订单；按仓位保证金 ROI 计算。">
-              TradFi 初始止损 ROI (%)
-              <input name="tradfi_stop_loss_roi_pct" type="number" min="0.01" step="any" />
+              股票做多初始止损 ROI (%)
+              <input name="tradfi_long_stop_loss_roi_pct" type="number" min="0.01" step="any" />
+            </label>
+            <h3 class="settings-subsection">做空仓位与退出</h3>
+            <label>
+              股票做空保证金 (U)
+              <input name="tradfi_short_margin_per_trade_usdt" type="number" min="0.01" step="0.01" />
+            </label>
+            <label>
+              股票做空杠杆
+              <input name="tradfi_short_leverage" type="number" min="1" max="20" step="1" />
+            </label>
+            <label>
+              股票做空仓位模式
+              <select name="tradfi_short_margin_type">
+                <option value="ISOLATED">逐仓</option>
+                <option value="CROSSED">全仓</option>
+              </select>
+            </label>
+            <label title="仅用于以后新开的股票 TradFi 空单；按仓位保证金 ROI 计算。">
+              股票做空初始止盈 ROI (%)
+              <input name="tradfi_short_take_profit_roi_pct" type="number" min="0.01" step="any" />
+            </label>
+            <label title="仅用于以后新开的股票 TradFi 空单；按仓位保证金 ROI 计算。">
+              股票做空初始止损 ROI (%)
+              <input name="tradfi_short_stop_loss_roi_pct" type="number" min="0.01" step="any" />
             </label>
           </fieldset>
 

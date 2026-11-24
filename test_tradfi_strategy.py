@@ -19,6 +19,78 @@ class TradfiStrategyTest(unittest.TestCase):
     def depth_book(bid_qty="1", ask_qty="1", ask_price="100.1"):
         return {"bids": [["100", bid_qty]], "asks": [[ask_price, ask_qty]]}
 
+    @staticmethod
+    def stock_signal(side="SHORT"):
+        return server.Signal(
+            symbol="TSLAUSDT", side=side, score=9, price=100, quote_volume=1_000_000,
+            change_24h_pct=0, change_4h_pct=0, change_1h_pct=0, short_move_pct=0,
+            volume_ratio=1, open_interest_usdt=0, open_interest_24h_pct=0,
+            open_interest_4h_pct=0, open_interest_1h_pct=0, funding_rate_pct=0,
+            long_short_ratio=0, volume_4h_ratio=0, taker_long_short_ratio=0,
+            oi_volume_ratio=0, signal_mode="tradfi_us_equity", signal_heat_level="normal",
+            market_regime_score=0, market_regime_label="", market_regime_reason="",
+            risk_level="注意", analyzer_direction="", analyzer_confidence_pct=0,
+            analyzer_reason="", trigger_reason="", reject_reason="", decision_summary="",
+            decision_steps=[], priority="中", signal_model="tradfi_us_v1",
+        )
+
+    def test_direction_switches_limit_candidate_modes(self):
+        bot = self.make_bot()
+        bot.config["tradfi_enabled"] = True
+        bot.config["tradfi_priority"] = "SHORT"
+        bot.get_market_exchange_symbols = lambda: {"TSLAUSDT": {
+            "contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY"}}
+        ticker = {"symbol": "TSLAUSDT", "lastPrice": "100", "quoteVolume": "10000000",
+                  "priceChangePercent": "2"}
+        bot.config.update({"tradfi_long_enabled": True, "tradfi_short_enabled": False})
+        self.assertEqual(bot.build_tradfi_candidate_pool([ticker])[0]["modes"], ["LONG"])
+        bot.config.update({"tradfi_long_enabled": False, "tradfi_short_enabled": True})
+        self.assertEqual(bot.build_tradfi_candidate_pool([ticker])[0]["modes"], ["SHORT"])
+        bot.config["tradfi_long_enabled"] = True
+        self.assertEqual(bot.build_tradfi_candidate_pool([ticker])[0]["modes"], ["SHORT", "LONG"])
+        bot.config["tradfi_short_enabled"] = False
+        bot.config["tradfi_long_enabled"] = False
+        self.assertEqual(bot.build_tradfi_candidate_pool([ticker]), [])
+
+    def test_direction_settings_and_legacy_sizing_migrate(self):
+        bot = self.make_bot()
+        bot.config_path.write_text(
+            '{"tradfi_margin_per_trade_usdt": 7, "tradfi_leverage": 4, '
+            '"tradfi_margin_type": "CROSSED", "tradfi_take_profit_roi_pct": 11, '
+            '"tradfi_stop_loss_roi_pct": 9}', encoding="utf-8")
+        bot = server.PaperBot(bot.config_path, bot.state_path)
+        for side in ("long", "short"):
+            self.assertEqual(bot.config[f"tradfi_{side}_margin_per_trade_usdt"], 7)
+            self.assertEqual(bot.config[f"tradfi_{side}_leverage"], 4)
+            self.assertEqual(bot.config[f"tradfi_{side}_margin_type"], "CROSSED")
+            self.assertEqual(bot.config[f"tradfi_{side}_take_profit_roi_pct"], 11)
+            self.assertEqual(bot.config[f"tradfi_{side}_stop_loss_roi_pct"], 9)
+        bot.update_settings({"tradfi_long_enabled": False, "tradfi_short_enabled": True,
+                             "tradfi_short_margin_per_trade_usdt": 12,
+                             "tradfi_short_leverage": 3,
+                             "tradfi_short_take_profit_roi_pct": 16,
+                             "tradfi_short_stop_loss_roi_pct": 6,
+                             "tradfi_short_margin_type": "ISOLATED"})
+        bot = server.PaperBot(bot.config_path, bot.state_path)
+        self.assertFalse(bot.config["tradfi_long_enabled"])
+        self.assertTrue(bot.config["tradfi_short_enabled"])
+        self.assertEqual(bot.position_plan(self.stock_signal("SHORT"), 100)["margin_usdt"], 12)
+        self.assertEqual(bot.position_plan(self.stock_signal("SHORT"), 100)["target_leverage"], 3)
+        self.assertEqual(bot.margin_type_for_signal(self.stock_signal("SHORT")), "ISOLATED")
+        self.assertEqual(bot.position_plan(self.stock_signal("LONG"), 100)["margin_usdt"], 7)
+        self.assertEqual(bot.margin_type_for_signal(self.stock_signal("LONG")), "CROSSED")
+
+    def test_preopen_rejects_disabled_direction_and_uses_its_depth_plan(self):
+        bot = self.make_bot()
+        bot.config.update({"tradfi_enabled": True, "tradfi_auto_trade_enabled": True,
+                           "tradfi_long_enabled": True, "tradfi_short_enabled": False,
+                           "tradfi_long_margin_per_trade_usdt": 20,
+                           "tradfi_long_leverage": 2, "tradfi_min_depth_multiple": 3})
+        info = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY"}
+        with patch.object(server, "http_get_json", return_value=self.depth_book(bid_qty="0.5", ask_qty="0.5")):
+            self.assertIn("未启用", bot.tradfi_open_reject_reason(self.stock_signal("SHORT"), info))
+            self.assertIn("深度", bot.tradfi_open_reject_reason(self.stock_signal("LONG"), info))
+
     def test_only_equity_tradfi_contract_is_eligible(self):
         stock = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY", "underlyingSubType": ["TradFi"]}
         hk_stock = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "HK_EQUITY", "underlyingSubType": ["TradFi"]}
@@ -182,10 +254,13 @@ class TradfiStrategyTest(unittest.TestCase):
         self.assertEqual(reloaded.config["tradfi_min_depth_multiple"], 3)
 
     def test_tradfi_protection_orders_use_position_roi_not_structural_prices(self):
-        for side, expected_stop, expected_take in (("LONG", 98, 102.5), ("SHORT", 102, 97.5)):
+        for side, expected_stop, expected_take, expected_stop_roi, expected_take_roi in (
+            ("LONG", 98, 102.5, 8, 10), ("SHORT", 101.5, 97, 6, 12)
+        ):
             with self.subTest(side=side):
                 bot = self.make_bot()
-                bot.config.update({"tradfi_take_profit_roi_pct": 10, "tradfi_stop_loss_roi_pct": 8})
+                bot.config.update({"tradfi_long_take_profit_roi_pct": 10, "tradfi_long_stop_loss_roi_pct": 8,
+                                   "tradfi_short_take_profit_roi_pct": 12, "tradfi_short_stop_loss_roi_pct": 6})
                 bot.get_available_balance = lambda: 100
                 bot.ensure_exchange_settings = lambda symbol, target_leverage, target_margin_type=None: 4
                 bot.exposure_pct = lambda extra_notional=0: 0
@@ -213,11 +288,11 @@ class TradfiStrategyTest(unittest.TestCase):
                 record = bot.exchange_open_position_with_sizing(signal, info, {"margin_usdt": 3, "target_leverage": 8})
                 self.assertAlmostEqual(float(calls[1][1]["triggerPrice"]), expected_stop, delta=0.011)
                 self.assertAlmostEqual(float(calls[2][1]["triggerPrice"]), expected_take, delta=0.011)
-                self.assertEqual(record["stop_loss_roi_pct"], 8)
-                self.assertEqual(record["take_profit_roi_pct"], 10)
+                self.assertEqual(record["stop_loss_roi_pct"], expected_stop_roi)
+                self.assertEqual(record["take_profit_roi_pct"], expected_take_roi)
                 self.assertEqual(record["leverage"], 4)
                 if side == "LONG":
-                    bot.config["tradfi_stop_loss_roi_pct"] = 500
+                    bot.config["tradfi_long_stop_loss_roi_pct"] = 500
                     with self.assertRaisesRegex(RuntimeError, "ROI"):
                         bot.exchange_open_position_with_sizing(signal, info, {"margin_usdt": 3, "target_leverage": 8})
                     self.assertEqual(len(calls), 3)

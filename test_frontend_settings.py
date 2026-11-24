@@ -68,7 +68,7 @@ class FrontendSettingsTest(unittest.TestCase):
     def test_settings_keep_unique_controls_across_hidden_panels(self):
         parser = InputNameParser()
         parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
-        self.assertEqual(len(parser.named_controls), 85)
+        self.assertEqual(len(parser.named_controls), 92)
         self.assertEqual(len(parser.named_controls), len(set(parser.named_controls)))
         self.assertNotIn("old_rebound_short_min_history_days", parser.named_controls)
 
@@ -90,8 +90,9 @@ class FrontendSettingsTest(unittest.TestCase):
         parser = InputNameParser()
         parser.feed(html)
 
-        for name in ("tradfi_min_15m_quote_volume_usdt", "tradfi_take_profit_roi_pct",
-                     "tradfi_stop_loss_roi_pct"):
+        for name in ("tradfi_min_15m_quote_volume_usdt",
+                     "tradfi_long_take_profit_roi_pct", "tradfi_long_stop_loss_roi_pct",
+                     "tradfi_short_take_profit_roi_pct", "tradfi_short_stop_loss_roi_pct"):
             with self.subTest(name=name):
                 attrs = parser.input_attrs[name]
                 self.assertEqual(attrs["type"], "number")
@@ -137,15 +138,34 @@ class FrontendSettingsTest(unittest.TestCase):
         parser.feed(html)
         self.assertTrue({"tradfi_enabled", "tradfi_auto_trade_enabled",
                          "tradfi_max_candidates", "tradfi_min_quote_volume_usdt",
-                         "tradfi_margin_per_trade_usdt", "tradfi_leverage",
-                         "tradfi_take_profit_roi_pct", "tradfi_stop_loss_roi_pct",
+                         "tradfi_long_enabled", "tradfi_short_enabled",
                          "tradfi_min_24h_change_pct", "tradfi_max_4h_change_pct",
                          "tradfi_min_15m_quote_volume_usdt", "tradfi_max_spread_pct",
                          "tradfi_min_depth_multiple"}.issubset(parser.input_names))
         self.assertNotIn("tradfi_symbols", parser.input_names)
         self.assertNotIn("tradfi_max_stop_distance_pct", parser.input_names)
         self.assertNotIn("tradfi_reward_risk", parser.input_names)
-        self.assertTrue({"tradfi_priority", "tradfi_margin_type"}.issubset(parser.select_names))
+        self.assertIn("tradfi_priority", parser.select_names)
+
+    def test_tradfi_directions_have_independent_controls(self):
+        parser = InputNameParser()
+        parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
+        for side in ("long", "short"):
+            self.assertIn(f"tradfi_{side}_enabled", parser.input_names)
+            self.assertIn(f"tradfi_{side}_margin_type", parser.select_names)
+            for suffix in ("margin_per_trade_usdt", "leverage", "take_profit_roi_pct", "stop_loss_roi_pct"):
+                self.assertIn(f"tradfi_{side}_{suffix}", parser.input_names)
+        for old in ("tradfi_margin_per_trade_usdt", "tradfi_leverage",
+                    "tradfi_take_profit_roi_pct", "tradfi_stop_loss_roi_pct"):
+            self.assertNotIn(old, parser.input_names)
+        self.assertNotIn("tradfi_margin_type", parser.select_names)
+
+    def test_tradfi_candidate_count_has_no_frontend_upper_bound(self):
+        parser = InputNameParser()
+        parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
+        attrs = parser.input_attrs["tradfi_max_candidates"]
+        self.assertEqual(attrs.get("min"), "1")
+        self.assertNotIn("max", attrs)
 
     def test_analyzer_confidence_controls_are_not_exposed(self):
         html = Path("web/index.html").read_text(encoding="utf-8")

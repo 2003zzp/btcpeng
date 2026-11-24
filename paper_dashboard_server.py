@@ -138,6 +138,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "old_rebound_short_margin_type": None,
     "tradfi_enabled": False,
     "tradfi_auto_trade_enabled": False,
+    "tradfi_long_enabled": True,
+    "tradfi_short_enabled": True,
     "tradfi_priority": "SHORT",
     "tradfi_max_candidates": 5,
     "tradfi_min_quote_volume_usdt": 1_000_000.0,
@@ -151,6 +153,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tradfi_margin_type": "ISOLATED",
     "tradfi_take_profit_roi_pct": 10.0,
     "tradfi_stop_loss_roi_pct": 8.0,
+    "tradfi_long_margin_per_trade_usdt": None,
+    "tradfi_long_leverage": None,
+    "tradfi_long_margin_type": None,
+    "tradfi_long_take_profit_roi_pct": None,
+    "tradfi_long_stop_loss_roi_pct": None,
+    "tradfi_short_margin_per_trade_usdt": None,
+    "tradfi_short_leverage": None,
+    "tradfi_short_margin_type": None,
+    "tradfi_short_take_profit_roi_pct": None,
+    "tradfi_short_stop_loss_roi_pct": None,
     "max_kline_enriched_candidates": 8,
     "kline_15m_limit": 40,
     "kline_1h_limit": 10,
@@ -575,6 +587,15 @@ class PaperBot:
         for key in ("pre_start_margin_type", "old_rebound_short_margin_type", "tradfi_margin_type"):
             margin_type = str(config.get(key) or config["margin_type"]).upper()
             config[key] = margin_type if margin_type in {"ISOLATED", "CROSSED"} else config["margin_type"]
+        for side in ("long", "short"):
+            for suffix in ("margin_per_trade_usdt", "leverage", "margin_type",
+                           "take_profit_roi_pct", "stop_loss_roi_pct"):
+                key = f"tradfi_{side}_{suffix}"
+                if config.get(key) is None:
+                    config[key] = config[f"tradfi_{suffix}"]
+            margin_key = f"tradfi_{side}_margin_type"
+            margin_type = str(config[margin_key]).upper()
+            config[margin_key] = margin_type if margin_type in {"ISOLATED", "CROSSED"} else config["tradfi_margin_type"]
         for key in ("take_profit_trigger_price_type", "stop_loss_trigger_price_type"):
             value = str(config.get(key, "MARK_PRICE")).upper()
             config[key] = value if value in {"MARK_PRICE", "CONTRACT_PRICE"} else "MARK_PRICE"
@@ -1164,6 +1185,8 @@ class PaperBot:
             "old_rebound_short_margin_type": str,
             "tradfi_enabled": str,
             "tradfi_auto_trade_enabled": str,
+            "tradfi_long_enabled": str,
+            "tradfi_short_enabled": str,
             "tradfi_priority": str,
             "tradfi_max_candidates": int,
             "tradfi_min_quote_volume_usdt": float,
@@ -1177,6 +1200,16 @@ class PaperBot:
             "tradfi_margin_type": str,
             "tradfi_take_profit_roi_pct": float,
             "tradfi_stop_loss_roi_pct": float,
+            "tradfi_long_margin_per_trade_usdt": float,
+            "tradfi_long_leverage": int,
+            "tradfi_long_margin_type": str,
+            "tradfi_long_take_profit_roi_pct": float,
+            "tradfi_long_stop_loss_roi_pct": float,
+            "tradfi_short_margin_per_trade_usdt": float,
+            "tradfi_short_leverage": int,
+            "tradfi_short_margin_type": str,
+            "tradfi_short_take_profit_roi_pct": float,
+            "tradfi_short_stop_loss_roi_pct": float,
             "kline_15m_limit": int,
             "kline_1h_limit": int,
             "max_open_positions": int,
@@ -1220,7 +1253,7 @@ class PaperBot:
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
-                if key in {"square_publish_enabled", "square_publish_on_open", "live_trading_enabled", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "old_rebound_whitelist_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled", "old_rebound_short_enabled", "strong_long_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled", "tradfi_enabled", "tradfi_auto_trade_enabled"}:
+                if key in {"square_publish_enabled", "square_publish_on_open", "live_trading_enabled", "market_regime_filter_enabled", "long_structure_confirmation_enabled", "old_rebound_whitelist_enabled", "short_structure_confirmation_enabled", "pre_start_long_enabled", "pre_start_volume_auto_trade_enabled", "old_rebound_short_enabled", "strong_long_enabled", "strong_short_enabled", "take_profit_cooldown_enabled", "reverse_orders_enabled", "tradfi_enabled", "tradfi_auto_trade_enabled", "tradfi_long_enabled", "tradfi_short_enabled"}:
                     raw_value = str(patch[key]).strip().lower()
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
@@ -1233,7 +1266,7 @@ class PaperBot:
                     value = "old_rebound_short"
                 if key == "tradfi_priority" and value not in {"LONG", "SHORT"}:
                     value = "SHORT"
-                if key in {"margin_type", "pre_start_margin_type", "old_rebound_short_margin_type", "tradfi_margin_type"}:
+                if key in {"margin_type", "pre_start_margin_type", "old_rebound_short_margin_type", "tradfi_margin_type", "tradfi_long_margin_type", "tradfi_short_margin_type"}:
                     value = str(value).upper()
                     if value not in {"ISOLATED", "CROSSED"}:
                         value = self.config["margin_type"] if key != "margin_type" else "ISOLATED"
@@ -1243,7 +1276,7 @@ class PaperBot:
                         value = "MARK_PRICE"
                 if key == "blocked_symbols":
                     value = normalize_symbol_list(value, str(self.config.get("quote_asset", "USDT")))
-                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "tradfi_leverage", "tradfi_max_candidates", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "shared_pool_max_candidates", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan"}:
+                if key in {"leverage", "pre_start_leverage", "old_rebound_short_leverage", "tradfi_leverage", "tradfi_long_leverage", "tradfi_short_leverage", "tradfi_max_candidates", "scan_interval_sec", "max_scan_runtime_sec", "max_candidates_per_scan", "shared_pool_max_candidates", "kline_15m_limit", "kline_1h_limit", "max_open_positions", "max_new_positions_per_scan"}:
                     value = max(1, int(value))
                 if key in {
                     "margin_per_trade_usdt",
@@ -1254,6 +1287,12 @@ class PaperBot:
                     "tradfi_margin_per_trade_usdt",
                     "tradfi_take_profit_roi_pct",
                     "tradfi_stop_loss_roi_pct",
+                    "tradfi_long_margin_per_trade_usdt",
+                    "tradfi_long_take_profit_roi_pct",
+                    "tradfi_long_stop_loss_roi_pct",
+                    "tradfi_short_margin_per_trade_usdt",
+                    "tradfi_short_take_profit_roi_pct",
+                    "tradfi_short_stop_loss_roi_pct",
                     "take_profit_roi_pct",
                     "stop_loss_roi_pct",
                     "signal_score_threshold",
@@ -2220,10 +2259,12 @@ class PaperBot:
         raise RuntimeError(f"{symbol} 无法设置杠杆：{last_error}")
 
     def margin_type_for_signal(self, signal: Signal) -> str:
+        if signal.signal_mode == "tradfi_us_equity":
+            side = "long" if signal.side == "LONG" else "short"
+            return str(self.config.get(f"tradfi_{side}_margin_type") or self.config.get("tradfi_margin_type", "ISOLATED")).upper()
         key = {
             "pre_start_long": "pre_start_margin_type",
             "old_rebound_short": "old_rebound_short_margin_type",
-            "tradfi_us_equity": "tradfi_margin_type",
         }.get(signal.signal_mode, "margin_type")
         return str(self.config.get(key) or self.config.get("margin_type", "ISOLATED")).upper()
 
@@ -2232,9 +2273,10 @@ class PaperBot:
         is_pre_start = signal.signal_mode == "pre_start_long"
         is_old_rebound_short = signal.signal_mode == "old_rebound_short"
         if signal.signal_mode == "tradfi_us_equity":
-            base_margin = float(self.config.get("tradfi_margin_per_trade_usdt", 3.0))
-            target_leverage = max(1, int(self.config.get("tradfi_leverage", 2)))
-            tier = "tradfi_fixed"
+            side = "long" if signal.side == "LONG" else "short"
+            base_margin = float(self.config.get(f"tradfi_{side}_margin_per_trade_usdt") or self.config.get("tradfi_margin_per_trade_usdt", 3.0))
+            target_leverage = max(1, int(self.config.get(f"tradfi_{side}_leverage") or self.config.get("tradfi_leverage", 2)))
+            tier = f"tradfi_{side}_fixed"
         elif is_pre_start:
             base_margin = float(self.config.get("pre_start_margin_per_trade_usdt", self.config.get("margin_per_trade_usdt", 9.0)))
             target_leverage = max(1, int(self.config.get("pre_start_leverage", self.config.get("leverage", 3))))
@@ -2293,8 +2335,9 @@ class PaperBot:
             stop_roi_pct = float(self.config["pre_start_stop_loss_roi_pct"])
             take_roi_pct = float(self.config["pre_start_take_profit_roi_pct"])
         elif signal.signal_mode == "tradfi_us_equity":
-            stop_roi_pct = float(self.config["tradfi_stop_loss_roi_pct"])
-            take_roi_pct = float(self.config["tradfi_take_profit_roi_pct"])
+            side = "long" if signal.side == "LONG" else "short"
+            stop_roi_pct = float(self.config.get(f"tradfi_{side}_stop_loss_roi_pct") or self.config["tradfi_stop_loss_roi_pct"])
+            take_roi_pct = float(self.config.get(f"tradfi_{side}_take_profit_roi_pct") or self.config["tradfi_take_profit_roi_pct"])
         else:
             stop_roi_pct = float(self.config.get("stop_loss_roi_pct", 86.0))
             take_roi_pct = float(self.config.get("take_profit_roi_pct", 90.0))
@@ -3528,7 +3571,10 @@ class PaperBot:
             return []
         priority = str(self.config.get("tradfi_priority", "SHORT"))
         modes = [priority, "LONG" if priority == "SHORT" else "SHORT"]
-        modes = [side for side in modes if not self.direction_mode_reject_reason(side)]
+        modes = [side for side in modes if self.config.get(f"tradfi_{side.lower()}_enabled", True)
+                 and not self.direction_mode_reject_reason(side)]
+        if not modes:
+            return []
         candidates = [item for item in tickers
                       if tradfi_strategy.is_equity_contract(symbols.get(item.get("symbol"), {}))
                       and item.get("symbol") not in set(self.config.get("blocked_symbols", []))
@@ -4367,6 +4413,8 @@ class PaperBot:
             return "股票TradFi信号版本无效或反向订单已开启"
         if signal.side not in {"LONG", "SHORT"}:
             return "股票TradFi交易方向无效"
+        if not self.config.get(f"tradfi_{signal.side.lower()}_enabled", True):
+            return "股票TradFi该方向未启用"
         if not tradfi_strategy.is_equity_contract(symbol_info):
             return "股票TradFi合约类型不符"
         try:
@@ -4391,8 +4439,9 @@ class PaperBot:
                             if len(level) >= 2 and fnum(level[0]) <= ask * 1.0025)
         except (TypeError, IndexError):
             return "股票TradFi实时盘口数据无效"
-        required_depth = (float(self.config.get("tradfi_margin_per_trade_usdt", 3.0))
-                          * float(self.config.get("tradfi_leverage", 2))
+        side = signal.side.lower()
+        required_depth = (float(self.config.get(f"tradfi_{side}_margin_per_trade_usdt") or self.config.get("tradfi_margin_per_trade_usdt", 3.0))
+                          * float(self.config.get(f"tradfi_{side}_leverage") or self.config.get("tradfi_leverage", 2))
                           * float(self.config.get("tradfi_min_depth_multiple", 3.0)))
         if min(bid_depth, ask_depth) < required_depth:
             return "股票TradFi盘口深度不足"

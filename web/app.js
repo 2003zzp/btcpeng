@@ -141,6 +141,8 @@ function normalizeSettingsLabels() {
     pre_start_market_confirm_min_score: "持续放量确认分阈值",
     tradfi_enabled: "启用股票 TradFi 候选池",
     tradfi_auto_trade_enabled: "允许股票 TradFi 自动开仓",
+    tradfi_long_enabled: "启用股票做多",
+    tradfi_short_enabled: "启用股票做空",
     tradfi_priority: "多空优先验证",
     tradfi_max_candidates: "TradFi 候选数",
     tradfi_min_quote_volume_usdt: "TradFi 24h 最低成交额 (U)",
@@ -149,11 +151,16 @@ function normalizeSettingsLabels() {
     tradfi_min_15m_quote_volume_usdt: "TradFi 15m 最低成交额 (U)",
     tradfi_max_spread_pct: "TradFi 最大盘口价差 (%)",
     tradfi_min_depth_multiple: "TradFi 最小盘口深度 (x)",
-    tradfi_margin_per_trade_usdt: "TradFi 保证金 (U)",
-    tradfi_leverage: "TradFi 杠杆",
-    tradfi_margin_type: "TradFi 仓位模式",
-    tradfi_take_profit_roi_pct: "TradFi 初始止盈 ROI (%)",
-    tradfi_stop_loss_roi_pct: "TradFi 初始止损 ROI (%)",
+    tradfi_long_margin_per_trade_usdt: "股票做多保证金 (U)",
+    tradfi_long_leverage: "股票做多杠杆",
+    tradfi_long_margin_type: "股票做多仓位模式",
+    tradfi_long_take_profit_roi_pct: "股票做多初始止盈 ROI (%)",
+    tradfi_long_stop_loss_roi_pct: "股票做多初始止损 ROI (%)",
+    tradfi_short_margin_per_trade_usdt: "股票做空保证金 (U)",
+    tradfi_short_leverage: "股票做空杠杆",
+    tradfi_short_margin_type: "股票做空仓位模式",
+    tradfi_short_take_profit_roi_pct: "股票做空初始止盈 ROI (%)",
+    tradfi_short_stop_loss_roi_pct: "股票做空初始止损 ROI (%)",
     old_rebound_short_min_low_distance_pct: "老币距24h低点最小距离 (%)",
     old_rebound_short_min_historical_low_distance_pct: "老币距历史低价最小距离 (%)",
     old_rebound_short_15m_min_pct: "老币15m跌幅下限 (%)",
@@ -232,7 +239,8 @@ function normalizeSettingsLabels() {
     const label = els.form?.elements?.[name]?.closest("label");
     if (label) label.title = "仅对以后新开的持续放量做多池订单生效。这里是仓位ROI百分比，不是币价涨跌百分比；现有订单保护单不自动修改。";
   }
-  for (const name of ["tradfi_take_profit_roi_pct", "tradfi_stop_loss_roi_pct"]) {
+  for (const name of ["tradfi_long_take_profit_roi_pct", "tradfi_long_stop_loss_roi_pct",
+                      "tradfi_short_take_profit_roi_pct", "tradfi_short_stop_loss_roi_pct"]) {
     const label = els.form?.elements?.[name]?.closest("label");
     if (label) label.title = "仅对以后新开的股票 TradFi 订单生效。这里是仓位ROI百分比，不是价格涨跌百分比；现有保护单不自动修改。";
   }
@@ -240,7 +248,8 @@ function normalizeSettingsLabels() {
   if (marginTypeLabel) {
     marginTypeLabel.title = "强波动池使用此模式；老币反弹、预启动和股票 TradFi 池有自己的仓位模式。全仓会共用账户保证金。";
   }
-  for (const name of ["pre_start_margin_type", "old_rebound_short_margin_type", "tradfi_margin_type"]) {
+  for (const name of ["pre_start_margin_type", "old_rebound_short_margin_type",
+                      "tradfi_long_margin_type", "tradfi_short_margin_type"]) {
     const label = els.form?.elements?.[name]?.closest("label");
     if (label) label.title = "只影响该策略池以后新开的订单。全仓共用账户保证金；币安通常不允许直接改变已有持仓币种的仓位模式。";
   }
