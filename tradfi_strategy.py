@@ -51,10 +51,12 @@ def evaluate(klines: list[list[Any]], side: str, current_price: float, now: date
         highs = [float(row[2]) for row in prior]
         lows = [float(row[3]) for row in prior]
         volumes = [float(row[7]) for row in closed[-6:]]
+        lead_in_closes = [float(row[4]) for row in closed[-7:-3]] if side == "SHORT" else []
     except (TypeError, ValueError, IndexError):
         result["reason"] = "K线字段无效"
         return result
-    values = highs + lows + volumes + [b_open, b_high, b_low, b_close, r_high, r_low, r_close, c_open, c_close, current_price]
+    values = (highs + lows + volumes + lead_in_closes
+              + [b_open, b_high, b_low, b_close, r_high, r_low, r_close, c_open, c_close, current_price])
     if any(not math.isfinite(value) or value <= 0 for value in values):
         result["reason"] = "价格或成交额缺失"
         return result
@@ -86,7 +88,29 @@ def evaluate(klines: list[list[Any]], side: str, current_price: float, now: date
     if not pattern:
         result["reason"] = "尚未完成破位、回踩和再次确认"
         return result
+
+    if side == "LONG":
+        # Use the range before the breakout as the baseline; the retest may be quiet.
+        baseline = sum(volumes[:3]) / 3
+        breakout_ratio = volumes[-3] / baseline
+        confirm_ratio = volumes[-1] / baseline
+        volume_detail = f"突破 {breakout_ratio:.2f}x / 再确认 {confirm_ratio:.2f}x"
+        if min(breakout_ratio, confirm_ratio) <= 1.0:
+            result["reason"] = f"股票做多持续放量不足：{volume_detail}，均须高于突破前3根均额"
+            return result
+        if c_close <= b_close:
+            result["reason"] = "股票做多价格未继续推进：再确认收盘未超过突破收盘价"
+            return result
+        reason = f"已收盘15m持续放量并回踩确认，{volume_detail}"
+    else:
+        # Two consecutive higher closes identify a rebound before the breakdown.
+        if not any(first < second < third for first, second, third in
+                   zip(lead_in_closes, lead_in_closes[1:], lead_in_closes[2:])):
+            result["reason"] = "股票做空破位前未见连续两根15m收盘抬高，不按反弹衰竭开空"
+            return result
+        reason = f"已收盘15m反弹衰竭，跌破后反抽失败再转弱，量比 {volume_ratio:.1f}x"
+
     result.update({"passed": True, "score": round(min(10.0, 8.0 + volume_ratio * 0.5), 1),
-                   "reason": f"已收盘15m破位回踩确认，量比 {volume_ratio:.1f}x",
+                   "reason": reason,
                    "volume_ratio": volume_ratio})
     return result

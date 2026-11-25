@@ -75,7 +75,7 @@ class FrontendSettingsTest(unittest.TestCase):
     def test_settings_keep_unique_controls_across_hidden_panels(self):
         parser = InputNameParser()
         parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
-        self.assertEqual(len(parser.named_controls), 91)
+        self.assertEqual(len(parser.named_controls), 89)
         self.assertEqual(len(parser.named_controls), len(set(parser.named_controls)))
         self.assertNotIn("old_rebound_short_min_history_days", parser.named_controls)
         self.assertNotIn("trade_direction_mode", parser.named_controls)
@@ -149,8 +149,9 @@ class FrontendSettingsTest(unittest.TestCase):
                          "tradfi_max_candidates", "tradfi_min_quote_volume_usdt",
                          "tradfi_long_enabled", "tradfi_short_enabled",
                          "tradfi_min_24h_change_pct", "tradfi_max_4h_change_pct",
-                         "tradfi_min_15m_quote_volume_usdt", "tradfi_max_spread_pct",
-                         "tradfi_min_depth_multiple"}.issubset(parser.input_names))
+                         "tradfi_min_15m_quote_volume_usdt"}.issubset(parser.input_names))
+        self.assertNotIn("tradfi_max_spread_pct", parser.named_controls)
+        self.assertNotIn("tradfi_min_depth_multiple", parser.named_controls)
         self.assertNotIn("tradfi_symbols", parser.input_names)
         self.assertNotIn("tradfi_max_stop_distance_pct", parser.input_names)
         self.assertNotIn("tradfi_reward_risk", parser.input_names)

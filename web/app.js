@@ -149,8 +149,6 @@ function normalizeSettingsLabels() {
     tradfi_min_24h_change_pct: "TradFi 24h 涨幅下限 (%)",
     tradfi_max_4h_change_pct: "TradFi 4h 涨幅上限 (%)",
     tradfi_min_15m_quote_volume_usdt: "TradFi 15m 最低成交额 (U)",
-    tradfi_max_spread_pct: "TradFi 最大盘口价差 (%)",
-    tradfi_min_depth_multiple: "TradFi 最小盘口深度 (x)",
     tradfi_long_margin_per_trade_usdt: "股票做多保证金 (U)",
     tradfi_long_leverage: "股票做多杠杆",
     tradfi_long_margin_type: "股票做多仓位模式",

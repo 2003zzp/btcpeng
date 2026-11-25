@@ -145,8 +145,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tradfi_min_24h_change_pct": -10.0,
     "tradfi_max_4h_change_pct": 10.0,
     "tradfi_min_15m_quote_volume_usdt": 50_000.0,
-    "tradfi_max_spread_pct": 0.25,
-    "tradfi_min_depth_multiple": 3.0,
     "tradfi_margin_per_trade_usdt": 3.0,
     "tradfi_leverage": 2,
     "tradfi_margin_type": "ISOLATED",
@@ -575,6 +573,7 @@ class PaperBot:
                 "old_rebound_short_1h_min_pct", "old_rebound_short_2h_min_pct",
                 "old_rebound_short_min_history_days",
                 "tradfi_max_stop_distance_pct", "tradfi_reward_risk", "tradfi_symbols",
+                "tradfi_max_spread_pct", "tradfi_min_depth_multiple",
                 "trade_direction_mode",
             }:
                 config.pop(key)
@@ -605,12 +604,9 @@ class PaperBot:
         threshold = fnum(config.get("old_rebound_whitelist_min_24h_change_pct"), 50.0)
         config["old_rebound_whitelist_min_24h_change_pct"] = threshold if 0 <= threshold <= 1000 else 50.0
         for key in ("tradfi_min_24h_change_pct", "tradfi_max_4h_change_pct",
-                    "tradfi_min_15m_quote_volume_usdt", "tradfi_max_spread_pct",
-                    "tradfi_min_depth_multiple"):
+                    "tradfi_min_15m_quote_volume_usdt"):
             value = fnum(config.get(key), float(DEFAULT_CONFIG[key]))
-            if key == "tradfi_min_depth_multiple":
-                value = max(1.0, value)
-            elif key in {"tradfi_min_15m_quote_volume_usdt", "tradfi_max_spread_pct"}:
+            if key == "tradfi_min_15m_quote_volume_usdt":
                 value = max(0.01, value)
             config[key] = value
         return config
@@ -1193,8 +1189,6 @@ class PaperBot:
             "tradfi_min_24h_change_pct": float,
             "tradfi_max_4h_change_pct": float,
             "tradfi_min_15m_quote_volume_usdt": float,
-            "tradfi_max_spread_pct": float,
-            "tradfi_min_depth_multiple": float,
             "tradfi_margin_per_trade_usdt": float,
             "tradfi_leverage": int,
             "tradfi_margin_type": str,
@@ -1299,8 +1293,6 @@ class PaperBot:
                     "shared_pool_min_quote_volume_usdt",
                     "tradfi_min_quote_volume_usdt",
                     "tradfi_min_15m_quote_volume_usdt",
-                    "tradfi_max_spread_pct",
-                    "tradfi_min_depth_multiple",
                     "pre_start_volume_15m_min_usdt",
                     "pre_start_volume_relative_min",
                     "pre_start_volume_growth_min",
@@ -1337,8 +1329,6 @@ class PaperBot:
                     value = float(value)
                 if key in {"tradfi_min_24h_change_pct", "tradfi_max_4h_change_pct"}:
                     value = fnum(value, float(DEFAULT_CONFIG[key]))
-                if key == "tradfi_min_depth_multiple":
-                    value = max(1.0, float(value))
                 if key == "old_rebound_short_oi_1h_min_pct":
                     value = float(value)
                 if key == "old_rebound_short_min_low_distance_pct":
@@ -4428,25 +4418,11 @@ class PaperBot:
             bid_qty, ask_qty = fnum(bids[0][1]), fnum(asks[0][1])
         except Exception:
             return "股票TradFi实时盘口不可用"
-        if (bid <= 0 or ask <= bid or bid_qty <= 0 or ask_qty <= 0
-                or (ask - bid) / ((ask + bid) / 2) > float(self.config.get("tradfi_max_spread_pct", 0.25)) / 100):
-            return "股票TradFi实时买卖价差过大或无效"
+        if bid <= 0 or ask <= bid or bid_qty <= 0 or ask_qty <= 0:
+            return "股票TradFi买一或卖一报价无效"
         executable = ask if signal.side == "LONG" else bid
         if signal.price <= 0 or abs(executable / signal.price - 1) > 0.004:
             return "股票TradFi实时价格偏离信号"
-        try:
-            bid_depth = sum(fnum(level[0]) * max(0.0, fnum(level[1])) for level in bids
-                            if len(level) >= 2 and fnum(level[0]) >= bid * 0.9975)
-            ask_depth = sum(fnum(level[0]) * max(0.0, fnum(level[1])) for level in asks
-                            if len(level) >= 2 and fnum(level[0]) <= ask * 1.0025)
-        except (TypeError, IndexError):
-            return "股票TradFi实时盘口数据无效"
-        side = signal.side.lower()
-        required_depth = (float(self.config.get(f"tradfi_{side}_margin_per_trade_usdt") or self.config.get("tradfi_margin_per_trade_usdt", 3.0))
-                          * float(self.config.get(f"tradfi_{side}_leverage") or self.config.get("tradfi_leverage", 2))
-                          * float(self.config.get("tradfi_min_depth_multiple", 3.0)))
-        if min(bid_depth, ask_depth) < required_depth:
-            return "股票TradFi盘口深度不足"
         return ""
 
     def coingecko_historical_low(self, symbol_info: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:

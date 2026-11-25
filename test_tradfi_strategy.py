@@ -108,16 +108,14 @@ class TradfiStrategyTest(unittest.TestCase):
         self.assertEqual(bot.position_plan(self.stock_signal("LONG"), 100)["margin_usdt"], 7)
         self.assertEqual(bot.margin_type_for_signal(self.stock_signal("LONG")), "CROSSED")
 
-    def test_preopen_rejects_disabled_direction_and_uses_its_depth_plan(self):
+    def test_preopen_rejects_disabled_direction(self):
         bot = self.make_bot()
         bot.config.update({"tradfi_enabled": True, "tradfi_auto_trade_enabled": True,
-                           "tradfi_long_enabled": True, "tradfi_short_enabled": False,
-                           "tradfi_long_margin_per_trade_usdt": 20,
-                           "tradfi_long_leverage": 2, "tradfi_min_depth_multiple": 3})
+                           "tradfi_long_enabled": True, "tradfi_short_enabled": False})
         info = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY"}
-        with patch.object(server, "http_get_json", return_value=self.depth_book(bid_qty="0.5", ask_qty="0.5")):
+        with patch.object(server, "http_get_json") as request:
             self.assertIn("未启用", bot.tradfi_open_reject_reason(self.stock_signal("SHORT"), info))
-            self.assertIn("深度", bot.tradfi_open_reject_reason(self.stock_signal("LONG"), info))
+            request.assert_not_called()
 
     def test_only_equity_tradfi_contract_is_eligible(self):
         stock = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY", "underlyingSubType": ["TradFi"]}
@@ -162,8 +160,8 @@ class TradfiStrategyTest(unittest.TestCase):
     def test_closed_session_pattern_rejects_live_candle_and_accepts_retest(self):
         now = datetime(2026, 7, 6, 16, 45, tzinfo=timezone.utc)
         opens = [datetime(2026, 7, 6, 15, 0, tzinfo=timezone.utc).timestamp() * 1000 + i * 900_000 for i in range(9)]
-        prices = [(100, 101, 99, 100), (100, 101, 99, 100), (100, 101, 99, 100),
-                  (100, 101, 99, 100), (100, 100, 98, 98.5), (98.5, 99.1, 98, 98.4),
+        prices = [(99.2, 100, 99, 99.3), (99.3, 100, 99, 99.6), (99.6, 101, 99, 100.3),
+                  (100.3, 101, 99, 100), (100, 100, 98, 98.5), (98.5, 99.1, 98, 98.4),
                   (98.4, 98.5, 97.5, 97.7), (97.7, 98, 97, 97.5), (97.5, 98, 97, 97.5)]
         klines = []
         for i, (op, hi, lo, close) in enumerate(prices):
@@ -182,9 +180,9 @@ class TradfiStrategyTest(unittest.TestCase):
     def test_premarket_needs_fresh_contiguous_liquid_candles(self):
         start = int(datetime(2026, 7, 6, 11, 0, tzinfo=timezone.utc).timestamp() * 1000)
         now = datetime(2026, 7, 6, 12, 46, tzinfo=timezone.utc)
-        prices = [(100, 101, 99, 100)] * 4 + [(100, 100, 98, 98.5),
-                                               (98.5, 99.1, 98, 98.4),
-                                               (98.4, 98.5, 97.5, 97.7)]
+        prices = [(99.2, 100, 99, 99.3), (99.3, 100, 99, 99.6), (99.6, 101, 99, 100.3),
+                  (100.3, 101, 99, 100), (100, 100, 98, 98.5),
+                  (98.5, 99.1, 98, 98.4), (98.4, 98.5, 97.5, 97.7)]
         bars = [[start + i * 900_000, str(op), str(hi), str(lo), str(close), "0",
                  start + (i + 1) * 900_000 - 1, "100000"]
                 for i, (op, hi, lo, close) in enumerate(prices)]
@@ -194,6 +192,54 @@ class TradfiStrategyTest(unittest.TestCase):
         bars[-1][7] = "100000"
         bars[-2][0] += 900_000
         self.assertIn("不连续", tradfi_strategy.evaluate(bars, "SHORT", 97.7, now, 50_000)["reason"])
+
+    def test_long_requires_volume_at_breakout_and_confirmation_but_allows_quiet_retest(self):
+        start = datetime(2026, 7, 6, 15, 0, tzinfo=timezone.utc)
+        now = start + server.timedelta(minutes=105)
+        start_ms = int(start.timestamp() * 1000)
+        prices = [(100, 101, 99, 100)] * 4 + [(100, 102, 99.5, 101.5),
+                                               (101.5, 101.8, 101.1, 101.2),
+                                               (101.2, 102.4, 101.1, 102.2)]
+        for breakout_volume, confirm_volume, expected in ((150_000, 140_000, True),
+                                                         (100_000, 140_000, False),
+                                                         (150_000, 100_000, False)):
+            with self.subTest(breakout=breakout_volume, confirm=confirm_volume):
+                volumes = [100_000] * 4 + [breakout_volume, 40_000, confirm_volume]
+                bars = [[start_ms + i * 900_000, op, hi, lo, close, 0,
+                         start_ms + (i + 1) * 900_000 - 1, volumes[i]]
+                        for i, (op, hi, lo, close) in enumerate(prices)]
+                result = tradfi_strategy.evaluate(bars, "LONG", 102.2, now)
+                self.assertEqual(result["passed"], expected)
+                self.assertIn("放量", result["reason"])
+
+    def test_long_confirmation_must_close_above_breakout_close(self):
+        start = datetime(2026, 7, 6, 15, 0, tzinfo=timezone.utc)
+        now = start + server.timedelta(minutes=105)
+        start_ms = int(start.timestamp() * 1000)
+        prices = [(100, 101, 99, 100)] * 4 + [(100, 102, 99.5, 101.7),
+                                               (101.5, 101.6, 101.1, 101.2),
+                                               (101.2, 101.8, 101.1, 101.65)]
+        volumes = [100_000] * 4 + [150_000, 40_000, 140_000]
+        bars = [[start_ms + i * 900_000, op, hi, lo, close, 0,
+                 start_ms + (i + 1) * 900_000 - 1, volumes[i]]
+                for i, (op, hi, lo, close) in enumerate(prices)]
+        result = tradfi_strategy.evaluate(bars, "LONG", 101.65, now)
+        self.assertFalse(result["passed"])
+        self.assertIn("未超过突破收盘价", result["reason"])
+
+    def test_short_rejects_breakdown_without_prior_rebound(self):
+        start = datetime(2026, 7, 6, 15, 0, tzinfo=timezone.utc)
+        now = start + server.timedelta(minutes=105)
+        prices = [(100, 101, 99, 100)] * 4 + [(100, 100, 98, 98.5),
+                                               (98.5, 99.1, 98, 98.4),
+                                               (98.4, 98.5, 97.5, 97.7)]
+        start_ms = int(start.timestamp() * 1000)
+        bars = [[start_ms + i * 900_000, op, hi, lo, close, 0,
+                 start_ms + (i + 1) * 900_000 - 1, 100_000]
+                for i, (op, hi, lo, close) in enumerate(prices)]
+        result = tradfi_strategy.evaluate(bars, "SHORT", 97.7, now)
+        self.assertFalse(result["passed"])
+        self.assertIn("反弹", result["reason"])
 
     def test_four_hour_change_uses_sixteen_closed_trading_bars(self):
         start = int(datetime(2026, 7, 6, 10, 0, tzinfo=timezone.utc).timestamp() * 1000)
@@ -234,6 +280,8 @@ class TradfiStrategyTest(unittest.TestCase):
         bars = [[start + i * 900_000, str(op), str(hi), str(lo), str(close), "0",
                  start + (i + 1) * 900_000 - 1, "100000"]
                 for i, (op, hi, lo, close) in enumerate(prices)]
+        for row, volume in zip(bars[-3:], ("150000", "80000", "140000")):
+            row[7] = volume
         bot.fetch_klines_interval = lambda symbol, interval, limit: bars
         ticker = {"symbol": "TSLAUSDT", "lastPrice": "102.2", "quoteVolume": "10000000", "priceChangePercent": "2"}
         with patch.object(server, "utc_now", return_value=now):
@@ -260,26 +308,34 @@ class TradfiStrategyTest(unittest.TestCase):
         bot = self.make_bot()
         bot.update_settings({"tradfi_min_24h_change_pct": -12,
                              "tradfi_max_4h_change_pct": 7,
-                             "tradfi_min_15m_quote_volume_usdt": 60_000,
-                             "tradfi_max_spread_pct": 0.2,
-                             "tradfi_min_depth_multiple": 4})
+                             "tradfi_min_15m_quote_volume_usdt": 60_000})
         self.assertEqual(bot.config["tradfi_min_24h_change_pct"], -12)
         self.assertEqual(bot.config["tradfi_max_4h_change_pct"], 7)
         self.assertEqual(bot.config["tradfi_min_15m_quote_volume_usdt"], 60_000)
-        self.assertEqual(bot.config["tradfi_max_spread_pct"], 0.2)
-        self.assertEqual(bot.config["tradfi_min_depth_multiple"], 4)
         bot.update_settings({"tradfi_max_4h_change_pct": "nan"})
         self.assertEqual(bot.config["tradfi_max_4h_change_pct"], 10)
 
     def test_invalid_saved_quality_limits_fail_closed(self):
         bot = self.make_bot()
         bot.config_path.write_text(
-            '{"tradfi_max_4h_change_pct": NaN, "tradfi_min_depth_multiple": NaN}',
+            '{"tradfi_max_4h_change_pct": NaN}',
             encoding="utf-8",
         )
         reloaded = server.PaperBot(bot.config_path, bot.state_path)
         self.assertEqual(reloaded.config["tradfi_max_4h_change_pct"], 10)
-        self.assertEqual(reloaded.config["tradfi_min_depth_multiple"], 3)
+
+    def test_removed_order_book_settings_are_ignored(self):
+        bot = self.make_bot()
+        bot.config_path.write_text(
+            '{"tradfi_max_spread_pct": 0.05, "tradfi_min_depth_multiple": 10}',
+            encoding="utf-8",
+        )
+        reloaded = server.PaperBot(bot.config_path, bot.state_path)
+        for key in ("tradfi_max_spread_pct", "tradfi_min_depth_multiple"):
+            self.assertNotIn(key, reloaded.config.keys())
+        reloaded.update_settings({"tradfi_max_spread_pct": 0.05, "tradfi_min_depth_multiple": 10})
+        for key in ("tradfi_max_spread_pct", "tradfi_min_depth_multiple"):
+            self.assertNotIn(key, reloaded.config.keys())
 
     def test_tradfi_protection_orders_use_position_roi_not_structural_prices(self):
         for side, expected_stop, expected_take, expected_stop_roi, expected_take_roi in (
@@ -339,7 +395,7 @@ class TradfiStrategyTest(unittest.TestCase):
         bot.refresh_positions({"TSLAUSDT": 105})
         self.assertEqual(closed, ["止盈平仓"])
 
-    def test_preopen_rechecks_type_spread_and_depth_outside_regular_session(self):
+    def test_preopen_checks_best_quotes_and_price_drift_not_spread_or_depth(self):
         bot = self.make_bot()
         bot.config.update({"tradfi_enabled": True, "tradfi_auto_trade_enabled": True})
         info = {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY", "underlyingSubType": ["TradFi"]}
@@ -357,10 +413,11 @@ class TradfiStrategyTest(unittest.TestCase):
             signal_model="tradfi_us_v1")
         premarket = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
         with patch.object(server, "utc_now", return_value=premarket), patch.object(server, "http_get_json", return_value=self.depth_book(ask_price="100.5")):
-            self.assertIn("价差", bot.tradfi_open_reject_reason(signal, info))
+            self.assertEqual(bot.tradfi_open_reject_reason(signal, info), "")
+            self.assertIn("偏离", bot.tradfi_open_reject_reason(self.stock_signal("LONG"), info))
         with patch.object(server, "utc_now", return_value=premarket), patch.object(server, "http_get_json", return_value=self.depth_book(bid_qty="0.01")):
-            self.assertIn("深度", bot.tradfi_open_reject_reason(signal, info))
-        broken_book = {"bids": [["100", "1"], None], "asks": [["100.1", "1"]]}
+            self.assertEqual(bot.tradfi_open_reject_reason(signal, info), "")
+        broken_book = {"bids": [None], "asks": [["100.1", "1"]]}
         with patch.object(server, "utc_now", return_value=premarket), patch.object(server, "http_get_json", return_value=broken_book):
             self.assertIn("盘口", bot.tradfi_open_reject_reason(signal, info))
         missing_quantity = {"bids": [["100"]], "asks": [["100.1", "1"]]}
