@@ -226,6 +226,17 @@
                 <option value="CROSSED">全仓</option>
               </select>
             </label>
+            <label>
+              老币反弹开仓方式
+              <select name="old_rebound_short_entry_type">
+                <option value="MARKET">市价单</option>
+                <option value="LIMIT">限价单</option>
+              </select>
+            </label>
+            <label title="仅在老币反弹开空选择限价单时生效；按合约最新成交价向上偏移。">
+              老币反弹限价挂单偏移 (%)
+              <input name="old_rebound_short_limit_offset_pct" type="number" min="0" step="any" />
+            </label>
             <h3 class="settings-subsection">全局保护单</h3>
             <label>
               止盈 ROI (%)

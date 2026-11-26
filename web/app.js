@@ -872,6 +872,9 @@ function candidateNextAction(row) {
   const summary = String(row.decision_summary || "");
   const decisionText = `${reject} ${summary}`;
 
+  if (reject.includes("已挂单")) return "已挂单";
+  if (reject.includes("挂单状态待确认")) return "待核对挂单";
+  if (reject.includes("已成交")) return "已成交";
   if (summary.includes("已提交") || reject.includes("已提交")) return "已提交";
   if (!reject || reject === "待开仓") return "风控下单";
   if (reject.includes("已有持仓")) return "已有持仓";

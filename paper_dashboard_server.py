@@ -28,10 +28,11 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import tradfi_strategy
 
@@ -134,6 +135,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "old_rebound_short_confirm_min_score": 6.8,
     "old_rebound_short_margin_per_trade_usdt": 3.0,
     "old_rebound_short_leverage": 2,
+    "old_rebound_short_entry_type": "MARKET",
+    "old_rebound_short_limit_offset_pct": 5.0,
     "old_rebound_short_margin_type": None,
     "tradfi_enabled": False,
     "tradfi_auto_trade_enabled": False,
@@ -473,7 +476,11 @@ def http_request_json(
         url = f"{url}?{query}"
     req = urllib.request.Request(url, data=data, headers=request_headers, method=method.upper())
     last_error: Exception | None = None
-    for attempt in range(3):
+    # A timed-out order submission is reconciled by client ID, not replayed.
+    attempts = 1 if method.upper() == "POST" and (
+        "newClientOrderId" in (params or {}) or "clientAlgoId" in (params or {})
+    ) else 3
+    for attempt in range(attempts):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = decode_http_body(resp)
@@ -483,13 +490,13 @@ def http_request_json(
             raise RuntimeError(f"{error_label} HTTP {exc.code}: {body}") from exc
         except RETRYABLE_HTTP_EXCEPTIONS as exc:
             last_error = exc
-            if attempt >= 2:
+            if attempt + 1 >= attempts:
                 break
             time.sleep(0.6 * (attempt + 1))
     raise RuntimeError(f"Binance request failed after retries: {last_error}") from last_error
 
 
-def quantize_down(value: float, step: str) -> str:
+def quantize_down(value: float | Decimal, step: str) -> str:
     step_dec = Decimal(str(step))
     if step_dec <= 0:
         return str(value)
@@ -535,6 +542,7 @@ class PaperBot:
         self.config_path = config_path
         self.state_path = state_path
         self.lock = threading.RLock()
+        self.limit_entry_lock = threading.RLock()
         self.config = self.load_config()
         self.state = self.load_state()
         self.thread: threading.Thread | None = None
@@ -603,6 +611,10 @@ class PaperBot:
         )
         threshold = fnum(config.get("old_rebound_whitelist_min_24h_change_pct"), 50.0)
         config["old_rebound_whitelist_min_24h_change_pct"] = threshold if 0 <= threshold <= 1000 else 50.0
+        entry_type = str(config.get("old_rebound_short_entry_type", "MARKET")).upper()
+        config["old_rebound_short_entry_type"] = entry_type if entry_type in {"MARKET", "LIMIT"} else "MARKET"
+        offset = fnum(config.get("old_rebound_short_limit_offset_pct"), -1)
+        config["old_rebound_short_limit_offset_pct"] = offset if offset >= 0 else 5.0
         for key in ("tradfi_min_24h_change_pct", "tradfi_max_4h_change_pct",
                     "tradfi_min_15m_quote_volume_usdt"):
             value = fnum(config.get(key), float(DEFAULT_CONFIG[key]))
@@ -636,6 +648,7 @@ class PaperBot:
         state.setdefault("exchange_open_positions", [])
         state.setdefault("reconciled_close_ids", [])
         state.pop("pending_open_signals", None)
+        state.setdefault("old_rebound_limit_entries", {})
         state.setdefault("stop_loss_cooldown_overrides", {})
         for key in (
             "last_hourly_status_report_at", "telegram_close_notified_ids",
@@ -1059,6 +1072,8 @@ class PaperBot:
                 closed += 1
             with self.lock:
                 self.event("trade", f"已提交 {self.exchange_label()} 全部平仓 {closed} 笔")
+                if self.tracked_limit_entries():
+                    self.event("warn", "全部平仓不会撤销未成交的老币反弹限价单，请在交易所单独撤单。")
                 self.persist()
         except Exception as exc:
             with self.lock:
@@ -1092,6 +1107,8 @@ class PaperBot:
         with self.lock:
             if self.state.get("positions"):
                 return {"ok": False, "error": f"{self.exchange_label()} 仍有持仓，请先全部平仓后再重置。", **self.snapshot()}
+            if self.tracked_limit_entries():
+                return {"ok": False, "error": "仍有老币反弹限价单待处理，请先在交易所撤单或等待成交后同步。", **self.snapshot()}
             self.stop_event.set()
             self.state["running"] = False
             self.state["next_scan_at"] = None
@@ -1178,6 +1195,8 @@ class PaperBot:
             "old_rebound_short_confirm_min_score": float,
             "old_rebound_short_margin_per_trade_usdt": float,
             "old_rebound_short_leverage": int,
+            "old_rebound_short_entry_type": str,
+            "old_rebound_short_limit_offset_pct": float,
             "old_rebound_short_margin_type": str,
             "tradfi_enabled": str,
             "tradfi_auto_trade_enabled": str,
@@ -1243,6 +1262,16 @@ class PaperBot:
                 if not -50 <= threshold <= 0:
                     raise ValueError("老币15m跌幅下限须在-50%到0%之间")
             previous_mode = self.exchange_mode()
+            if "live_trading_enabled" in patch:
+                use_live = str(patch["live_trading_enabled"]).strip().lower() in {"1", "true", "yes", "on"}
+                if use_live != self.is_live_trading() and self.tracked_limit_entries():
+                    raise ValueError("仍有老币反弹限价单待处理，暂不能切换实盘/测试网")
+            if "old_rebound_short_entry_type" in patch:
+                if str(patch["old_rebound_short_entry_type"]).strip().upper() not in {"MARKET", "LIMIT"}:
+                    raise ValueError("老币反弹开仓方式无效")
+            if "old_rebound_short_limit_offset_pct" in patch:
+                if fnum(patch["old_rebound_short_limit_offset_pct"], -1) < 0:
+                    raise ValueError("老币反弹限价偏移须为非负的有效数字")
             for key, caster in allowed.items():
                 if key not in patch:
                     continue
@@ -1251,6 +1280,8 @@ class PaperBot:
                     value = raw_value in {"1", "true", "yes", "on"}
                 else:
                     value = caster(patch[key])
+                if key == "old_rebound_short_entry_type":
+                    value = value.strip().upper()
                 if key == "shared_pool_priority" and value not in {"old_rebound_short", "pre_start_long"}:
                     value = "old_rebound_short"
                 if key == "tradfi_priority" and value not in {"LONG", "SHORT"}:
@@ -1639,7 +1670,7 @@ class PaperBot:
         lot_filter = self.get_symbol_filter(symbol_info, "LOT_SIZE")
         return quantize_down(qty, lot_filter.get("stepSize", "0.00000001"))
 
-    def round_price(self, symbol_info: dict[str, Any], price: float) -> str:
+    def round_price(self, symbol_info: dict[str, Any], price: float | Decimal) -> str:
         price_filter = self.get_symbol_filter(symbol_info, "PRICE_FILTER")
         return quantize_down(price, price_filter.get("tickSize", "0.00000001"))
 
@@ -1664,6 +1695,8 @@ class PaperBot:
 
     def sync_exchange_state(self) -> None:
         """以交易所实际持仓/余额为准更新本地状态，并补齐平仓及交易历史。"""
+        self.reconcile_limit_entries()
+        settled_limits = [row["client_id"] for row in self.tracked_limit_entries() if row["status"] == "PROTECTED"]
         payload = self.signed_exchange_request("GET", "/fapi/v2/positionRisk")
         with self.lock:
             open_history = [item for item in self.state.get("open_order_history", []) if self.record_belongs_to_current_exchange(item)]
@@ -1722,6 +1755,8 @@ class PaperBot:
             self.state["exchange_open_positions"] = positions
             self.state["exchange_status"] = "connected"
             self.state["exchange_account_mode"] = self.exchange_mode()
+            for client_id in settled_limits:
+                self.state["old_rebound_limit_entries"].pop(client_id, None)
             self.persist()
 
         position_history: list[dict[str, Any]] | None = None
@@ -2299,6 +2334,9 @@ class PaperBot:
         with self.lock:
             stop_trigger_price_type = self.config["stop_loss_trigger_price_type"]
             take_trigger_price_type = self.config["take_profit_trigger_price_type"]
+            exchange_mode = self.exchange_mode()
+            limit_offset = self.config["old_rebound_short_limit_offset_pct"]
+            limit_enabled = self.config["old_rebound_short_entry_type"] == "LIMIT"
         original_side = str(signal.side).upper()
         execution_side = self.execution_side(original_side)
         reverse_order = execution_side != original_side
@@ -2313,7 +2351,10 @@ class PaperBot:
             target_margin_type=margin_type,
         ))
         notional = margin * leverage * float(futures.get("quantity_safety_factor", 0.98))
-        if self.exposure_pct(extra_notional=notional) > float(self.config.get("max_exposure_pct", 65.0)):
+        open_symbols = {pos.get("symbol") for pos in self.state.get("positions", [])}
+        reserved = sum(fnum(row.get("notional_usdt")) for row in self.tracked_limit_entries()
+                       if row["symbol"] not in open_symbols)
+        if self.exposure_pct(extra_notional=notional + reserved) > float(self.config.get("max_exposure_pct", 65.0)):
             self.event("risk", "仓位敞口达到上限，本轮停止新增持仓")
             return None
         if signal.signal_mode == "pre_start_long":
@@ -2326,6 +2367,11 @@ class PaperBot:
         else:
             stop_roi_pct = float(self.config.get("stop_loss_roi_pct", 86.0))
             take_roi_pct = float(self.config.get("take_profit_roi_pct", 90.0))
+        if limit_enabled and signal.signal_mode == "old_rebound_short" and execution_side == "SHORT":
+            return self.submit_old_rebound_limit_entry(
+                signal, symbol_info, sizing, notional, leverage, margin_type, exchange_mode,
+                limit_offset, stop_roi_pct, take_roi_pct, stop_trigger_price_type, take_trigger_price_type,
+            )
         if signal.signal_mode not in {"pre_start_long", "tradfi_us_equity"} and not reverse_order and fnum(signal.planned_stop_price) > 0 and fnum(signal.planned_take_profit_price) > 0:
             stop_price = fnum(signal.planned_stop_price)
             take_profit = fnum(signal.planned_take_profit_price)
@@ -2446,6 +2492,285 @@ class PaperBot:
         self.state.setdefault("open_order_history", []).insert(0, {**record, "close_reason": f"{self.exchange_record_prefix()} 开仓记录"})
         self.state["open_order_history"] = self.state["open_order_history"][:500]
         return record
+
+    def tracked_limit_entries(self) -> list[dict[str, Any]]:
+        with self.lock:
+            return [dict(row) for row in self.state["old_rebound_limit_entries"].values()
+                    if self.record_belongs_to_current_exchange(row)]
+
+    @staticmethod
+    def limit_entry_candidate(entry: dict[str, Any]) -> dict[str, Any]:
+        if entry["status"] == "PROTECTED":
+            label = "已成交，等待持仓同步"
+        elif entry.get("filled_qty"):
+            label = "已成交，保护单处理中"
+        elif entry.get("entry_order_id"):
+            label = "已挂单"
+        else:
+            label = "挂单状态待确认"
+        detail = f"{label}：限价 {entry['limit_price']}，订单 {entry.get('entry_order_id') or entry['client_id']}"
+        return {**entry["signal"], "reject_reason": label, "decision_summary": detail,
+                "decision_steps": [*entry["signal"]["decision_steps"], detail]}
+
+    def submit_old_rebound_limit_entry(
+        self, signal: Signal, symbol_info: dict[str, Any], sizing: dict[str, Any],
+        notional: float, leverage: float, margin_type: str, exchange_mode: str,
+        offset: float, stop_roi: float, take_roi: float, stop_trigger: str, take_trigger: str,
+    ) -> dict[str, Any]:
+        current = fnum(self.latest_contract_price(signal.symbol))
+        if current <= 0:
+            raise RuntimeError("合约最新价无效，未提交限价单")
+        tick = Decimal(str(self.get_symbol_filter(symbol_info, "PRICE_FILTER").get("tickSize", "0.00000001")))
+        raw_price = Decimal(str(current)) * (1 + Decimal(str(offset)) / 100)
+        limit_price = (raw_price / tick).to_integral_value(rounding=ROUND_CEILING) * tick if tick > 0 else raw_price
+        price_text = format(limit_price.normalize(), "f")
+        base = fnum(price_text)
+        if base <= 0:
+            raise RuntimeError("限价无效，未提交开仓")
+        stop = limit_price * (1 + Decimal(str(stop_roi)) / Decimal(str(leverage)) / 100)
+        take = limit_price * (1 - Decimal(str(take_roi)) / Decimal(str(leverage)) / 100)
+        stop_price = self.round_price(symbol_info, stop)
+        take_price = self.round_price(symbol_info, take)
+        qty = self.round_quantity(symbol_info, notional / base)
+        if not 0 < fnum(take_price) < base < fnum(stop_price) or fnum(qty) <= 0:
+            raise RuntimeError("限价单数量或止盈止损价格无效，未提交开仓")
+        client_id = f"orl-{uuid4().hex[:24]}"
+        entry = {
+            "client_id": client_id, "execution_mode": exchange_mode, "symbol": signal.symbol,
+            "side": "SHORT", "original_side": "SHORT", "reverse_order": False,
+            "time": iso_now(), "submitted_ms": int(time.time() * 1000), "status": "SUBMITTING",
+            "signal": {**signal.__dict__, "decision_steps": list(signal.decision_steps)},
+            "limit_price": price_text, "quantity": qty, "margin_type": margin_type, "leverage": leverage,
+            "notional_usdt": base * fnum(qty), "sizing_tier": sizing.get("tier"),
+            "sizing_margin_multiplier": sizing.get("margin_multiplier"), "sizing_reason": sizing.get("reason"),
+            "stop_price": stop_price, "take_profit": take_price,
+            "stop_loss_roi_pct": stop_roi, "take_profit_roi_pct": take_roi,
+            "stop_loss_trigger_price_type": stop_trigger, "take_profit_trigger_price_type": take_trigger,
+            "signal_review_id": self.signal_review_id(int(self.state.get("scan_count", 0)), signal.symbol),
+        }
+        with self.limit_entry_lock:
+            with self.lock:
+                if self.exchange_mode() != exchange_mode:
+                    raise RuntimeError("交易账户已切换，未提交限价单")
+                if any(row["symbol"] == signal.symbol for row in self.tracked_limit_entries()):
+                    raise RuntimeError("此币种已有老币反弹限价单")
+                self.state["old_rebound_limit_entries"][client_id] = entry
+                self.persist()
+            try:
+                response = self.signed_exchange_request_position_aware(
+                    "POST", "/fapi/v1/order",
+                    {"symbol": signal.symbol, "side": "SELL", "type": "LIMIT", "timeInForce": "GTC",
+                     "quantity": qty, "price": price_text, "newClientOrderId": client_id},
+                    "SHORT",
+                )
+                with self.lock:
+                    entry["entry_order_id"] = response.get("orderId")
+                    entry["status"] = str(response.get("status") or "NEW")
+                    entry["filled_qty"] = fnum(response.get("executedQty"))
+                    self.event("info", f"{signal.symbol} 老币反弹已挂空单，限价 {price_text}")
+                    self.persist()
+            except Exception as exc:
+                with self.lock:
+                    self.event("warn", f"{signal.symbol} 限价单提交结果待核对：{exc}")
+                    self.persist()
+        return {"pending_limit_entry": True, **self.limit_entry_candidate(entry)}
+
+    def reconcile_limit_entries(self) -> None:
+        """Track GTC orders independently of scans; never expire an unfilled order."""
+        if not self.tracked_limit_entries():
+            return
+        with self.limit_entry_lock:
+            for entry in self.tracked_limit_entries():
+                if entry["status"] == "PROTECTED":
+                    continue
+                try:
+                    self.reconcile_limit_entry(entry)
+                except Exception as exc:
+                    with self.lock:
+                        stored = self.state["old_rebound_limit_entries"].get(entry["client_id"])
+                        if stored and stored.get("last_error") != str(exc):
+                            stored["last_error"] = str(exc)
+                            self.event("error", f"{entry['symbol']} 限价单处理待重试：{exc}")
+                            self.persist()
+
+    def reconcile_limit_entry(self, entry: dict[str, Any]) -> None:
+        client_id = entry["client_id"]
+        query = {"symbol": entry["symbol"], "origClientOrderId": client_id}
+        try:
+            order = self.signed_exchange_request("GET", "/fapi/v1/order", query)
+        except RuntimeError as exc:
+            if ("-2013" in str(exc) and not entry.get("entry_order_id")
+                    and int(time.time() * 1000) - entry["submitted_ms"] > 120_000):
+                self.finish_unfilled_limit_entry(entry, "交易所确认未找到挂单")
+                return
+            raise
+        status = order.get("status")
+        if status not in {"NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}:
+            raise RuntimeError("交易所返回未知限价单状态")
+        executed = fnum(order.get("executedQty"))
+        if status == "PARTIALLY_FILLED":
+            with self.lock:
+                self.state["old_rebound_limit_entries"][client_id].update(
+                    status=status, filled_qty=executed, entry_order_id=order.get("orderId"))
+                self.persist()
+            order = self.signed_exchange_request("DELETE", "/fapi/v1/order", query)
+            status = order.get("status")
+            executed = fnum(order.get("executedQty"))
+            if status not in {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"} or executed <= 0:
+                raise RuntimeError("未确认部分成交后的剩余撤单结果")
+        with self.lock:
+            stored = self.state["old_rebound_limit_entries"][client_id]
+            changes = {"status": status, "filled_qty": executed, "entry_order_id": order.get("orderId")}
+            if any(stored.get(key) != value for key, value in changes.items()):
+                stored.update(changes)
+                self.persist()
+        if status == "NEW":
+            return
+        if executed <= 0:
+            if status == "FILLED":
+                raise RuntimeError("已成交限价单缺少成交数量")
+            self.finish_unfilled_limit_entry(entry, "限价单已撤销或结束，未成交")
+            return
+        positions = self.signed_exchange_request("GET", "/fapi/v2/positionRisk", {"symbol": entry["symbol"]})
+        if not isinstance(positions, list):
+            raise RuntimeError("限价成交后无法确认当前持仓")
+        short_qty = next((-Decimal(str(row["positionAmt"])) for row in positions
+                          if row.get("symbol") == entry["symbol"] and fnum(row.get("positionAmt")) < 0), Decimal(0))
+        if not short_qty:
+            filled_at = parse_time_ms(order.get("updateTime"))
+            if not filled_at or int(time.time() * 1000) - filled_at < 10_000:
+                raise RuntimeError("限价成交后等待交易所同步空仓数量")
+            self.clear_limit_entry_protection(entry)
+            self.record_filled_limit_entry(entry, order, protected=False)
+            return
+        if entry.get("protection_crossed"):
+            self.close_unprotected_limit_fill(entry, short_qty, order)
+            return
+        try:
+            self.protect_filled_limit_entry(entry)
+        except RuntimeError as exc:
+            if "-2021" not in str(exc):
+                raise
+            with self.lock:
+                self.state["old_rebound_limit_entries"][client_id]["protection_crossed"] = True
+                self.event("risk", f"{entry['symbol']} 成交后已到保护触发价，尝试市价平掉限价成交仓位")
+                self.persist()
+            self.close_unprotected_limit_fill(entry, short_qty, order)
+            return
+        self.record_filled_limit_entry(entry, order, protected=True)
+
+    def close_unprotected_limit_fill(self, entry: dict[str, Any], short_qty: Decimal, order: dict[str, Any]) -> None:
+        stored = self.state["old_rebound_limit_entries"][entry["client_id"]]
+        close_client_id = f"{entry['client_id']}-exit"
+        if stored.get("exit_attempted"):
+            try:
+                self.signed_exchange_request("GET", "/fapi/v1/order",
+                                             {"symbol": entry["symbol"], "origClientOrderId": close_client_id})
+                raise RuntimeError("限价成交仓位的紧急平仓已提交，等待交易所同步")
+            except RuntimeError as exc:
+                if "-2013" not in str(exc):
+                    raise
+        qty = min(short_qty, Decimal(str(order["executedQty"])))
+        with self.lock:
+            stored["exit_attempted"] = True
+            self.persist()
+        self.signed_exchange_request_position_aware(
+            "POST", "/fapi/v1/order",
+            {**self.market_close_order_params(entry["symbol"], "SHORT", format(qty, "f")),
+             "newClientOrderId": close_client_id},
+            "SHORT",
+        )
+
+    def clear_limit_entry_protection(self, entry: dict[str, Any]) -> None:
+        for field, suffix in (("stop_algo_id", "sl"), ("take_profit_algo_id", "tp")):
+            if not entry.get(f"{field}_attempted"):
+                continue
+            try:
+                self.signed_exchange_request("DELETE", "/fapi/v1/algoOrder",
+                                             {"clientAlgoId": f"{entry['client_id']}-{suffix}"})
+            except RuntimeError as exc:
+                if not any(code in str(exc) for code in ("-2011", "-2013")):
+                    raise
+
+    def finish_unfilled_limit_entry(self, entry: dict[str, Any], message: str) -> None:
+        with self.lock:
+            self.state["old_rebound_limit_entries"].pop(entry["client_id"], None)
+            self.state["candidates"] = [row for row in self.state.get("candidates", [])
+                                        if row.get("symbol") != entry["symbol"]]
+            self.event("info", f"{entry['symbol']} {message}")
+            self.persist()
+
+    def protect_filled_limit_entry(self, entry: dict[str, Any]) -> None:
+        client_id = entry["client_id"]
+        stored = self.state["old_rebound_limit_entries"][client_id]
+        for field, kind, price_key, trigger_key, suffix in (
+            ("stop_algo_id", "STOP_MARKET", "stop_price", "stop_loss_trigger_price_type", "sl"),
+            ("take_profit_algo_id", "TAKE_PROFIT_MARKET", "take_profit", "take_profit_trigger_price_type", "tp"),
+        ):
+            if stored.get(field):
+                continue
+            algo_client_id = f"{client_id}-{suffix}"
+            algo = {}
+            if stored.get(f"{field}_attempted"):
+                try:
+                    algo = self.signed_exchange_request("GET", "/fapi/v1/algoOrder", {"clientAlgoId": algo_client_id})
+                except RuntimeError as exc:
+                    if "-2013" not in str(exc) and "-2011" not in str(exc):
+                        raise
+            if not algo.get("algoId"):
+                with self.lock:
+                    stored[f"{field}_attempted"] = True
+                    self.persist()
+                algo = self.signed_exchange_request_position_aware(
+                    "POST", "/fapi/v1/algoOrder",
+                    {"algoType": "CONDITIONAL", "symbol": entry["symbol"], "side": "BUY", "type": kind,
+                     "triggerPrice": entry[price_key], "workingType": entry[trigger_key],
+                     "closePosition": "true", "clientAlgoId": algo_client_id},
+                    "SHORT",
+                )
+            if not algo.get("algoId"):
+                raise RuntimeError("交易所未确认限价仓位保护单")
+            with self.lock:
+                stored[field] = algo["algoId"]
+                self.persist()
+
+    def record_filled_limit_entry(self, entry: dict[str, Any], order: dict[str, Any], protected: bool) -> None:
+        stored = self.state["old_rebound_limit_entries"][entry["client_id"]]
+        filled_at = parse_time_ms(order.get("updateTime"))
+        qty = str(order["executedQty"])
+        actual_price = fnum(order.get("avgPrice")) or fnum(order.get("cumQuote")) / fnum(qty) or fnum(entry["limit_price"])
+        signal = Signal(**entry["signal"])
+        outcome = "止盈止损按限价计算" if protected else "交易所已无空仓，无需补挂保护单"
+        self.update_signal_decision(signal, "", f"限价挂单 {entry['limit_price']} 已成交 {qty}，{outcome}")
+        signal.decision_summary = f"已提交 {self.exchange_label()} 开仓（限价已成交）"
+        record = {
+            **{key: entry[key] for key in ("execution_mode", "symbol", "side", "original_side", "reverse_order",
+               "limit_price", "margin_type", "leverage", "sizing_tier", "sizing_margin_multiplier", "sizing_reason",
+               "stop_price", "take_profit", "stop_loss_roi_pct", "take_profit_roi_pct",
+               "stop_loss_trigger_price_type", "take_profit_trigger_price_type", "signal_review_id")},
+            "time": datetime.fromtimestamp(filled_at / 1000, tz=timezone.utc).isoformat() if filled_at else iso_now(),
+            "entry_order_id": order.get("orderId"), "entry_price": actual_price, "quantity": qty,
+            "notional_usdt": actual_price * fnum(qty), "margin_usdt": actual_price * fnum(qty) / entry["leverage"],
+            "stop_algo_id": stored.get("stop_algo_id"), "take_profit_algo_id": stored.get("take_profit_algo_id"),
+            **{key: getattr(signal, key) for key in ("trigger_reason", "score", "analyzer_direction",
+               "analyzer_confidence_pct", "analyzer_reason", "signal_mode", "signal_heat_level",
+               "decision_summary", "decision_steps")},
+        }
+        with self.lock:
+            self.state.setdefault("open_order_history", []).insert(0, {**record, "close_reason": f"{self.exchange_record_prefix()} 开仓记录"})
+            self.state["open_order_history"] = self.state["open_order_history"][:500]
+            stored["status"] = "PROTECTED"
+            self.event("trade", f"{signal.symbol} 老币反弹限价单已成交 {qty}，{outcome}")
+            self.persist()
+        if signal.symbol in self.config.get("old_rebound_whitelist_symbols", []):
+            try:
+                self.update_old_rebound_whitelist("remove", signal.symbol)
+            except Exception as exc:
+                with self.lock:
+                    self.event("error", f"{signal.symbol} 开仓后移出老币白名单失败：{exc}")
+        self.mark_signal_review_opened(signal, record)
+        if protected:
+            self.publish_square_open_position_async(signal, record)
 
     def exchange_close_position(self, pos: dict[str, Any]) -> None:
         symbol = pos["symbol"]
@@ -3560,8 +3885,10 @@ class PaperBot:
         if not modes:
             return []
         cooldown_sides = self.cooldown_sides_by_symbol()
+        pending_symbols = {row["symbol"] for row in self.tracked_limit_entries()}
         candidates = [item for item in tickers
                       if tradfi_strategy.is_equity_contract(symbols.get(item.get("symbol"), {}))
+                      and item.get("symbol") not in pending_symbols
                       and item.get("symbol") not in set(self.config.get("blocked_symbols", []))
                       and any(side not in cooldown_sides.get(str(item.get("symbol", "")), set()) for side in modes)
                       and fnum(item.get("lastPrice")) > 0
@@ -3700,6 +4027,9 @@ class PaperBot:
 
     def build_candidate_pool(self, tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """用 24h 滚动行情粗筛三类池，先排除禁开、冷却和非加密合约。"""
+        pending_symbols = {row["symbol"] for row in self.tracked_limit_entries()}
+        if pending_symbols:
+            tickers = [item for item in tickers if item.get("symbol") not in pending_symbols]
         cooldown_sides = self.cooldown_sides_by_symbol()
         self.refresh_old_rebound_whitelist(tickers, cooldown_sides)
         watchlist = {str(item).upper() for item in self.config.get("manual_watchlist", [])}
@@ -4517,7 +4847,9 @@ class PaperBot:
 
     def open_from_signals(self, signals: list[Signal]) -> int:
         """开仓前再次核对禁开/冷却/方向/交易对，并限制仓位数与每轮新单数。"""
-        open_count = len(self.state.get("positions", []))
+        pending_symbols = {entry["symbol"] for entry in self.tracked_limit_entries()}
+        positions = self.state.get("positions", [])
+        open_count = len(positions) + len(pending_symbols - {pos.get("symbol") for pos in positions})
         max_open = int(self.config.get("max_open_positions", 8))
         capacity = max(0, max_open - open_count)
         if capacity <= 0:
@@ -4529,8 +4861,12 @@ class PaperBot:
             self.event("error", f"读取 {self.exchange_label()} 交易规则失败：{exc}")
             return 0
         opened = 0
+        submitted = 0
         for signal in signals:
-            if opened >= min(capacity, int(self.config.get("max_new_positions_per_scan", 2))):
+            if signal.symbol in pending_symbols:
+                self.update_signal_decision(signal, "已挂单，跳过重复开仓")
+                continue
+            if submitted >= min(capacity, int(self.config.get("max_new_positions_per_scan", 2))):
                 break
             if signal.reject_reason or signal.price <= 0:
                 continue
@@ -4603,6 +4939,12 @@ class PaperBot:
                 self.event("error", f"{signal.symbol} {self.exchange_label()} 开仓失败：{exc}")
                 continue
             if record:
+                submitted += 1
+                if record.get("pending_limit_entry"):
+                    pending_symbols.add(signal.symbol)
+                    self.update_signal_decision(signal, record["reject_reason"], record["decision_summary"])
+                    signal.decision_summary = record["decision_summary"]
+                    continue
                 if signal.signal_mode == "old_rebound_short" and signal.symbol in self.config.get("old_rebound_whitelist_symbols", []):
                     try:
                         self.update_old_rebound_whitelist("remove", signal.symbol)
@@ -4686,9 +5028,15 @@ class PaperBot:
             self.prune_stop_loss_cooldown_overrides()
             self.state["stop_loss_cooldowns"] = self.active_stop_loss_cooldowns()
             stats = self.trade_stats()
+            pending = [self.limit_entry_candidate(entry) for entry in self.tracked_limit_entries()]
+            pending_symbols = {row["symbol"] for row in pending}
             payload = {
                 "config": self.config,
-                "state": self.state,
+                "state": {**self.state, "candidates": pending + [
+                    row for row in self.state.get("candidates", [])
+                    if row.get("symbol") not in pending_symbols
+                    and row.get("reject_reason") not in {"已挂单", "挂单状态待确认", "已成交，保护单处理中"}
+                ]},
                 "metrics": {
                     "equity_usdt": self.equity(),
                     "available_margin_usdt": self.available_margin(),
@@ -4807,12 +5155,22 @@ def main() -> int:
     args = parser.parse_args()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    monitor_stop = threading.Event()
+
+    def monitor_limit_entries() -> None:
+        while not monitor_stop.is_set():
+            BOT.reconcile_limit_entries()
+            monitor_stop.wait(2)
+
+    monitor = threading.Thread(target=monitor_limit_entries, name="old-rebound-limit-monitor", daemon=True)
+    monitor.start()
     print(f"Paper trading dashboard: http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping dashboard")
     finally:
+        monitor_stop.set()
         BOT.stop()
         server.server_close()
     return 0

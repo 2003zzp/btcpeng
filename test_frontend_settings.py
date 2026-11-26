@@ -75,11 +75,19 @@ class FrontendSettingsTest(unittest.TestCase):
     def test_settings_keep_unique_controls_across_hidden_panels(self):
         parser = InputNameParser()
         parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
-        self.assertEqual(len(parser.named_controls), 89)
+        self.assertEqual(len(parser.named_controls), 91)
         self.assertEqual(len(parser.named_controls), len(set(parser.named_controls)))
         self.assertNotIn("old_rebound_short_min_history_days", parser.named_controls)
         self.assertNotIn("trade_direction_mode", parser.named_controls)
         self.assertIn("blocked_symbols", parser.named_controls)
+
+    def test_old_rebound_limit_entry_controls(self):
+        parser = InputNameParser()
+        parser.feed(Path("web/index.html").read_text(encoding="utf-8"))
+        self.assertIn("old_rebound_short_entry_type", parser.select_names)
+        attrs = parser.input_attrs["old_rebound_short_limit_offset_pct"]
+        self.assertEqual(attrs["step"], "any")
+        self.assertNotIn("max", attrs)
 
     def test_old_rebound_15m_drop_limit_is_editable(self):
         parser = InputNameParser()
